@@ -1,4 +1,10 @@
-export type { CustomerProfileSnapshot } from '../domain/customer-profile/index.js';
+export type {
+  CustomerProfileDegradedReason,
+  CustomerProfileLinkStatus,
+  CustomerProfileLookupResult,
+  CustomerProfileSnapshot,
+  GetCustomerProfileInput,
+} from '../domain/customer-profile/index.js';
 export type {
   CustomerIdentityResolution,
   IdentityResolutionReason,
