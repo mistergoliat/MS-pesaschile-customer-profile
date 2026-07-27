@@ -1,2 +1,3 @@
-// CRM adapters will read master_customer and related CRM tables in a later task.
-export type CrmInfrastructurePlaceholder = never;
+export { createMysqlMasterCustomerReader } from './mysql-master-customer-reader.js';
+export { checkCrmReadiness, closeCrmPool, getCrmQueryExecutor } from './crm-pool.js';
+export type { CrmReadinessReason, CrmReadinessResult } from './crm-pool.js';

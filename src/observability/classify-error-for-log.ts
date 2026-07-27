@@ -1,0 +1,30 @@
+import {
+  CrmSchemaIncompatibleError,
+  CrmTimeoutError,
+  CrmUnavailableError,
+  CustomerProfileBuildError,
+  PrestashopTimeoutError,
+  PrestashopUnavailableError,
+} from '../application/customer-profile/errors.js';
+
+export type SafeErrorType =
+  | 'crm_unavailable'
+  | 'crm_timeout'
+  | 'crm_schema_incompatible'
+  | 'prestashop_unavailable'
+  | 'prestashop_timeout'
+  | 'profile_build_failed'
+  | 'unexpected_error';
+
+// Classifies by type identity only (instanceof) — never touches error.message or
+// error.stack — so a raw driver message (host, port, user, table, column) can never
+// leak into a log line through this function.
+export function classifyErrorForLog(error: unknown): SafeErrorType {
+  if (error instanceof CrmSchemaIncompatibleError) return 'crm_schema_incompatible';
+  if (error instanceof CrmTimeoutError) return 'crm_timeout';
+  if (error instanceof CrmUnavailableError) return 'crm_unavailable';
+  if (error instanceof PrestashopTimeoutError) return 'prestashop_timeout';
+  if (error instanceof PrestashopUnavailableError) return 'prestashop_unavailable';
+  if (error instanceof CustomerProfileBuildError) return 'profile_build_failed';
+  return 'unexpected_error';
+}
