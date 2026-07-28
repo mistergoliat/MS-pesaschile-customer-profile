@@ -1,4 +1,5 @@
 export type {
+  CustomerOrderStateContext,
   CustomerOrderSummary,
   CustomerProfileDegradedReason,
   CustomerProfileLinkStatus,
@@ -11,3 +12,4 @@ export { classifyCustomerProfileLookup } from './classify-lookup.js';
 export type { MasterCustomerRecord } from './master-customer-record.js';
 export type { PrestashopCustomerRecord } from './prestashop-customer-record.js';
 export type { CustomerOrderRecord } from './customer-order-record.js';
+export type { OrderStateRecord } from './order-state-record.js';

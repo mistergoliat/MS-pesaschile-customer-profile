@@ -50,6 +50,7 @@ const availableResult: CustomerProfileLookupResult = {
         orderId: 100,
         reference: 'REF100',
         currentStateId: 4,
+        currentState: { stateId: 4, name: 'Enviado', resolution: 'resolved' },
         valid: true,
         createdAt: '2026-01-01 10:00:00',
         updatedAt: '2026-01-02 10:00:00',
@@ -85,6 +86,7 @@ describe('GET /v1/customers/:masterCustomerId/profile', () => {
         orderId: 100,
         reference: 'REF100',
         currentStateId: 4,
+        currentState: { stateId: 4, name: 'Enviado', resolution: 'resolved' },
         valid: true,
         createdAt: '2026-01-01 10:00:00',
         updatedAt: '2026-01-02 10:00:00',
@@ -98,6 +100,63 @@ describe('GET /v1/customers/:masterCustomerId/profile', () => {
     expect(typeof order.totalProductsTaxIncl).toBe('string');
     expect(order).not.toHaveProperty('customerId');
     expect(order).not.toHaveProperty('isPaid');
+  });
+
+  it('includes currentState resolved with a name (CP-R1-T05 contract)', async () => {
+    const baseUrl = await startApp(async () => availableResult);
+
+    const response = await fetch(`${baseUrl}/v1/customers/1/profile`);
+    const body = (await response.json()) as { profile: { recentOrders: Array<{ currentState: unknown }> } };
+
+    expect(body.profile.recentOrders[0]?.currentState).toEqual({
+      stateId: 4,
+      name: 'Enviado',
+      resolution: 'resolved',
+    });
+  });
+
+  it('includes currentState unknown with name null when the state has no catalog match (CP-R1-T05 contract)', async () => {
+    const unknownStateResult: CustomerProfileLookupResult = {
+      ...availableResult,
+      profile: {
+        ...availableResult.profile!,
+        recentOrders: [
+          {
+            ...availableResult.profile!.recentOrders[0]!,
+            orderId: 200,
+            currentStateId: 999,
+            currentState: { stateId: 999, name: null, resolution: 'unknown' },
+          },
+        ],
+        warnings: ['order_state_label_missing'],
+      },
+      warnings: ['order_state_label_missing'],
+    };
+    const baseUrl = await startApp(async () => unknownStateResult);
+
+    const response = await fetch(`${baseUrl}/v1/customers/1/profile`);
+    const body = (await response.json()) as {
+      profile: { recentOrders: Array<{ currentStateId: number; currentState: unknown }>; warnings: string[] };
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.profile.recentOrders[0]?.currentStateId).toBe(999);
+    expect(body.profile.recentOrders[0]?.currentState).toEqual({ stateId: 999, name: null, resolution: 'unknown' });
+    expect(body.profile.warnings).toEqual(['order_state_label_missing']);
+  });
+
+  it('never logs order state names or order references on success (only aggregate counts)', async () => {
+    const spy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const baseUrl = await startApp(async () => availableResult);
+
+    await fetch(`${baseUrl}/v1/customers/1/profile`);
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    const serialized = JSON.stringify(spy.mock.calls[0]);
+    expect(serialized).not.toContain('Enviado');
+    expect(serialized).not.toContain('REF100');
+    const loggedArgs = spy.mock.calls[0] ?? [];
+    expect(loggedArgs[0]).toMatchObject({ recentOrderCount: 1, unknownOrderStateCount: 0 });
   });
 
   it('returns 200 for available with recentOrders = [] (an empty list is not an error)', async () => {

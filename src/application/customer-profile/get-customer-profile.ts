@@ -1,24 +1,35 @@
 import {
   classifyCustomerProfileLookup,
   type CustomerOrderRecord,
+  type CustomerOrderStateContext,
   type CustomerOrderSummary,
   type CustomerProfileDegradedReason,
   type CustomerProfileLookupResult,
   type CustomerProfileSnapshot,
   type GetCustomerProfileInput,
   type MasterCustomerRecord,
+  type OrderStateRecord,
   type PrestashopCustomerRecord,
 } from '../../domain/customer-profile/index.js';
 import { CustomerProfileBuildError, PrestashopTimeoutError, PrestashopUnavailableError } from './errors.js';
-import type { Clock, CustomerOrdersReader, MasterCustomerReader, PrestashopCustomerReader } from './ports.js';
+import type {
+  Clock,
+  CustomerOrdersReader,
+  MasterCustomerReader,
+  OrderStatesReader,
+  PrestashopCustomerReader,
+} from './ports.js';
 
 export type GetCustomerProfileDependencies = {
   readonly masterCustomerReader: MasterCustomerReader;
   readonly prestashopCustomerReader: PrestashopCustomerReader;
   readonly customerOrdersReader: CustomerOrdersReader;
+  readonly orderStatesReader: OrderStatesReader;
   readonly clock: Clock;
   // Bounds how many recent orders the snapshot carries (CUSTOMER_PROFILE_RECENT_ORDERS_LIMIT).
   readonly recentOrdersLimit: number;
+  // Which ps_order_state_lang.id_lang to translate currentStateId against (PRESTASHOP_ORDER_STATE_LANG_ID).
+  readonly orderStateLanguageId: number;
 };
 
 export type GetCustomerProfile = (input: GetCustomerProfileInput) => Promise<CustomerProfileLookupResult>;
@@ -92,12 +103,37 @@ export function createGetCustomerProfile(deps: GetCustomerProfileDependencies): 
       }
     }
 
+    // Order states are only ever queried once recentOrders was read successfully, and
+    // only when there is at least one order — an empty recentOrders never triggers a
+    // catalog query. A timeout/unavailable failure here reuses the same PrestaShop
+    // degraded reasons as the orders read: same dependency, not a new failure cause.
+    let orderStates: readonly OrderStateRecord[] | null = null;
+
+    if (degradedReason === null && prestashopCustomer && recentOrders) {
+      const uniqueStateIds = Array.from(new Set(recentOrders.map((order) => order.currentStateId)));
+      if (uniqueStateIds.length === 0) {
+        orderStates = [];
+      } else {
+        try {
+          orderStates = await deps.orderStatesReader.findByIds(uniqueStateIds, deps.orderStateLanguageId);
+        } catch (error) {
+          if (error instanceof PrestashopTimeoutError) {
+            degradedReason = 'prestashop_timeout';
+          } else if (error instanceof PrestashopUnavailableError) {
+            degradedReason = 'prestashop_unavailable';
+          } else {
+            throw error;
+          }
+        }
+      }
+    }
+
     const warnings: string[] = [];
     let profile: CustomerProfileSnapshot | null = null;
 
-    if (degradedReason === null && prestashopCustomer && recentOrders) {
+    if (degradedReason === null && prestashopCustomer && recentOrders && orderStates) {
       try {
-        profile = buildSnapshot(masterCustomer, prestashopCustomer, recentOrders, deps.clock, warnings);
+        profile = buildSnapshot(masterCustomer, prestashopCustomer, recentOrders, orderStates, deps.clock, warnings);
       } catch (error) {
         if (error instanceof CustomerProfileBuildError) {
           degradedReason = 'profile_build_failed';
@@ -124,6 +160,7 @@ function buildSnapshot(
   master: MasterCustomerRecord,
   prestashop: PrestashopCustomerRecord,
   recentOrders: readonly CustomerOrderRecord[],
+  orderStates: readonly OrderStateRecord[],
   clock: Clock,
   warnings: string[],
 ): CustomerProfileSnapshot {
@@ -147,6 +184,8 @@ function buildSnapshot(
     warnings.push('prestashop_customer_inactive');
   }
 
+  const orderStatesById = new Map(orderStates.map((state): [number, OrderStateRecord] => [state.stateId, state]));
+
   return {
     masterCustomerId: master.id,
     generatedAt,
@@ -168,7 +207,7 @@ function buildSnapshot(
     // re-sorting: the SQL contract already guarantees deterministic, most-recent-first
     // ordering (see mysql-customer-orders-reader.ts), so re-sorting here would be
     // redundant work duplicating a guarantee that already exists one layer down.
-    recentOrders: recentOrders.map(toOrderSummary),
+    recentOrders: recentOrders.map((order) => toOrderSummary(order, resolveOrderState(order, orderStatesById, warnings))),
     warnings,
   };
 }
@@ -176,11 +215,12 @@ function buildSnapshot(
 // Every row in ps_orders is a paid order per the PesasChile business rule (see
 // CustomerOrderSummary) — currentStateId/valid are carried through unchanged, never
 // reinterpreted. customerId is dropped: it is redundant with prestashop.customerId.
-function toOrderSummary(order: CustomerOrderRecord): CustomerOrderSummary {
+function toOrderSummary(order: CustomerOrderRecord, currentState: CustomerOrderStateContext): CustomerOrderSummary {
   return {
     orderId: order.orderId,
     reference: order.reference,
     currentStateId: order.currentStateId,
+    currentState,
     valid: order.valid,
     createdAt: order.createdAt,
     updatedAt: order.updatedAt,
@@ -188,6 +228,25 @@ function toOrderSummary(order: CustomerOrderRecord): CustomerOrderSummary {
     totalProductsTaxIncl: order.totalProductsTaxIncl,
     currencyId: order.currencyId,
   };
+}
+
+// A stateId absent from the catalog result (missing translation, stale/removed state) is
+// `unknown`, never a fabricated label ("Estado desconocido", "En proceso") and never a
+// reason to degrade the whole profile — see CP-R1-T05 section 10. The warning is pushed
+// at most once per snapshot regardless of how many orders are unresolved.
+function resolveOrderState(
+  order: CustomerOrderRecord,
+  orderStatesById: ReadonlyMap<number, OrderStateRecord>,
+  warnings: string[],
+): CustomerOrderStateContext {
+  const state = orderStatesById.get(order.currentStateId);
+  if (state) {
+    return { stateId: order.currentStateId, name: state.name, resolution: 'resolved' };
+  }
+  if (!warnings.includes('order_state_label_missing')) {
+    warnings.push('order_state_label_missing');
+  }
+  return { stateId: order.currentStateId, name: null, resolution: 'unknown' };
 }
 
 function normalize(value: string): string {

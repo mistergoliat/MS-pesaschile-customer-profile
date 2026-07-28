@@ -108,7 +108,8 @@ function statusForResult(result: CustomerProfileLookupResult): number {
 }
 
 // Structured, PII-free: no email, firstname, lastname, rut, address, order reference,
-// order amounts or currentStateId ever logged here — recentOrderCount is a count only.
+// order amounts, currentStateId or state name ever logged here — recentOrderCount and
+// unknownOrderStateCount are aggregate numbers only.
 function logLookup(
   requestId: string,
   masterCustomerId: string,
@@ -124,6 +125,10 @@ function logLookup(
       durationMs,
       prestashopLookupAttempted: result.status === 'available' || result.status === 'degraded',
       recentOrderCount: result.status === 'available' ? result.profile.recentOrders.length : null,
+      unknownOrderStateCount:
+        result.status === 'available'
+          ? result.profile.recentOrders.filter((order) => order.currentState.resolution === 'unknown').length
+          : null,
     },
     'customer profile lookup',
   );
