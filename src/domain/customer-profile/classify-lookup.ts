@@ -4,18 +4,26 @@ import type {
   CustomerProfileSnapshot,
 } from './contracts.js';
 
-export type CustomerProfileLookupContext = {
-  readonly masterCustomerId: string;
-  readonly masterCustomerExists: boolean;
-  readonly linkedPrestashopCustomerId: number | null;
-  readonly degradedReason: CustomerProfileDegradedReason | null;
-  readonly profile: CustomerProfileSnapshot | null;
-  readonly warnings: readonly string[];
-};
+// Discriminated on masterCustomerExists so "master doesn't exist but has a PrestaShop
+// link/profile" cannot be constructed at all — not just guarded against at runtime.
+export type CustomerProfileLookupContext =
+  | {
+      readonly masterCustomerId: string;
+      readonly masterCustomerExists: false;
+      readonly warnings: readonly string[];
+    }
+  | {
+      readonly masterCustomerId: string;
+      readonly masterCustomerExists: true;
+      readonly linkedPrestashopCustomerId: number | null;
+      readonly degradedReason: CustomerProfileDegradedReason | null;
+      readonly profile: CustomerProfileSnapshot | null;
+      readonly warnings: readonly string[];
+    };
 
 // Pure outcome classification for GET /v1/customers/{masterCustomerId}/profile.
 // Does not read master_customer, does not read PrestaShop, does not search by email
-// — the caller resolves those facts and passes them in. See CP-R1-T02B.
+// — the caller resolves those facts and passes them in. See CP-R1-T02B / CP-R1-T03.
 export function classifyCustomerProfileLookup(
   context: CustomerProfileLookupContext,
 ): CustomerProfileLookupResult {

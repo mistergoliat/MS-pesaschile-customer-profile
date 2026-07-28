@@ -7,3 +7,5 @@ export type {
 } from './contracts.js';
 export type { CustomerProfileLookupContext } from './classify-lookup.js';
 export { classifyCustomerProfileLookup } from './classify-lookup.js';
+export type { MasterCustomerRecord } from './master-customer-record.js';
+export type { PrestashopCustomerRecord } from './prestashop-customer-record.js';

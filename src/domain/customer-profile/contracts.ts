@@ -1,8 +1,25 @@
 // Customer Profile does not resolve identity: masterCustomerId must already be
 // confirmed by onboarding/Identity Resolver before this contract is used.
+//
+// master_customer is the canonical authority for name/email/rut; PrestaShop contributes
+// the link and operational metadata only, never a replacement identity. See CP-R1-T03.
 export type CustomerProfileSnapshot = {
   readonly masterCustomerId: string;
   readonly generatedAt: string;
+  readonly customer: {
+    readonly firstname: string;
+    readonly lastname: string;
+    readonly email: string;
+    readonly rut: string | null;
+    readonly platformOrigin: string;
+  };
+  readonly prestashop: {
+    readonly customerId: number;
+    readonly active: boolean;
+    readonly shopId: number;
+    readonly createdAt: string | null;
+    readonly updatedAt: string | null;
+  };
   readonly warnings: readonly string[];
 };
 

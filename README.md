@@ -20,12 +20,16 @@ CRM and PrestaShop have separate logical connection settings even when they shar
 
 ## Scope
 
-This repository currently contains only base project structure and TypeScript contracts. The Customer Profile endpoint is intentionally not implemented yet.
+`GET /v1/customers/{masterCustomerId}/profile` is implemented as a minimal runtime read foundation (CP-R1-T03): given a `masterCustomerId` already confirmed by onboarding / Identity Resolver, it reads `master_customer`, reads the linked `ps_customer` if any, and returns `available` / `partial` / `not_found` / `degraded`. It does **not** yet return commercial history — no orders, no spend, no addresses, no active opportunity. See [`docs/design/CP-R1-T03-customer-profile-runtime-read-foundation.md`](docs/design/CP-R1-T03-customer-profile-runtime-read-foundation.md) for the full contract.
 
-Planned endpoint:
+This endpoint is internal and read-only, with no email-based lookup and no service-to-service authentication yet — it is not fit for public exposure without a gateway/auth layer in front.
+
+`GET /health/ready` checks CRM connectivity *and* minimal schema compatibility (not just "can we connect"): if `master_customer.prestashop_customer_id` is missing, it reports `503 not_ready` with `reason: crm_schema_incompatible` instead of announcing `ready` and only failing on the first real profile request. Logs never contain a raw MySQL driver message (which can include host, port or user) — only a closed set of safe labels such as `crm_unavailable` or `prestashop_timeout`.
 
 ```text
 GET /v1/customers/{masterCustomerId}/profile
+GET /health
+GET /health/ready
 ```
 
 ## Out Of Scope

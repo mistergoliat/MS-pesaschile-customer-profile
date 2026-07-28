@@ -1,2 +1,2 @@
-// PrestaShop adapters will read transactional data by internal ps_customer id in a later task.
-export type PrestashopInfrastructurePlaceholder = never;
+export { createMysqlPrestashopCustomerReader } from './mysql-prestashop-customer-reader.js';
+export { closePrestashopPool, getPrestashopQueryExecutor, pingPrestashop } from './prestashop-pool.js';
