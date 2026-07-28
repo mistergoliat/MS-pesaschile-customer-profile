@@ -55,6 +55,7 @@ describe('classifyCustomerProfileLookup (runtime, masterCustomerId only)', () =>
         createdAt: null,
         updatedAt: null,
       },
+      recentOrders: [],
       warnings: [],
     };
 

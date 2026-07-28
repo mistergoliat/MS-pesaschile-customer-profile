@@ -3,6 +3,23 @@
 //
 // master_customer is the canonical authority for name/email/rut; PrestaShop contributes
 // the link and operational metadata only, never a replacement identity. See CP-R1-T03.
+
+// PesasChile business rule: any row persisted in ps_orders is a paid order, so every
+// entry here is a paid order — there is no separate `isPaid` field, it would be
+// redundant. `currentStateId` and `valid` are raw operational facts from PrestaShop,
+// not a commercial classification; do not treat either as a payment filter. See CP-R1-T04.
+export type CustomerOrderSummary = {
+  readonly orderId: number;
+  readonly reference: string;
+  readonly currentStateId: number;
+  readonly valid: boolean;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly totalPaidTaxIncl: string;
+  readonly totalProductsTaxIncl: string;
+  readonly currencyId: number;
+};
+
 export type CustomerProfileSnapshot = {
   readonly masterCustomerId: string;
   readonly generatedAt: string;
@@ -20,6 +37,9 @@ export type CustomerProfileSnapshot = {
     readonly createdAt: string | null;
     readonly updatedAt: string | null;
   };
+  // Recent paid orders only (bounded by CUSTOMER_PROFILE_RECENT_ORDERS_LIMIT), most
+  // recent first — not necessarily the customer's complete order history. See CP-R1-T04.
+  readonly recentOrders: readonly CustomerOrderSummary[];
   readonly warnings: readonly string[];
 };
 

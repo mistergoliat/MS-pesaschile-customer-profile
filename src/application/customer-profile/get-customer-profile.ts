@@ -1,5 +1,7 @@
 import {
   classifyCustomerProfileLookup,
+  type CustomerOrderRecord,
+  type CustomerOrderSummary,
   type CustomerProfileDegradedReason,
   type CustomerProfileLookupResult,
   type CustomerProfileSnapshot,
@@ -8,12 +10,15 @@ import {
   type PrestashopCustomerRecord,
 } from '../../domain/customer-profile/index.js';
 import { CustomerProfileBuildError, PrestashopTimeoutError, PrestashopUnavailableError } from './errors.js';
-import type { Clock, MasterCustomerReader, PrestashopCustomerReader } from './ports.js';
+import type { Clock, CustomerOrdersReader, MasterCustomerReader, PrestashopCustomerReader } from './ports.js';
 
 export type GetCustomerProfileDependencies = {
   readonly masterCustomerReader: MasterCustomerReader;
   readonly prestashopCustomerReader: PrestashopCustomerReader;
+  readonly customerOrdersReader: CustomerOrdersReader;
   readonly clock: Clock;
+  // Bounds how many recent orders the snapshot carries (CUSTOMER_PROFILE_RECENT_ORDERS_LIMIT).
+  readonly recentOrdersLimit: number;
 };
 
 export type GetCustomerProfile = (input: GetCustomerProfileInput) => Promise<CustomerProfileLookupResult>;
@@ -65,12 +70,34 @@ export function createGetCustomerProfile(deps: GetCustomerProfileDependencies): 
       degradedReason = 'prestashop_customer_not_found';
     }
 
-    const warnings: string[] = [];
-    let profile: CustomerProfileSnapshot | null = null;
+    // Orders are only ever queried once ps_customer is confirmed to exist — never when
+    // master_customer is missing/unlinked, and never when ps_customer itself failed to
+    // resolve. A timeout/unavailable failure here reuses the same PrestaShop degraded
+    // reasons as the customer read: it is the same dependency, not a new failure cause.
+    let recentOrders: readonly CustomerOrderRecord[] | null = null;
 
     if (degradedReason === null && prestashopCustomer) {
       try {
-        profile = buildSnapshot(masterCustomer, prestashopCustomer, deps.clock, warnings);
+        recentOrders = await deps.customerOrdersReader.findByCustomerId(linkedPrestashopCustomerId, {
+          limit: deps.recentOrdersLimit,
+        });
+      } catch (error) {
+        if (error instanceof PrestashopTimeoutError) {
+          degradedReason = 'prestashop_timeout';
+        } else if (error instanceof PrestashopUnavailableError) {
+          degradedReason = 'prestashop_unavailable';
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    const warnings: string[] = [];
+    let profile: CustomerProfileSnapshot | null = null;
+
+    if (degradedReason === null && prestashopCustomer && recentOrders) {
+      try {
+        profile = buildSnapshot(masterCustomer, prestashopCustomer, recentOrders, deps.clock, warnings);
       } catch (error) {
         if (error instanceof CustomerProfileBuildError) {
           degradedReason = 'profile_build_failed';
@@ -96,6 +123,7 @@ export function createGetCustomerProfile(deps: GetCustomerProfileDependencies): 
 function buildSnapshot(
   master: MasterCustomerRecord,
   prestashop: PrestashopCustomerRecord,
+  recentOrders: readonly CustomerOrderRecord[],
   clock: Clock,
   warnings: string[],
 ): CustomerProfileSnapshot {
@@ -136,7 +164,29 @@ function buildSnapshot(
       createdAt: prestashop.dateAdd,
       updatedAt: prestashop.dateUpd,
     },
+    // Preserves the reader's own order (date_add DESC, id_order DESC) rather than
+    // re-sorting: the SQL contract already guarantees deterministic, most-recent-first
+    // ordering (see mysql-customer-orders-reader.ts), so re-sorting here would be
+    // redundant work duplicating a guarantee that already exists one layer down.
+    recentOrders: recentOrders.map(toOrderSummary),
     warnings,
+  };
+}
+
+// Every row in ps_orders is a paid order per the PesasChile business rule (see
+// CustomerOrderSummary) — currentStateId/valid are carried through unchanged, never
+// reinterpreted. customerId is dropped: it is redundant with prestashop.customerId.
+function toOrderSummary(order: CustomerOrderRecord): CustomerOrderSummary {
+  return {
+    orderId: order.orderId,
+    reference: order.reference,
+    currentStateId: order.currentStateId,
+    valid: order.valid,
+    createdAt: order.createdAt,
+    updatedAt: order.updatedAt,
+    totalPaidTaxIncl: order.totalPaidTaxIncl,
+    totalProductsTaxIncl: order.totalProductsTaxIncl,
+    currencyId: order.currencyId,
   };
 }
 

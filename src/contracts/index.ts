@@ -1,4 +1,5 @@
 export type {
+  CustomerOrderSummary,
   CustomerProfileDegradedReason,
   CustomerProfileLinkStatus,
   CustomerProfileLookupResult,

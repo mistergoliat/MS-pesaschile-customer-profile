@@ -28,6 +28,9 @@ const envSchema = z.object({
     .default('ps_'),
   PRESTASHOP_DB_CONNECTION_LIMIT: z.coerce.number().int().positive().default(5),
   PRESTASHOP_DB_QUERY_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
+
+  // How many recent orders the snapshot carries — not the customer's full order history.
+  CUSTOMER_PROFILE_RECENT_ORDERS_LIMIT: z.coerce.number().int().min(1).max(50).default(10),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -58,5 +61,8 @@ export const config = {
     prefix: raw.PRESTASHOP_DB_PREFIX,
     connectionLimit: raw.PRESTASHOP_DB_CONNECTION_LIMIT,
     queryTimeoutMs: raw.PRESTASHOP_DB_QUERY_TIMEOUT_MS,
+  },
+  customerProfile: {
+    recentOrdersLimit: raw.CUSTOMER_PROFILE_RECENT_ORDERS_LIMIT,
   },
 } as const;
