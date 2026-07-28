@@ -3,3 +3,8 @@ dist
 .env
 .DS_Store
 coverage
+
+# CP-R1-T06A audit outputs may contain aggregate real-data counts from a live DB run —
+# never committed. See docs/audits/order-state-semantics/.
+scripts/audits/order-state-semantics/outputs/*
+!scripts/audits/order-state-semantics/outputs/.gitkeep
