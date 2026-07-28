@@ -5,6 +5,7 @@ import { checkCrmReadiness, closeCrmPool, getCrmQueryExecutor } from './infrastr
 import { createMysqlMasterCustomerReader } from './infrastructure/crm/mysql-master-customer-reader.js';
 import { closePrestashopPool, getPrestashopQueryExecutor, pingPrestashop } from './infrastructure/prestashop/prestashop-pool.js';
 import { createMysqlPrestashopCustomerReader } from './infrastructure/prestashop/mysql-prestashop-customer-reader.js';
+import { createMysqlCustomerOrdersReader } from './infrastructure/prestashop/mysql-customer-orders-reader.js';
 import type { ReadinessCheck } from './http/routes/index.js';
 
 const systemClock: Clock = { now: () => new Date() };
@@ -18,7 +19,13 @@ export type Bootstrap = {
 // Composition root: readers/pools are wired here, never instantiated inside the use case.
 export function bootstrap(): Bootstrap {
   const masterCustomerReader = createMysqlMasterCustomerReader(getCrmQueryExecutor());
+  // Same logical PrestaShop pool as prestashopCustomerReader (getPrestashopQueryExecutor()
+  // wraps the existing lazy singleton pool) — no new pool, no per-request connections.
   const prestashopCustomerReader = createMysqlPrestashopCustomerReader(
+    getPrestashopQueryExecutor(),
+    config.prestashopDb.prefix,
+  );
+  const customerOrdersReader = createMysqlCustomerOrdersReader(
     getPrestashopQueryExecutor(),
     config.prestashopDb.prefix,
   );
@@ -26,7 +33,9 @@ export function bootstrap(): Bootstrap {
   const getCustomerProfile = createGetCustomerProfile({
     masterCustomerReader,
     prestashopCustomerReader,
+    customerOrdersReader,
     clock: systemClock,
+    recentOrdersLimit: config.customerProfile.recentOrdersLimit,
   });
 
   const checkReadiness: ReadinessCheck = async () => {

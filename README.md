@@ -20,7 +20,9 @@ CRM and PrestaShop have separate logical connection settings even when they shar
 
 ## Scope
 
-`GET /v1/customers/{masterCustomerId}/profile` is implemented as a minimal runtime read foundation (CP-R1-T03): given a `masterCustomerId` already confirmed by onboarding / Identity Resolver, it reads `master_customer`, reads the linked `ps_customer` if any, and returns `available` / `partial` / `not_found` / `degraded`. It does **not** yet return commercial history — no orders, no spend, no addresses, no active opportunity. See [`docs/design/CP-R1-T03-customer-profile-runtime-read-foundation.md`](docs/design/CP-R1-T03-customer-profile-runtime-read-foundation.md) for the full contract.
+`GET /v1/customers/{masterCustomerId}/profile` is implemented as a minimal runtime read foundation (CP-R1-T03): given a `masterCustomerId` already confirmed by onboarding / Identity Resolver, it reads `master_customer`, reads the linked `ps_customer` if any, and returns `available` / `partial` / `not_found` / `degraded`. See [`docs/design/CP-R1-T03-customer-profile-runtime-read-foundation.md`](docs/design/CP-R1-T03-customer-profile-runtime-read-foundation.md) for the full contract.
+
+Customer Profile incluye hasta N órdenes recientes pagadas según la regla empresarial de PesasChile (`CUSTOMER_PROFILE_RECENT_ORDERS_LIMIT`, default 10, máx. 50): toda fila persistida en `ps_orders` cuenta como orden pagada. Ver [`docs/design/CP-R1-T04-customer-orders-read-model.md`](docs/design/CP-R1-T04-customer-orders-read-model.md). Los estados de la orden (`currentStateId`) todavía se exponen como IDs brutos de PrestaShop, sin traducir a un estado operacional legible (preparando, en despacho, entregada, etc.) — el sistema **no** responde todavía consultas de tracking humano ("¿en qué está mi pedido?"); esa capability queda para una tarea futura. Sigue sin devolver spend agregado, direcciones ni oportunidad activa.
 
 This endpoint is internal and read-only, with no email-based lookup and no service-to-service authentication yet — it is not fit for public exposure without a gateway/auth layer in front.
 

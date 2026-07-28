@@ -107,7 +107,8 @@ function statusForResult(result: CustomerProfileLookupResult): number {
   }
 }
 
-// Structured, PII-free: no email, firstname, lastname, rut or address ever logged here.
+// Structured, PII-free: no email, firstname, lastname, rut, address, order reference,
+// order amounts or currentStateId ever logged here — recentOrderCount is a count only.
 function logLookup(
   requestId: string,
   masterCustomerId: string,
@@ -122,6 +123,7 @@ function logLookup(
       degradedReason: result.status === 'degraded' ? result.reason : null,
       durationMs,
       prestashopLookupAttempted: result.status === 'available' || result.status === 'degraded',
+      recentOrderCount: result.status === 'available' ? result.profile.recentOrders.length : null,
     },
     'customer profile lookup',
   );

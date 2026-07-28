@@ -45,6 +45,19 @@ const availableResult: CustomerProfileLookupResult = {
     generatedAt: '2026-07-27T00:00:00.000Z',
     customer: { firstname: 'Ana', lastname: 'Perez', email: 'ana@example.com', rut: null, platformOrigin: 'prestashop' },
     prestashop: { customerId: 555, active: true, shopId: 1, createdAt: null, updatedAt: null },
+    recentOrders: [
+      {
+        orderId: 100,
+        reference: 'REF100',
+        currentStateId: 4,
+        valid: true,
+        createdAt: '2026-01-01 10:00:00',
+        updatedAt: '2026-01-02 10:00:00',
+        totalPaidTaxIncl: '10000.000000',
+        totalProductsTaxIncl: '9500.000000',
+        currencyId: 1,
+      },
+    ],
     warnings: [],
   },
   warnings: [],
@@ -59,6 +72,45 @@ describe('GET /v1/customers/:masterCustomerId/profile', () => {
     expect(response.status).toBe(200);
     const body = (await response.json()) as CustomerProfileLookupResult;
     expect(body.status).toBe('available');
+  });
+
+  it('includes recentOrders with currentStateId/valid as raw facts and amounts as strings, and no undocumented fields', async () => {
+    const baseUrl = await startApp(async () => availableResult);
+
+    const response = await fetch(`${baseUrl}/v1/customers/1/profile`);
+    const body = (await response.json()) as { profile: { recentOrders: unknown[] } };
+
+    expect(body.profile.recentOrders).toEqual([
+      {
+        orderId: 100,
+        reference: 'REF100',
+        currentStateId: 4,
+        valid: true,
+        createdAt: '2026-01-01 10:00:00',
+        updatedAt: '2026-01-02 10:00:00',
+        totalPaidTaxIncl: '10000.000000',
+        totalProductsTaxIncl: '9500.000000',
+        currencyId: 1,
+      },
+    ]);
+    const order = body.profile.recentOrders[0] as Record<string, unknown>;
+    expect(typeof order.totalPaidTaxIncl).toBe('string');
+    expect(typeof order.totalProductsTaxIncl).toBe('string');
+    expect(order).not.toHaveProperty('customerId');
+    expect(order).not.toHaveProperty('isPaid');
+  });
+
+  it('returns 200 for available with recentOrders = [] (an empty list is not an error)', async () => {
+    const baseUrl = await startApp(async () => ({
+      ...availableResult,
+      profile: { ...availableResult.profile!, recentOrders: [] },
+    }));
+
+    const response = await fetch(`${baseUrl}/v1/customers/1/profile`);
+    const body = (await response.json()) as { profile: { recentOrders: unknown[] } };
+
+    expect(response.status).toBe(200);
+    expect(body.profile.recentOrders).toEqual([]);
   });
 
   it('returns 200 for partial', async () => {
