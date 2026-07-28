@@ -6,6 +6,7 @@ import { createMysqlMasterCustomerReader } from './infrastructure/crm/mysql-mast
 import { closePrestashopPool, getPrestashopQueryExecutor, pingPrestashop } from './infrastructure/prestashop/prestashop-pool.js';
 import { createMysqlPrestashopCustomerReader } from './infrastructure/prestashop/mysql-prestashop-customer-reader.js';
 import { createMysqlCustomerOrdersReader } from './infrastructure/prestashop/mysql-customer-orders-reader.js';
+import { createMysqlOrderStatesReader } from './infrastructure/prestashop/mysql-order-states-reader.js';
 import type { ReadinessCheck } from './http/routes/index.js';
 
 const systemClock: Clock = { now: () => new Date() };
@@ -29,13 +30,16 @@ export function bootstrap(): Bootstrap {
     getPrestashopQueryExecutor(),
     config.prestashopDb.prefix,
   );
+  const orderStatesReader = createMysqlOrderStatesReader(getPrestashopQueryExecutor(), config.prestashopDb.prefix);
 
   const getCustomerProfile = createGetCustomerProfile({
     masterCustomerReader,
     prestashopCustomerReader,
     customerOrdersReader,
+    orderStatesReader,
     clock: systemClock,
     recentOrdersLimit: config.customerProfile.recentOrdersLimit,
+    orderStateLanguageId: config.customerProfile.orderStateLanguageId,
   });
 
   const checkReadiness: ReadinessCheck = async () => {

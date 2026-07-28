@@ -8,10 +8,26 @@
 // entry here is a paid order — there is no separate `isPaid` field, it would be
 // redundant. `currentStateId` and `valid` are raw operational facts from PrestaShop,
 // not a commercial classification; do not treat either as a payment filter. See CP-R1-T04.
+
+// Read-only translation of currentStateId into the localized label configured via
+// PRESTASHOP_ORDER_STATE_LANG_ID — not a commercial classification. `resolved` means the
+// catalog had a row for this stateId/language; `unknown` means the query succeeded but no
+// row matched (missing translation or stale/removed state) — never a dependency failure,
+// see CustomerProfileDegradedReason for that. This is deliberately not a routing/keyword
+// classification: `name` is descriptive content, not a business rule input. See CP-R1-T05.
+export type CustomerOrderStateContext = {
+  readonly stateId: number;
+  readonly name: string | null;
+  readonly resolution: 'resolved' | 'unknown';
+};
+
 export type CustomerOrderSummary = {
   readonly orderId: number;
   readonly reference: string;
+  // currentStateId is kept alongside currentState (not replaced by it) for compatibility
+  // and as raw operational evidence — see CP-R1-T05.
   readonly currentStateId: number;
+  readonly currentState: CustomerOrderStateContext;
   readonly valid: boolean;
   readonly createdAt: string;
   readonly updatedAt: string;

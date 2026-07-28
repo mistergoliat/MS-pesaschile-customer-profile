@@ -1,5 +1,6 @@
 import type { CustomerOrderRecord } from '../../domain/customer-profile/customer-order-record.js';
 import type { MasterCustomerRecord } from '../../domain/customer-profile/master-customer-record.js';
+import type { OrderStateRecord } from '../../domain/customer-profile/order-state-record.js';
 import type { PrestashopCustomerRecord } from '../../domain/customer-profile/prestashop-customer-record.js';
 
 // null means "row not found". Connection/query failures must reject the promise instead
@@ -27,6 +28,16 @@ export interface CustomerOrdersReader {
       readonly limit?: number;
     },
   ): Promise<readonly CustomerOrderRecord[]>;
+}
+
+// Looked up exclusively by numeric order state id — never by name. Accepts already-unique
+// ids (the caller dedupes) and returns zero or more matches: a stateId with no row for the
+// configured language is simply absent from the result, not an error — the caller treats
+// that as `resolution: 'unknown'`, never as a reason to fail the whole lookup. Timeouts/
+// unavailability must reject with the same PrestashopTimeoutError / PrestashopUnavailableError
+// used by the other PrestaShop readers.
+export interface OrderStatesReader {
+  findByIds(stateIds: readonly number[], languageId: number): Promise<readonly OrderStateRecord[]>;
 }
 
 // Injected so snapshot timestamps are deterministic in tests.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { CustomerOrderSummary, CustomerProfileSnapshot } from '../../src/contracts/index.js';
+import type { CustomerOrderStateContext, CustomerOrderSummary, CustomerProfileSnapshot } from '../../src/contracts/index.js';
 
 describe('Customer Profile contracts', () => {
   it('matches the real read-only snapshot shape: master_customer as authority, PrestaShop as link metadata', () => {
@@ -35,6 +35,7 @@ describe('Customer Profile contracts', () => {
       orderId: 100,
       reference: 'REF100',
       currentStateId: 4,
+      currentState: { stateId: 4, name: 'Enviado', resolution: 'resolved' },
       valid: true,
       createdAt: '2026-01-01 10:00:00',
       updatedAt: '2026-01-02 10:00:00',
@@ -47,5 +48,22 @@ describe('Customer Profile contracts', () => {
     expect(order.valid).toBe(true);
     expect(typeof order.totalPaidTaxIncl).toBe('string');
     expect(typeof order.totalProductsTaxIncl).toBe('string');
+  });
+
+  it('matches both currentState resolutions: resolved with a name, unknown with name null', () => {
+    const resolved = {
+      stateId: 4,
+      name: 'Enviado',
+      resolution: 'resolved',
+    } satisfies CustomerOrderStateContext;
+    const unknown = {
+      stateId: 999,
+      name: null,
+      resolution: 'unknown',
+    } satisfies CustomerOrderStateContext;
+
+    expect(resolved.name).toBe('Enviado');
+    expect(unknown.name).toBeNull();
+    expect(unknown.resolution).toBe('unknown');
   });
 });

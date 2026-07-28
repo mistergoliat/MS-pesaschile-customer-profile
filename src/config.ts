@@ -31,6 +31,12 @@ const envSchema = z.object({
 
   // How many recent orders the snapshot carries — not the customer's full order history.
   CUSTOMER_PROFILE_RECENT_ORDERS_LIMIT: z.coerce.number().int().min(1).max(50).default(10),
+
+  // No silent default: unlike PRESTASHOP_DB_PREFIX ('ps_'), there is no prior recorded
+  // decision about which ps_lang.id_lang PesasChile operates in, so guessing 1 here would
+  // be a silent, unverified assumption baked into every order state translation. Must be
+  // set explicitly to the operational language PesasChile actually uses in PrestaShop.
+  PRESTASHOP_ORDER_STATE_LANG_ID: z.coerce.number().int().positive(),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -64,5 +70,6 @@ export const config = {
   },
   customerProfile: {
     recentOrdersLimit: raw.CUSTOMER_PROFILE_RECENT_ORDERS_LIMIT,
+    orderStateLanguageId: raw.PRESTASHOP_ORDER_STATE_LANG_ID,
   },
 } as const;
