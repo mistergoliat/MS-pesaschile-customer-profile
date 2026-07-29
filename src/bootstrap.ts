@@ -1,3 +1,4 @@
+import { createGetCustomerOrderStatus, type GetCustomerOrderStatus } from './application/customer-order-status/get-customer-order-status.js';
 import { createGetCustomerProfile, type GetCustomerProfile } from './application/customer-profile/get-customer-profile.js';
 import type { Clock } from './application/customer-profile/ports.js';
 import { config } from './config.js';
@@ -7,12 +8,15 @@ import { closePrestashopPool, getPrestashopQueryExecutor, pingPrestashop } from 
 import { createMysqlPrestashopCustomerReader } from './infrastructure/prestashop/mysql-prestashop-customer-reader.js';
 import { createMysqlCustomerOrdersReader } from './infrastructure/prestashop/mysql-customer-orders-reader.js';
 import { createMysqlOrderStatesReader } from './infrastructure/prestashop/mysql-order-states-reader.js';
+import { createMysqlCustomerOrderStatusReader } from './infrastructure/prestashop/mysql-customer-order-status-reader.js';
+import { createMysqlCarriersReader } from './infrastructure/prestashop/mysql-carriers-reader.js';
 import type { ReadinessCheck } from './http/routes/index.js';
 
 const systemClock: Clock = { now: () => new Date() };
 
 export type Bootstrap = {
   readonly getCustomerProfile: GetCustomerProfile;
+  readonly getCustomerOrderStatus: GetCustomerOrderStatus;
   readonly checkReadiness: ReadinessCheck;
   readonly shutdown: () => Promise<void>;
 };
@@ -31,6 +35,11 @@ export function bootstrap(): Bootstrap {
     config.prestashopDb.prefix,
   );
   const orderStatesReader = createMysqlOrderStatesReader(getPrestashopQueryExecutor(), config.prestashopDb.prefix);
+  const customerOrderStatusReader = createMysqlCustomerOrderStatusReader(
+    getPrestashopQueryExecutor(),
+    config.prestashopDb.prefix,
+  );
+  const carriersReader = createMysqlCarriersReader(getPrestashopQueryExecutor(), config.prestashopDb.prefix);
 
   const getCustomerProfile = createGetCustomerProfile({
     masterCustomerReader,
@@ -42,6 +51,18 @@ export function bootstrap(): Bootstrap {
     orderStateLanguageId: config.customerProfile.orderStateLanguageId,
   });
 
+  // Reuses masterCustomerReader and orderStatesReader — same CRM/PrestaShop pools, no
+  // new connections. See CP-R1-T06.
+  const getCustomerOrderStatus = createGetCustomerOrderStatus({
+    masterCustomerReader,
+    customerOrderStatusReader,
+    orderStatesReader,
+    carriersReader,
+    orderStateLanguageId: config.customerProfile.orderStateLanguageId,
+    carrierLanguageId: config.customerOrderStatus.carrierLanguageId,
+    carrierShopId: config.customerOrderStatus.carrierShopId,
+  });
+
   const checkReadiness: ReadinessCheck = async () => {
     const [crm, prestashop] = await Promise.all([checkCrmReadiness(), pingPrestashop()]);
     return { crm, prestashop };
@@ -49,6 +70,7 @@ export function bootstrap(): Bootstrap {
 
   return {
     getCustomerProfile,
+    getCustomerOrderStatus,
     checkReadiness,
     shutdown: async () => {
       await Promise.all([closeCrmPool(), closePrestashopPool()]);

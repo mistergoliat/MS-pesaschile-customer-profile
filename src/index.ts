@@ -3,8 +3,8 @@ import { bootstrap } from './bootstrap.js';
 import { config } from './config.js';
 import { logShutdownFailure } from './observability/log-shutdown-failure.js';
 
-const { getCustomerProfile, checkReadiness, shutdown } = bootstrap();
-const app = buildApp({ getCustomerProfile, checkReadiness });
+const { getCustomerProfile, getCustomerOrderStatus, checkReadiness, shutdown } = bootstrap();
+const app = buildApp({ getCustomerProfile, getCustomerOrderStatus, checkReadiness });
 
 const server = app.listen(config.port, () => {
   console.info({ port: config.port }, 'Customer Profile service started');
