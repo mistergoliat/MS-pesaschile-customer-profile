@@ -21,3 +21,9 @@ export type {
   GetCustomerOrderStatusInput,
   GetCustomerOrderStatusResult,
 } from '../domain/customer-order-status/index.js';
+export type {
+  CustomerCommercialSummary,
+  GetCustomerCommercialSummaryDegradedReason,
+  GetCustomerCommercialSummaryInput,
+  GetCustomerCommercialSummaryResult,
+} from '../domain/customer-commercial-summary/index.js';

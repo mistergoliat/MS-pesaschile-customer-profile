@@ -1,5 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { GetCustomerCommercialSummary } from '../../src/application/customer-commercial-summary/get-customer-commercial-summary.js';
 import type { GetCustomerOrderStatus } from '../../src/application/customer-order-status/get-customer-order-status.js';
 import type { GetCustomerProfile } from '../../src/application/customer-profile/get-customer-profile.js';
 import { buildApp } from '../../src/app.js';
@@ -12,6 +13,10 @@ const unreachableGetCustomerProfile: GetCustomerProfile = async () => {
   throw new Error('getCustomerProfile must not be called from the order status route tests');
 };
 
+const unreachableGetCustomerCommercialSummary: GetCustomerCommercialSummary = async () => {
+  throw new Error('getCustomerCommercialSummary must not be called from the order status route tests');
+};
+
 async function startApp(
   getCustomerOrderStatus: GetCustomerOrderStatus,
   checkReadiness: ReadinessCheck = async () => ({ crm: { status: 'ready' }, prestashop: true }),
@@ -19,6 +24,7 @@ async function startApp(
   const app = buildApp({
     getCustomerProfile: unreachableGetCustomerProfile,
     getCustomerOrderStatus,
+    getCustomerCommercialSummary: unreachableGetCustomerCommercialSummary,
     checkReadiness,
   });
   server = createServer(app);

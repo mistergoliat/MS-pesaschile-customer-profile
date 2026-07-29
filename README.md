@@ -28,6 +28,8 @@ Cada `recentOrder` ahora incluye además `currentState` (CP-R1-T05): el nombre d
 
 `GET /v1/customers/{masterCustomerId}/orders/{reference}/status` (CP-R1-T06) responde el estado de **una** orden puntual de un cliente: último `currentStateId`/nombre registrado en PrestaShop, `deliveryMethod` (derivado de un mapa de negocio explícito sobre `id_carrier`), un `deliveryEstimate` general declarado por método (nunca una fecha calculada) y `isRealTimeTracking: false` siempre presente. La pertenencia de la orden al cliente se valida en la misma consulta (`id_customer AND reference`); una orden inexistente y una que pertenece a otro cliente producen exactamente el mismo `order_not_found`. No usa `ps_order_history`, no clasifica por keywords ni por flags, no calcula ETA ni feriados, y no integra con ningún Carrier MS. Ver [`docs/releases/CP-R1-T06-customer-order-status-capability.md`](docs/releases/CP-R1-T06-customer-order-status-capability.md).
 
+`GET /v1/customers/{masterCustomerId}/commercial-summary` (CP-R1-T07) responde un resumen comercial agregado, bajo demanda y directamente contra PrestaShop, para clientes vinculados por `master_customer.prestashop_customer_id`. Una compra comercial valida es exclusivamente `ps_orders.valid = 1`: no usa existencia de fila, `current_state = 2`, flags `paid`, nombres de estados ni `ps_order_history`. Devuelve totales de ordenes validas, gasto bruto tax-incl en strings de seis decimales, promedio, primera/ultima compra, recencia, frecuencia, unidades brutas, productos distintos agregados, cancelaciones (`current_state = 6`) y reembolsos (`current_state = 7`). La moneda publica es fija `CLP`. No devuelve productos individuales, `product_name`, referencias, categorias, segmentacion, recomendaciones ni cambia `/profile`. Ver [`docs/releases/CP-R1-T07-customer-commercial-summary.md`](docs/releases/CP-R1-T07-customer-commercial-summary.md).
+
 This endpoint is internal and read-only, with no email-based lookup and no service-to-service authentication yet — it is not fit for public exposure without a gateway/auth layer in front.
 
 `GET /health/ready` checks CRM connectivity *and* minimal schema compatibility (not just "can we connect"): if `master_customer.prestashop_customer_id` is missing, it reports `503 not_ready` with `reason: crm_schema_incompatible` instead of announcing `ready` and only failing on the first real profile request. Logs never contain a raw MySQL driver message (which can include host, port or user) — only a closed set of safe labels such as `crm_unavailable` or `prestashop_timeout`.
@@ -35,6 +37,7 @@ This endpoint is internal and read-only, with no email-based lookup and no servi
 ```text
 GET /v1/customers/{masterCustomerId}/profile
 GET /v1/customers/{masterCustomerId}/orders/{reference}/status
+GET /v1/customers/{masterCustomerId}/commercial-summary
 GET /health
 GET /health/ready
 ```
