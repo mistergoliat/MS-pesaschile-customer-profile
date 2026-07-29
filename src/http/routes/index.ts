@@ -2,10 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import type { GetCustomerCommercialSummary } from '../../application/customer-commercial-summary/get-customer-commercial-summary.js';
+import type { GetCustomerPurchaseBehavior } from '../../application/customer-purchase-behavior/get-customer-purchase-behavior.js';
 import type { GetCustomerPurchasedProducts } from '../../application/customer-purchased-products/get-customer-purchased-products.js';
 import type { GetCustomerOrderStatus } from '../../application/customer-order-status/get-customer-order-status.js';
 import type { GetCustomerProfile } from '../../application/customer-profile/get-customer-profile.js';
 import type { GetCustomerCommercialSummaryResult } from '../../domain/customer-commercial-summary/index.js';
+import type {
+  GetCustomerPurchaseBehaviorInput,
+  GetCustomerPurchaseBehaviorResult,
+} from '../../domain/customer-purchase-behavior/index.js';
 import type { GetPurchasedProductsInput, GetPurchasedProductsResult } from '../../domain/customer-purchased-products/index.js';
 import type { GetCustomerOrderStatusResult } from '../../domain/customer-order-status/index.js';
 import type { CustomerProfileLookupResult } from '../../domain/customer-profile/index.js';
@@ -47,6 +52,7 @@ export type RouteDependencies = {
   readonly getCustomerOrderStatus: GetCustomerOrderStatus;
   readonly getCustomerCommercialSummary: GetCustomerCommercialSummary;
   readonly getCustomerPurchasedProducts: GetCustomerPurchasedProducts;
+  readonly getCustomerPurchaseBehavior: GetCustomerPurchaseBehavior;
   readonly checkReadiness: ReadinessCheck;
 };
 
@@ -197,6 +203,54 @@ export function buildRoutes(deps: RouteDependencies): Router {
     },
   );
 
+  router.get(
+    '/v1/customers/:masterCustomerId/purchase-behavior',
+    async (request: Request, response: Response) => {
+      const parsedParams = masterCustomerIdParams.safeParse(request.params);
+      if (!parsedParams.success) {
+        response.status(400).json({ error: 'invalid_master_customer_id' });
+        return;
+      }
+
+      const parsedQuery = parsePurchaseBehaviorQuery(request.query);
+      if (!parsedQuery.ok) {
+        response.status(400).json({ error: parsedQuery.error });
+        return;
+      }
+      if (request.body !== undefined) {
+        response.status(400).json({ error: 'unsupported_body' });
+        return;
+      }
+
+      const startedAt = Date.now();
+
+      try {
+        const result = await deps.getCustomerPurchaseBehavior({
+          masterCustomerId: parsedParams.data.masterCustomerId,
+          topProducts: parsedQuery.value.topProducts,
+          topVariants: parsedQuery.value.topVariants,
+        });
+
+        logPurchaseBehaviorLookup(result, Date.now() - startedAt);
+        response.status(statusForPurchaseBehaviorResult(result)).json(result);
+      } catch {
+        console.error(
+          {
+            status: 'error',
+            distinctProductBucket: null,
+            hasRepeatedProducts: null,
+            concentrationAvailable: null,
+            durationMs: Date.now() - startedAt,
+            degradedReason: null,
+            lookupOutcome: 'internal_error',
+          },
+          'customer purchase behavior lookup failed',
+        );
+        response.status(500).json({ error: 'internal_error' });
+      }
+    },
+  );
+
   // GET, so there is no request body to validate — only the two path params.
   // masterCustomerId never accepts an email; reference never accepts a PrestaShop
   // customerId — both are validated with the same regex-bounded schemas as the
@@ -323,6 +377,40 @@ function statusForPurchasedProductsResult(result: GetPurchasedProductsResult): n
   }
 }
 
+function statusForPurchaseBehaviorResult(result: GetCustomerPurchaseBehaviorResult): number {
+  switch (result.status) {
+    case 'available':
+      return 200;
+    case 'customer_not_found':
+    case 'customer_not_linked':
+      return 404;
+    case 'degraded':
+      return 503;
+  }
+}
+
+function logPurchaseBehaviorLookup(result: GetCustomerPurchaseBehaviorResult, durationMs: number): void {
+  console.info(
+    {
+      status: result.status,
+      distinctProductBucket:
+        result.status === 'available' ? distinctProductBucket(result.summary.distinctProductCount) : null,
+      hasRepeatedProducts: result.status === 'available' ? result.summary.repeatedProductCount > 0 : null,
+      concentrationAvailable: result.status === 'available' ? result.summary.distinctProductCount > 0 : null,
+      durationMs,
+      degradedReason: result.status === 'degraded' ? result.reason : null,
+      lookupOutcome: result.status,
+    },
+    'customer purchase behavior lookup',
+  );
+}
+
+function distinctProductBucket(count: number): 'zero' | 'one' | 'multiple' {
+  if (count === 0) return 'zero';
+  if (count === 1) return 'one';
+  return 'multiple';
+}
+
 function logPurchasedProductsLookup(result: GetPurchasedProductsResult, durationMs: number): void {
   console.info(
     {
@@ -380,6 +468,45 @@ function parsePurchasedProductsQuery(query: Request['query']): ParsedPurchasedPr
   }
 
   return { ok: true, value: { limit, offset } };
+}
+
+type ParsedPurchaseBehaviorQuery =
+  | {
+      readonly ok: true;
+      readonly value: Pick<GetCustomerPurchaseBehaviorInput, 'topProducts' | 'topVariants'>;
+    }
+  | {
+      readonly ok: false;
+      readonly error: 'invalid_top_products' | 'invalid_top_variants' | 'unsupported_query_params';
+    };
+
+function parsePurchaseBehaviorQuery(query: Request['query']): ParsedPurchaseBehaviorQuery {
+  const allowedKeys = new Set(['topProducts', 'topVariants']);
+  for (const key of Object.keys(query)) {
+    if (!allowedKeys.has(key)) {
+      return { ok: false, error: 'unsupported_query_params' };
+    }
+  }
+
+  const topProducts = parseOptionalIntegerQueryParam(query.topProducts, {
+    defaultValue: 10,
+    min: 1,
+    max: 10,
+  });
+  if (topProducts === null) {
+    return { ok: false, error: 'invalid_top_products' };
+  }
+
+  const topVariants = parseOptionalIntegerQueryParam(query.topVariants, {
+    defaultValue: 10,
+    min: 1,
+    max: 10,
+  });
+  if (topVariants === null) {
+    return { ok: false, error: 'invalid_top_variants' };
+  }
+
+  return { ok: true, value: { topProducts, topVariants } };
 }
 
 function parseOptionalIntegerQueryParam(

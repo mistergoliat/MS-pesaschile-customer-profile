@@ -8,6 +8,7 @@ const {
   getCustomerOrderStatus,
   getCustomerCommercialSummary,
   getCustomerPurchasedProducts,
+  getCustomerPurchaseBehavior,
   checkReadiness,
   shutdown,
 } = bootstrap();
@@ -16,6 +17,7 @@ const app = buildApp({
   getCustomerOrderStatus,
   getCustomerCommercialSummary,
   getCustomerPurchasedProducts,
+  getCustomerPurchaseBehavior,
   checkReadiness,
 });
 

@@ -32,6 +32,8 @@ Cada `recentOrder` ahora incluye además `currentState` (CP-R1-T05): el nombre d
 
 `GET /v1/customers/{masterCustomerId}/purchased-products` (CP-R1-T08) responde productos historicos comprados, agregados por `product_id + product_attribute_id`, solo desde lineas de ordenes con `ps_orders.valid = 1`. Usa la autoridad historica de `ps_order_detail` para `product_name`, `product_reference`, cantidades y `total_price_tax_incl`; el nombre/referencia publicados corresponden a la linea mas reciente de la agrupacion, con desempate deterministico. Incluye productos eliminados como `deleted_or_unavailable`, pagina con `limit`/`offset`, ordena por ultima compra descendente y no devuelve categorias, marcas, imagenes, precio actual, stock, recomendaciones ni gasto neto. Ver [`docs/releases/CP-R1-T08-purchased-products.md`](docs/releases/CP-R1-T08-purchased-products.md).
 
+`GET /v1/customers/{masterCustomerId}/purchase-behavior` (CP-R1-T09) responde indicadores relativos de comportamiento de compra: repeticion por producto y variante, participaciones de gasto/ordenes/unidades, concentracion de gasto, HHI, diversidad efectiva y recencia por elemento. Calcula sobre el 100% del historial valido (`ps_orders.valid = 1` + `ps_order_detail`) y limita solo la presentacion con `topProducts`/`topVariants` de 1 a 10. No usa categorias, marcas, catalogo actual, score compuesto, clustering, recomendaciones, cache ni snapshot, y no modifica `/profile`, T07 ni T08. Ver [`docs/releases/CP-R1-T09-customer-product-behavior.md`](docs/releases/CP-R1-T09-customer-product-behavior.md).
+
 This endpoint is internal and read-only, with no email-based lookup and no service-to-service authentication yet — it is not fit for public exposure without a gateway/auth layer in front.
 
 `GET /health/ready` checks CRM connectivity *and* minimal schema compatibility (not just "can we connect"): if `master_customer.prestashop_customer_id` is missing, it reports `503 not_ready` with `reason: crm_schema_incompatible` instead of announcing `ready` and only failing on the first real profile request. Logs never contain a raw MySQL driver message (which can include host, port or user) — only a closed set of safe labels such as `crm_unavailable` or `prestashop_timeout`.
@@ -41,6 +43,7 @@ GET /v1/customers/{masterCustomerId}/profile
 GET /v1/customers/{masterCustomerId}/orders/{reference}/status
 GET /v1/customers/{masterCustomerId}/commercial-summary
 GET /v1/customers/{masterCustomerId}/purchased-products
+GET /v1/customers/{masterCustomerId}/purchase-behavior
 GET /health
 GET /health/ready
 ```

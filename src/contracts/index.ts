@@ -34,3 +34,12 @@ export type {
   PurchasedProduct,
   PurchasedProductsPagination,
 } from '../domain/customer-purchased-products/index.js';
+export type {
+  GetCustomerPurchaseBehaviorDegradedReason,
+  GetCustomerPurchaseBehaviorInput,
+  GetCustomerPurchaseBehaviorResult,
+  PurchaseBehaviorConcentration,
+  PurchaseBehaviorProduct,
+  PurchaseBehaviorSummary,
+  PurchaseBehaviorVariant,
+} from '../domain/customer-purchase-behavior/index.js';
