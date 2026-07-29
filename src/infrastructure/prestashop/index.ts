@@ -5,4 +5,5 @@ export { createMysqlCustomerOrderStatusReader } from './mysql-customer-order-sta
 export { createMysqlCarriersReader } from './mysql-carriers-reader.js';
 export { createMysqlCommercialOrdersSummaryReader } from './mysql-commercial-orders-summary-reader.js';
 export { createMysqlCommercialProductsSummaryReader } from './mysql-commercial-products-summary-reader.js';
+export { createMysqlPurchasedProductsReader } from './mysql-purchased-products-reader.js';
 export { closePrestashopPool, getPrestashopQueryExecutor, pingPrestashop } from './prestashop-pool.js';

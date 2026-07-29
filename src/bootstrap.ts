@@ -3,6 +3,10 @@ import {
   createGetCustomerCommercialSummary,
   type GetCustomerCommercialSummary,
 } from './application/customer-commercial-summary/get-customer-commercial-summary.js';
+import {
+  createGetCustomerPurchasedProducts,
+  type GetCustomerPurchasedProducts,
+} from './application/customer-purchased-products/get-customer-purchased-products.js';
 import { createGetCustomerProfile, type GetCustomerProfile } from './application/customer-profile/get-customer-profile.js';
 import { config } from './config.js';
 import { checkCrmReadiness, closeCrmPool, getCrmQueryExecutor } from './infrastructure/crm/crm-pool.js';
@@ -15,6 +19,7 @@ import { createMysqlCustomerOrderStatusReader } from './infrastructure/prestasho
 import { createMysqlCarriersReader } from './infrastructure/prestashop/mysql-carriers-reader.js';
 import { createMysqlCommercialOrdersSummaryReader } from './infrastructure/prestashop/mysql-commercial-orders-summary-reader.js';
 import { createMysqlCommercialProductsSummaryReader } from './infrastructure/prestashop/mysql-commercial-products-summary-reader.js';
+import { createMysqlPurchasedProductsReader } from './infrastructure/prestashop/mysql-purchased-products-reader.js';
 import { SystemClock } from './infrastructure/shared/system-clock.js';
 import type { ReadinessCheck } from './http/routes/index.js';
 
@@ -24,6 +29,7 @@ export type Bootstrap = {
   readonly getCustomerProfile: GetCustomerProfile;
   readonly getCustomerOrderStatus: GetCustomerOrderStatus;
   readonly getCustomerCommercialSummary: GetCustomerCommercialSummary;
+  readonly getCustomerPurchasedProducts: GetCustomerPurchasedProducts;
   readonly checkReadiness: ReadinessCheck;
   readonly shutdown: () => Promise<void>;
 };
@@ -52,6 +58,10 @@ export function bootstrap(): Bootstrap {
     config.prestashopDb.prefix,
   );
   const commercialProductsSummaryReader = createMysqlCommercialProductsSummaryReader(
+    getPrestashopQueryExecutor(),
+    config.prestashopDb.prefix,
+  );
+  const purchasedProductsReader = createMysqlPurchasedProductsReader(
     getPrestashopQueryExecutor(),
     config.prestashopDb.prefix,
   );
@@ -85,6 +95,11 @@ export function bootstrap(): Bootstrap {
     clock: systemClock,
   });
 
+  const getCustomerPurchasedProducts = createGetCustomerPurchasedProducts({
+    masterCustomerReader,
+    purchasedProductsReader,
+  });
+
   const checkReadiness: ReadinessCheck = async () => {
     const [crm, prestashop] = await Promise.all([checkCrmReadiness(), pingPrestashop()]);
     return { crm, prestashop };
@@ -94,6 +109,7 @@ export function bootstrap(): Bootstrap {
     getCustomerProfile,
     getCustomerOrderStatus,
     getCustomerCommercialSummary,
+    getCustomerPurchasedProducts,
     checkReadiness,
     shutdown: async () => {
       await Promise.all([closeCrmPool(), closePrestashopPool()]);

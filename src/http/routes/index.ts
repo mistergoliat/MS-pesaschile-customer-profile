@@ -2,9 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import type { GetCustomerCommercialSummary } from '../../application/customer-commercial-summary/get-customer-commercial-summary.js';
+import type { GetCustomerPurchasedProducts } from '../../application/customer-purchased-products/get-customer-purchased-products.js';
 import type { GetCustomerOrderStatus } from '../../application/customer-order-status/get-customer-order-status.js';
 import type { GetCustomerProfile } from '../../application/customer-profile/get-customer-profile.js';
 import type { GetCustomerCommercialSummaryResult } from '../../domain/customer-commercial-summary/index.js';
+import type { GetPurchasedProductsInput, GetPurchasedProductsResult } from '../../domain/customer-purchased-products/index.js';
 import type { GetCustomerOrderStatusResult } from '../../domain/customer-order-status/index.js';
 import type { CustomerProfileLookupResult } from '../../domain/customer-profile/index.js';
 import type { CrmReadinessResult } from '../../infrastructure/crm/crm-pool.js';
@@ -44,6 +46,7 @@ export type RouteDependencies = {
   readonly getCustomerProfile: GetCustomerProfile;
   readonly getCustomerOrderStatus: GetCustomerOrderStatus;
   readonly getCustomerCommercialSummary: GetCustomerCommercialSummary;
+  readonly getCustomerPurchasedProducts: GetCustomerPurchasedProducts;
   readonly checkReadiness: ReadinessCheck;
 };
 
@@ -142,6 +145,53 @@ export function buildRoutes(deps: RouteDependencies): Router {
           durationMs: Date.now() - startedAt,
           errorType: classifyErrorForLog(error),
         });
+        response.status(500).json({ error: 'internal_error' });
+      }
+    },
+  );
+
+  router.get(
+    '/v1/customers/:masterCustomerId/purchased-products',
+    async (request: Request, response: Response) => {
+      const parsedParams = masterCustomerIdParams.safeParse(request.params);
+      if (!parsedParams.success) {
+        response.status(400).json({ error: 'invalid_master_customer_id' });
+        return;
+      }
+
+      const parsedQuery = parsePurchasedProductsQuery(request.query);
+      if (!parsedQuery.ok) {
+        response.status(400).json({ error: parsedQuery.error });
+        return;
+      }
+      if (request.body !== undefined) {
+        response.status(400).json({ error: 'unsupported_body' });
+        return;
+      }
+
+      const startedAt = Date.now();
+
+      try {
+        const result = await deps.getCustomerPurchasedProducts({
+          masterCustomerId: parsedParams.data.masterCustomerId,
+          limit: parsedQuery.value.limit,
+          offset: parsedQuery.value.offset,
+        });
+
+        logPurchasedProductsLookup(result, Date.now() - startedAt);
+        response.status(statusForPurchasedProductsResult(result)).json(result);
+      } catch {
+        console.error(
+          {
+            status: 'error',
+            returnedBucket: null,
+            hasMore: null,
+            durationMs: Date.now() - startedAt,
+            degradedReason: null,
+            lookupOutcome: 'internal_error',
+          },
+          'customer purchased products lookup failed',
+        );
         response.status(500).json({ error: 'internal_error' });
       }
     },
@@ -259,6 +309,94 @@ function statusForCommercialSummaryResult(result: GetCustomerCommercialSummaryRe
     case 'degraded':
       return 503;
   }
+}
+
+function statusForPurchasedProductsResult(result: GetPurchasedProductsResult): number {
+  switch (result.status) {
+    case 'available':
+      return 200;
+    case 'customer_not_found':
+    case 'customer_not_linked':
+      return 404;
+    case 'degraded':
+      return 503;
+  }
+}
+
+function logPurchasedProductsLookup(result: GetPurchasedProductsResult, durationMs: number): void {
+  console.info(
+    {
+      status: result.status,
+      returnedBucket: result.status === 'available' ? returnedBucket(result.products.length) : null,
+      hasMore: result.status === 'available' ? result.pagination.hasMore : null,
+      durationMs,
+      degradedReason: result.status === 'degraded' ? result.reason : null,
+      lookupOutcome: result.status,
+    },
+    'customer purchased products lookup',
+  );
+}
+
+function returnedBucket(returned: number): 'zero' | 'one' | 'multiple' {
+  if (returned === 0) return 'zero';
+  if (returned === 1) return 'one';
+  return 'multiple';
+}
+
+type ParsedPurchasedProductsQuery =
+  | {
+      readonly ok: true;
+      readonly value: Pick<GetPurchasedProductsInput, 'limit' | 'offset'>;
+    }
+  | {
+      readonly ok: false;
+      readonly error: 'invalid_limit' | 'invalid_offset' | 'unsupported_query_params';
+    };
+
+function parsePurchasedProductsQuery(query: Request['query']): ParsedPurchasedProductsQuery {
+  const allowedKeys = new Set(['limit', 'offset']);
+  for (const key of Object.keys(query)) {
+    if (!allowedKeys.has(key)) {
+      return { ok: false, error: 'unsupported_query_params' };
+    }
+  }
+
+  const limit = parseOptionalIntegerQueryParam(query.limit, {
+    defaultValue: 20,
+    min: 1,
+    max: 100,
+  });
+  if (limit === null) {
+    return { ok: false, error: 'invalid_limit' };
+  }
+
+  const offset = parseOptionalIntegerQueryParam(query.offset, {
+    defaultValue: 0,
+    min: 0,
+    max: Number.MAX_SAFE_INTEGER,
+  });
+  if (offset === null) {
+    return { ok: false, error: 'invalid_offset' };
+  }
+
+  return { ok: true, value: { limit, offset } };
+}
+
+function parseOptionalIntegerQueryParam(
+  value: unknown,
+  bounds: { readonly defaultValue: number; readonly min: number; readonly max: number },
+): number | null {
+  if (value === undefined) {
+    return bounds.defaultValue;
+  }
+  if (Array.isArray(value) || typeof value !== 'string' || value.length === 0 || !/^\d+$/.test(value)) {
+    return null;
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < bounds.min || parsed > bounds.max) {
+    return null;
+  }
+  return parsed;
 }
 
 function logCommercialSummaryLookup(result: GetCustomerCommercialSummaryResult, durationMs: number): void {
