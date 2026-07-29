@@ -27,3 +27,10 @@ export type {
   GetCustomerCommercialSummaryInput,
   GetCustomerCommercialSummaryResult,
 } from '../domain/customer-commercial-summary/index.js';
+export type {
+  GetPurchasedProductsDegradedReason,
+  GetPurchasedProductsInput,
+  GetPurchasedProductsResult,
+  PurchasedProduct,
+  PurchasedProductsPagination,
+} from '../domain/customer-purchased-products/index.js';
