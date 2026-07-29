@@ -13,3 +13,8 @@ scripts/audits/order-state-semantics/outputs/*
 # never committed. See docs/audits/commercial-summary/.
 scripts/audits/commercial-summary/outputs/*
 !scripts/audits/commercial-summary/outputs/.gitkeep
+
+# CP-R1-T09A audit outputs may contain aggregate real-data counts from a live DB run.
+# never committed. See docs/audits/product-classification/.
+scripts/audits/product-classification/outputs/*
+!scripts/audits/product-classification/outputs/.gitkeep
