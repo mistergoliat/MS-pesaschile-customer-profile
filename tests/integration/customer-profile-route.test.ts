@@ -1,6 +1,7 @@
 import { createServer, type Server } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GetCustomerCommercialSummary } from '../../src/application/customer-commercial-summary/get-customer-commercial-summary.js';
+import type { GetCustomerPurchaseBehavior } from '../../src/application/customer-purchase-behavior/get-customer-purchase-behavior.js';
 import type { GetCustomerPurchasedProducts } from '../../src/application/customer-purchased-products/get-customer-purchased-products.js';
 import type { GetCustomerOrderStatus } from '../../src/application/customer-order-status/get-customer-order-status.js';
 import type { GetCustomerProfile } from '../../src/application/customer-profile/get-customer-profile.js';
@@ -24,6 +25,10 @@ const unreachableGetCustomerPurchasedProducts: GetCustomerPurchasedProducts = as
   throw new Error('getCustomerPurchasedProducts must not be called from the customer profile route tests');
 };
 
+const unreachableGetCustomerPurchaseBehavior: GetCustomerPurchaseBehavior = async () => {
+  throw new Error('getCustomerPurchaseBehavior must not be called from the customer profile route tests');
+};
+
 async function startApp(
   getCustomerProfile: GetCustomerProfile,
   checkReadiness: ReadinessCheck = async () => ({ crm: { status: 'ready' }, prestashop: true }),
@@ -33,6 +38,7 @@ async function startApp(
     getCustomerOrderStatus: unreachableGetCustomerOrderStatus,
     getCustomerCommercialSummary: unreachableGetCustomerCommercialSummary,
     getCustomerPurchasedProducts: unreachableGetCustomerPurchasedProducts,
+    getCustomerPurchaseBehavior: unreachableGetCustomerPurchaseBehavior,
     checkReadiness,
   });
   server = createServer(app);

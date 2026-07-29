@@ -7,6 +7,10 @@ import {
   createGetCustomerPurchasedProducts,
   type GetCustomerPurchasedProducts,
 } from './application/customer-purchased-products/get-customer-purchased-products.js';
+import {
+  createGetCustomerPurchaseBehavior,
+  type GetCustomerPurchaseBehavior,
+} from './application/customer-purchase-behavior/get-customer-purchase-behavior.js';
 import { createGetCustomerProfile, type GetCustomerProfile } from './application/customer-profile/get-customer-profile.js';
 import { config } from './config.js';
 import { checkCrmReadiness, closeCrmPool, getCrmQueryExecutor } from './infrastructure/crm/crm-pool.js';
@@ -20,6 +24,7 @@ import { createMysqlCarriersReader } from './infrastructure/prestashop/mysql-car
 import { createMysqlCommercialOrdersSummaryReader } from './infrastructure/prestashop/mysql-commercial-orders-summary-reader.js';
 import { createMysqlCommercialProductsSummaryReader } from './infrastructure/prestashop/mysql-commercial-products-summary-reader.js';
 import { createMysqlPurchasedProductsReader } from './infrastructure/prestashop/mysql-purchased-products-reader.js';
+import { createMysqlCustomerProductBehaviorReader } from './infrastructure/prestashop/mysql-customer-product-behavior-reader.js';
 import { SystemClock } from './infrastructure/shared/system-clock.js';
 import type { ReadinessCheck } from './http/routes/index.js';
 
@@ -30,6 +35,7 @@ export type Bootstrap = {
   readonly getCustomerOrderStatus: GetCustomerOrderStatus;
   readonly getCustomerCommercialSummary: GetCustomerCommercialSummary;
   readonly getCustomerPurchasedProducts: GetCustomerPurchasedProducts;
+  readonly getCustomerPurchaseBehavior: GetCustomerPurchaseBehavior;
   readonly checkReadiness: ReadinessCheck;
   readonly shutdown: () => Promise<void>;
 };
@@ -62,6 +68,10 @@ export function bootstrap(): Bootstrap {
     config.prestashopDb.prefix,
   );
   const purchasedProductsReader = createMysqlPurchasedProductsReader(
+    getPrestashopQueryExecutor(),
+    config.prestashopDb.prefix,
+  );
+  const customerProductBehaviorReader = createMysqlCustomerProductBehaviorReader(
     getPrestashopQueryExecutor(),
     config.prestashopDb.prefix,
   );
@@ -100,6 +110,12 @@ export function bootstrap(): Bootstrap {
     purchasedProductsReader,
   });
 
+  const getCustomerPurchaseBehavior = createGetCustomerPurchaseBehavior({
+    masterCustomerReader,
+    customerProductBehaviorReader,
+    clock: systemClock,
+  });
+
   const checkReadiness: ReadinessCheck = async () => {
     const [crm, prestashop] = await Promise.all([checkCrmReadiness(), pingPrestashop()]);
     return { crm, prestashop };
@@ -110,6 +126,7 @@ export function bootstrap(): Bootstrap {
     getCustomerOrderStatus,
     getCustomerCommercialSummary,
     getCustomerPurchasedProducts,
+    getCustomerPurchaseBehavior,
     checkReadiness,
     shutdown: async () => {
       await Promise.all([closeCrmPool(), closePrestashopPool()]);
