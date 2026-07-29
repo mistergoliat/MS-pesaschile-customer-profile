@@ -1,6 +1,9 @@
 import { createGetCustomerOrderStatus, type GetCustomerOrderStatus } from './application/customer-order-status/get-customer-order-status.js';
+import {
+  createGetCustomerCommercialSummary,
+  type GetCustomerCommercialSummary,
+} from './application/customer-commercial-summary/get-customer-commercial-summary.js';
 import { createGetCustomerProfile, type GetCustomerProfile } from './application/customer-profile/get-customer-profile.js';
-import type { Clock } from './application/customer-profile/ports.js';
 import { config } from './config.js';
 import { checkCrmReadiness, closeCrmPool, getCrmQueryExecutor } from './infrastructure/crm/crm-pool.js';
 import { createMysqlMasterCustomerReader } from './infrastructure/crm/mysql-master-customer-reader.js';
@@ -10,13 +13,17 @@ import { createMysqlCustomerOrdersReader } from './infrastructure/prestashop/mys
 import { createMysqlOrderStatesReader } from './infrastructure/prestashop/mysql-order-states-reader.js';
 import { createMysqlCustomerOrderStatusReader } from './infrastructure/prestashop/mysql-customer-order-status-reader.js';
 import { createMysqlCarriersReader } from './infrastructure/prestashop/mysql-carriers-reader.js';
+import { createMysqlCommercialOrdersSummaryReader } from './infrastructure/prestashop/mysql-commercial-orders-summary-reader.js';
+import { createMysqlCommercialProductsSummaryReader } from './infrastructure/prestashop/mysql-commercial-products-summary-reader.js';
+import { SystemClock } from './infrastructure/shared/system-clock.js';
 import type { ReadinessCheck } from './http/routes/index.js';
 
-const systemClock: Clock = { now: () => new Date() };
+const systemClock = new SystemClock();
 
 export type Bootstrap = {
   readonly getCustomerProfile: GetCustomerProfile;
   readonly getCustomerOrderStatus: GetCustomerOrderStatus;
+  readonly getCustomerCommercialSummary: GetCustomerCommercialSummary;
   readonly checkReadiness: ReadinessCheck;
   readonly shutdown: () => Promise<void>;
 };
@@ -40,6 +47,14 @@ export function bootstrap(): Bootstrap {
     config.prestashopDb.prefix,
   );
   const carriersReader = createMysqlCarriersReader(getPrestashopQueryExecutor(), config.prestashopDb.prefix);
+  const commercialOrdersSummaryReader = createMysqlCommercialOrdersSummaryReader(
+    getPrestashopQueryExecutor(),
+    config.prestashopDb.prefix,
+  );
+  const commercialProductsSummaryReader = createMysqlCommercialProductsSummaryReader(
+    getPrestashopQueryExecutor(),
+    config.prestashopDb.prefix,
+  );
 
   const getCustomerProfile = createGetCustomerProfile({
     masterCustomerReader,
@@ -63,6 +78,13 @@ export function bootstrap(): Bootstrap {
     carrierShopId: config.customerOrderStatus.carrierShopId,
   });
 
+  const getCustomerCommercialSummary = createGetCustomerCommercialSummary({
+    masterCustomerReader,
+    commercialOrdersSummaryReader,
+    commercialProductsSummaryReader,
+    clock: systemClock,
+  });
+
   const checkReadiness: ReadinessCheck = async () => {
     const [crm, prestashop] = await Promise.all([checkCrmReadiness(), pingPrestashop()]);
     return { crm, prestashop };
@@ -71,6 +93,7 @@ export function bootstrap(): Bootstrap {
   return {
     getCustomerProfile,
     getCustomerOrderStatus,
+    getCustomerCommercialSummary,
     checkReadiness,
     shutdown: async () => {
       await Promise.all([closeCrmPool(), closePrestashopPool()]);

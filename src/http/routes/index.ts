@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
+import type { GetCustomerCommercialSummary } from '../../application/customer-commercial-summary/get-customer-commercial-summary.js';
 import type { GetCustomerOrderStatus } from '../../application/customer-order-status/get-customer-order-status.js';
 import type { GetCustomerProfile } from '../../application/customer-profile/get-customer-profile.js';
+import type { GetCustomerCommercialSummaryResult } from '../../domain/customer-commercial-summary/index.js';
 import type { GetCustomerOrderStatusResult } from '../../domain/customer-order-status/index.js';
 import type { CustomerProfileLookupResult } from '../../domain/customer-profile/index.js';
 import type { CrmReadinessResult } from '../../infrastructure/crm/crm-pool.js';
@@ -41,6 +43,7 @@ export type ReadinessCheck = () => Promise<ReadinessResult>;
 export type RouteDependencies = {
   readonly getCustomerProfile: GetCustomerProfile;
   readonly getCustomerOrderStatus: GetCustomerOrderStatus;
+  readonly getCustomerCommercialSummary: GetCustomerCommercialSummary;
   readonly checkReadiness: ReadinessCheck;
 };
 
@@ -98,6 +101,45 @@ export function buildRoutes(deps: RouteDependencies): Router {
           event: 'customer_profile_request_failed',
           requestId,
           masterCustomerId: parsedParams.data.masterCustomerId,
+          errorType: classifyErrorForLog(error),
+        });
+        response.status(500).json({ error: 'internal_error' });
+      }
+    },
+  );
+
+  router.get(
+    '/v1/customers/:masterCustomerId/commercial-summary',
+    async (request: Request, response: Response) => {
+      const parsedParams = masterCustomerIdParams.safeParse(request.params);
+      if (!parsedParams.success) {
+        response.status(400).json({ error: 'invalid_master_customer_id' });
+        return;
+      }
+      if (Object.keys(request.query).length > 0) {
+        response.status(400).json({ error: 'unsupported_query_params' });
+        return;
+      }
+      if (request.body !== undefined) {
+        response.status(400).json({ error: 'unsupported_body' });
+        return;
+      }
+
+      const startedAt = Date.now();
+
+      try {
+        const result = await deps.getCustomerCommercialSummary({
+          masterCustomerId: parsedParams.data.masterCustomerId,
+        });
+
+        logCommercialSummaryLookup(result, Date.now() - startedAt);
+        response.status(statusForCommercialSummaryResult(result)).json(result);
+      } catch (error) {
+        console.error({
+          event: 'customer_commercial_summary_request_failed',
+          status: 'error',
+          lookupOutcome: 'internal_error',
+          durationMs: Date.now() - startedAt,
           errorType: classifyErrorForLog(error),
         });
         response.status(500).json({ error: 'internal_error' });
@@ -205,6 +247,38 @@ function statusForOrderStatusResult(result: GetCustomerOrderStatusResult): numbe
     case 'degraded':
       return 503;
   }
+}
+
+function statusForCommercialSummaryResult(result: GetCustomerCommercialSummaryResult): number {
+  switch (result.status) {
+    case 'available':
+      return 200;
+    case 'customer_not_found':
+    case 'customer_not_linked':
+      return 404;
+    case 'degraded':
+      return 503;
+  }
+}
+
+function logCommercialSummaryLookup(result: GetCustomerCommercialSummaryResult, durationMs: number): void {
+  console.info(
+    {
+      status: result.status,
+      totalOrdersBucket: result.status === 'available' ? totalOrdersBucket(result.summary.totalOrders) : null,
+      hasCommercialHistory: result.status === 'available' ? result.summary.totalOrders > 0 : false,
+      durationMs,
+      degradedReason: result.status === 'degraded' ? result.reason : null,
+      lookupOutcome: result.status,
+    },
+    'customer commercial summary lookup',
+  );
+}
+
+function totalOrdersBucket(totalOrders: number): 'zero' | 'one' | 'multiple' {
+  if (totalOrders === 0) return 'zero';
+  if (totalOrders === 1) return 'one';
+  return 'multiple';
 }
 
 // CP-R1-T06 section 14: no masterCustomerId, prestashopCustomerId, orderId, reference,
