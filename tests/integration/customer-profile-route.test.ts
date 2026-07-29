@@ -1,5 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { GetCustomerOrderStatus } from '../../src/application/customer-order-status/get-customer-order-status.js';
 import type { GetCustomerProfile } from '../../src/application/customer-profile/get-customer-profile.js';
 import { buildApp } from '../../src/app.js';
 import type { CustomerProfileLookupResult } from '../../src/domain/customer-profile/index.js';
@@ -9,11 +10,19 @@ import type { ReadinessCheck } from '../../src/http/routes/index.js';
 // dependency — the repo already has everything this needs.
 let server: Server | undefined;
 
+const unreachableGetCustomerOrderStatus: GetCustomerOrderStatus = async () => {
+  throw new Error('getCustomerOrderStatus must not be called from the customer profile route tests');
+};
+
 async function startApp(
   getCustomerProfile: GetCustomerProfile,
   checkReadiness: ReadinessCheck = async () => ({ crm: { status: 'ready' }, prestashop: true }),
 ): Promise<string> {
-  const app = buildApp({ getCustomerProfile, checkReadiness });
+  const app = buildApp({
+    getCustomerProfile,
+    getCustomerOrderStatus: unreachableGetCustomerOrderStatus,
+    checkReadiness,
+  });
   server = createServer(app);
   await new Promise<void>((resolve) => {
     server?.listen(0, resolve);

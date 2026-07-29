@@ -26,15 +26,22 @@ Customer Profile incluye hasta N órdenes recientes pagadas según la regla empr
 
 Cada `recentOrder` ahora incluye además `currentState` (CP-R1-T05): el nombre del estado (`ps_order_state_lang.name`, en el idioma configurado por `PRESTASHOP_ORDER_STATE_LANG_ID`) cuando PrestaShop tiene una traducción para ese `currentStateId`, o `{ name: null, resolution: 'unknown' }` si no la tiene — sin que eso degrade el resto del perfil. Ver [`docs/design/CP-R1-T05-order-state-context-read-model.md`](docs/design/CP-R1-T05-order-state-context-read-model.md). El nombre proviene tal cual de PrestaShop: todavía **no** existe interpretación semántica (no hay "despachado"/"entregado" derivado de keywords), ni tracking real, ni la capacidad de que Sales AI consulte cualquier pedido por referencia, teléfono o email. Sigue sin devolver spend agregado, direcciones ni oportunidad activa.
 
+`GET /v1/customers/{masterCustomerId}/orders/{reference}/status` (CP-R1-T06) responde el estado de **una** orden puntual de un cliente: último `currentStateId`/nombre registrado en PrestaShop, `deliveryMethod` (derivado de un mapa de negocio explícito sobre `id_carrier`), un `deliveryEstimate` general declarado por método (nunca una fecha calculada) y `isRealTimeTracking: false` siempre presente. La pertenencia de la orden al cliente se valida en la misma consulta (`id_customer AND reference`); una orden inexistente y una que pertenece a otro cliente producen exactamente el mismo `order_not_found`. No usa `ps_order_history`, no clasifica por keywords ni por flags, no calcula ETA ni feriados, y no integra con ningún Carrier MS. Ver [`docs/releases/CP-R1-T06-customer-order-status-capability.md`](docs/releases/CP-R1-T06-customer-order-status-capability.md).
+
 This endpoint is internal and read-only, with no email-based lookup and no service-to-service authentication yet — it is not fit for public exposure without a gateway/auth layer in front.
 
 `GET /health/ready` checks CRM connectivity *and* minimal schema compatibility (not just "can we connect"): if `master_customer.prestashop_customer_id` is missing, it reports `503 not_ready` with `reason: crm_schema_incompatible` instead of announcing `ready` and only failing on the first real profile request. Logs never contain a raw MySQL driver message (which can include host, port or user) — only a closed set of safe labels such as `crm_unavailable` or `prestashop_timeout`.
 
 ```text
 GET /v1/customers/{masterCustomerId}/profile
+GET /v1/customers/{masterCustomerId}/orders/{reference}/status
 GET /health
 GET /health/ready
 ```
+
+### Environment (CP-R1-T06)
+
+`PRESTASHOP_CARRIER_LANG_ID` / `PRESTASHOP_CARRIER_SHOP_ID` (`ps_carrier_lang.id_lang` / `id_shop`, para leer `delay`): obligatorias, sin default silencioso — deliberadamente independientes de `PRESTASHOP_ORDER_STATE_LANG_ID` aunque puedan terminar apuntando al mismo idioma en la instalación real.
 
 ## Out Of Scope
 

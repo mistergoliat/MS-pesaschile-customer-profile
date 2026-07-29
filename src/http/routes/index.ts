@@ -1,21 +1,35 @@
 import { randomUUID } from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
+import type { GetCustomerOrderStatus } from '../../application/customer-order-status/get-customer-order-status.js';
 import type { GetCustomerProfile } from '../../application/customer-profile/get-customer-profile.js';
+import type { GetCustomerOrderStatusResult } from '../../domain/customer-order-status/index.js';
 import type { CustomerProfileLookupResult } from '../../domain/customer-profile/index.js';
 import type { CrmReadinessResult } from '../../infrastructure/crm/crm-pool.js';
 import { classifyErrorForLog } from '../../observability/classify-error-for-log.js';
 
 // master_customer.id is bigint(20) unsigned: unsigned-integer text only, bounded to a
 // sane length. Never accepts an email — email-based lookup does not exist in this route.
-const masterCustomerIdParams = z.object({
-  masterCustomerId: z
-    .string()
-    .trim()
-    .min(1)
-    .max(20)
-    .regex(/^[0-9]+$/, 'masterCustomerId must be a numeric id'),
-});
+const masterCustomerId = z
+  .string()
+  .trim()
+  .min(1)
+  .max(20)
+  .regex(/^[0-9]+$/, 'masterCustomerId must be a numeric id');
+
+const masterCustomerIdParams = z.object({ masterCustomerId });
+
+// ps_orders.reference is a short alphanumeric PrestaShop-generated code, never an email
+// or a PrestaShop customerId — bounded to a sane length before it ever reaches SQL
+// (mirrors MAX_REFERENCE_LENGTH in mysql-customer-order-status-reader.ts).
+const orderReference = z
+  .string()
+  .trim()
+  .min(1)
+  .max(32)
+  .regex(/^[A-Za-z0-9]+$/, 'reference must be alphanumeric');
+
+const orderStatusParams = z.object({ masterCustomerId, reference: orderReference });
 
 export type ReadinessResult = {
   readonly crm: CrmReadinessResult;
@@ -26,6 +40,7 @@ export type ReadinessCheck = () => Promise<ReadinessResult>;
 
 export type RouteDependencies = {
   readonly getCustomerProfile: GetCustomerProfile;
+  readonly getCustomerOrderStatus: GetCustomerOrderStatus;
   readonly checkReadiness: ReadinessCheck;
 };
 
@@ -90,6 +105,46 @@ export function buildRoutes(deps: RouteDependencies): Router {
     },
   );
 
+  // GET, so there is no request body to validate — only the two path params.
+  // masterCustomerId never accepts an email; reference never accepts a PrestaShop
+  // customerId — both are validated with the same regex-bounded schemas as the
+  // corresponding adapter-level checks (see mysql-customer-order-status-reader.ts).
+  router.get(
+    '/v1/customers/:masterCustomerId/orders/:reference/status',
+    async (request: Request, response: Response) => {
+      const parsedParams = orderStatusParams.safeParse(request.params);
+      if (!parsedParams.success) {
+        const invalidField = parsedParams.error.issues[0]?.path[0];
+        response.status(400).json({
+          error: invalidField === 'reference' ? 'invalid_reference' : 'invalid_master_customer_id',
+        });
+        return;
+      }
+
+      const requestId = randomUUID();
+      const startedAt = Date.now();
+
+      try {
+        const result = await deps.getCustomerOrderStatus({
+          masterCustomerId: parsedParams.data.masterCustomerId,
+          orderReference: parsedParams.data.reference,
+        });
+
+        logOrderStatusLookup(requestId, result, Date.now() - startedAt);
+        response.status(statusForOrderStatusResult(result)).json(result);
+      } catch (error) {
+        // No masterCustomerId, prestashopCustomerId, orderId or reference logged here —
+        // see CP-R1-T06 section 14. Only a safe error classification.
+        console.error({
+          event: 'customer_order_status_request_failed',
+          requestId,
+          errorType: classifyErrorForLog(error),
+        });
+        response.status(500).json({ error: 'internal_error' });
+      }
+    },
+  );
+
   return router;
 }
 
@@ -131,5 +186,42 @@ function logLookup(
           : null,
     },
     'customer profile lookup',
+  );
+}
+
+// available/order_not_found mirror T03's not_found; customer_not_found/customer_not_linked
+// also resolve to 404 — none of them ever return an order payload, and collapsing them
+// onto the same status code as order_not_found avoids leaking a distinction (link state)
+// that a caller has no legitimate use for. degraded reuses T03's convention: both known
+// reasons here are a temporarily unavailable PrestaShop dependency, never a 500.
+function statusForOrderStatusResult(result: GetCustomerOrderStatusResult): number {
+  switch (result.status) {
+    case 'available':
+      return 200;
+    case 'customer_not_found':
+    case 'customer_not_linked':
+    case 'order_not_found':
+      return 404;
+    case 'degraded':
+      return 503;
+  }
+}
+
+// CP-R1-T06 section 14: no masterCustomerId, prestashopCustomerId, orderId, reference,
+// currentStateId, currentStateName, carrierId, carrierName, delay or PII — only the
+// closed set of fields the task allows.
+function logOrderStatusLookup(requestId: string, result: GetCustomerOrderStatusResult, durationMs: number): void {
+  console.info(
+    {
+      requestId,
+      status: result.status,
+      degradedReason: result.status === 'degraded' ? result.reason : null,
+      deliveryMethod: result.status === 'available' ? result.order.deliveryMethod : null,
+      currentStateResolved: result.status === 'available' ? result.order.currentStateName !== null : null,
+      carrierResolved: result.status === 'available' ? !result.warnings.includes('carrier_not_found') : null,
+      warningsCount: result.status === 'available' ? result.warnings.length : 0,
+      durationMs,
+    },
+    'customer order status lookup',
   );
 }

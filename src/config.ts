@@ -37,6 +37,15 @@ const envSchema = z.object({
   // be a silent, unverified assumption baked into every order state translation. Must be
   // set explicitly to the operational language PesasChile actually uses in PrestaShop.
   PRESTASHOP_ORDER_STATE_LANG_ID: z.coerce.number().int().positive(),
+
+  // Deliberately independent from PRESTASHOP_ORDER_STATE_LANG_ID (CP-R1-T06 section 8):
+  // both may end up pointing at the same PrestaShop language in practice, but that is an
+  // operational fact to confirm, not an assumption to bake in by reusing one variable
+  // for two different catalogs. No silent default, same reasoning as above.
+  PRESTASHOP_CARRIER_LANG_ID: z.coerce.number().int().positive(),
+  // ps_carrier_lang is also keyed by id_shop; no prior recorded decision about which
+  // shop PesasChile operates as for carrier delay text, so this must be set explicitly.
+  PRESTASHOP_CARRIER_SHOP_ID: z.coerce.number().int().positive(),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -71,5 +80,9 @@ export const config = {
   customerProfile: {
     recentOrdersLimit: raw.CUSTOMER_PROFILE_RECENT_ORDERS_LIMIT,
     orderStateLanguageId: raw.PRESTASHOP_ORDER_STATE_LANG_ID,
+  },
+  customerOrderStatus: {
+    carrierLanguageId: raw.PRESTASHOP_CARRIER_LANG_ID,
+    carrierShopId: raw.PRESTASHOP_CARRIER_SHOP_ID,
   },
 } as const;
