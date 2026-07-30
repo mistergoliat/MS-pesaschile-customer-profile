@@ -18,3 +18,8 @@ scripts/audits/commercial-summary/outputs/*
 # never committed. See docs/audits/product-classification/.
 scripts/audits/product-classification/outputs/*
 !scripts/audits/product-classification/outputs/.gitkeep
+
+# CP-R1-T10A audit outputs may contain aggregate real-data counts from a live DB run.
+# never committed. See docs/audits/rfm-population/.
+scripts/audits/rfm-population/outputs/*
+!scripts/audits/rfm-population/outputs/.gitkeep
