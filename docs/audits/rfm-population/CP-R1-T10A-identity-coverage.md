@@ -1,0 +1,40 @@
+# CP-R1-T10A Identity Coverage
+
+## Facts
+
+This document describes `RFM_IDENTITY_MODE=master_customer` only (`CP-R1-T10A-identity-mode.md`). When the audit runs with `RFM_IDENTITY_MODE=prestashop_customer` — as this execution did — it does not query CRM or `master_customer` at all, and `identity-coverage.json` is written as a `status: "skipped"` pointer to `prestashop-identity-quality.json` instead. Nothing in this document is claimed true for that provisional mode.
+
+The canonical path (`master_customer` mode) is:
+
+```text
+master_customer -> prestashop_customer_id -> ps_customer -> ps_orders.id_customer
+```
+
+The audit measures:
+
+- masters with PrestaShop link;
+- masters without link;
+- duplicate `prestashop_customer_id` links;
+- PrestaShop customers with valid orders;
+- guest or `id_customer = 0` orders;
+- valid orders and gross spend covered by canonical identity;
+- valid orders and gross spend excluded because identity is not consolidated.
+
+No document should publish emails, RUT, names, phones, addresses, or individual customer/order IDs.
+
+## Interpretations
+
+RFM scores must be attached to a stable public identity. Scoring raw PrestaShop customers first and resolving later risks duplicate or orphaned customer behavior entering percentiles.
+
+## Decisions
+
+- T10 v1 calculates only for canonical `masterCustomerId` records with exactly one confirmed `prestashop_customer_id`.
+- Masters without link are `no_valid_purchases` only if the canonical model has no valid purchase history attached.
+- PrestaShop customers with valid orders but no canonical master are excluded from the snapshot and reported as identity coverage pending.
+- Duplicate `prestashop_customer_id` links abort snapshot publication until resolved or quarantined.
+
+## Follow-up
+
+- After a live audit run in `master_customer` mode, record aggregate percentages of customers, orders, and gross spend excluded by identity coverage.
+- Coordinate identity merge invalidation with the future snapshot pipeline.
+- Use `CP-R1-T10A-master-migration-plan.md` to validate `prestashop_customer`-mode results against this canonical path once `master_customer` is populated.
