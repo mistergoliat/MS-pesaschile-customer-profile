@@ -12,14 +12,14 @@ Same metric value must receive the same score. `NTILE` must not split ties.
 
 ## Interpretations
 
-R and M can use tie-safe percentile rank by distinct value. F should prefer explicit threshold rules because frequency usually has very few distinct values and strong ties around one order.
+R and M can use tie-safe percentile rank by distinct value. F should prefer explicit threshold rules because frequency usually has very few distinct values and strong ties around one order — confirmed by the real distribution (see `CP-R1-T10A-frequency-threshold-simulation.md`), where Models A and B are exactly this kind of explicit threshold rule and Model C is the tie-safe rank alternative kept for comparison.
 
 The RFM code is a compact technical code such as `555`; it is not a commercial segment name.
 
 ## Decisions
 
 - R scoring: tie-safe percentile rank by `recencyDays`.
-- F scoring: versioned discrete thresholds based on the real frequency table.
+- F scoring: versioned discrete thresholds based on the real frequency table; Model B is this run's working reference for temporal-stability measurement, not yet a frozen `rfm-v1` constant.
 - M scoring: tie-safe percentile rank by raw gross spend.
 - RFM code: concatenate R, F, and M after scores are assigned.
 - No named `rfmSegment` is introduced in T10A.
@@ -27,5 +27,5 @@ The RFM code is a compact technical code such as `555`; it is not a commercial s
 
 ## Follow-up
 
-- Use the first approved live distribution to freeze `rfm-v1` threshold constants.
-- Re-run temporal stability at current, -30, -60, and -90 days before release.
+- Use the first approved live distribution to freeze `rfm-v1` threshold constants — this run's `frequency-threshold-simulation.json` and `commercial-validity-analysis.json` are the inputs for that decision, not yet the decision itself.
+- Re-run temporal stability at current, -30, -60, and -90 days before release — done for real in this run (`CP-R1-T10A-temporal-stability.md`); repeat across a wider date spread before freezing.

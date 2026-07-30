@@ -4,12 +4,23 @@
 
 This audit defines a read-only, reproducible RFM population distribution process. It does not implement an RFM endpoint, does not modify runtime contracts, and does not create production snapshots, migrations, writes, or backfills.
 
-The real execution is currently blocked until `master_customer` migration and population are completed. The framework can be committed now; the live aggregate audit remains pending.
+`master_customer` migration and population are still not complete, so this audit cannot yet run under canonical identity. It now supports an explicit `RFM_IDENTITY_MODE` (`CP-R1-T10A-identity-mode.md`): `prestashop_customer` (provisional, no CRM required, used for this execution) or `master_customer` (canonical, unchanged from the original behavior, still blocked). Every output carries `identityMode`/`identityAuthority`/`identityCanonical`/`migrationPending` metadata, and the population-count field was renamed from `totalCanonicalCandidates` to `totalIdentityCandidates` because canonicality cannot be claimed in `prestashop_customer` mode.
 
-Required explicit cutoff:
+This audit was extended (CP-R1-T10A-2) to determine whether `prestashop_customer`-based results are statistically and commercially valid as a *provisional* basis for `rfm-v1` — not whether `ps_customer` is canonical. That extension added:
+
+- `CP-R1-T10A-prestashop-identity-quality.md` — section 2, `ps_customer` data quality (emails, duplicates, thresholds, test/internal patterns), aggregate only, no PII.
+- `CP-R1-T10A-frequency-outlier.md` — section 3, the single highest-frequency customer, profiled in aggregate, never identified.
+- `CP-R1-T10A-multishop.md` — section 4, per-shop population/order/spend/R-F-M facts across the three `id_shop` values present in valid orders.
+- `CP-R1-T10A-frequency-threshold-simulation.md` — section 6, three candidate discrete F-score models (A/B/C), none using `NTILE`.
+- `CP-R1-T10A-commercial-validity.md` — section 8, data-driven answers about whether candidate score groups are commercially distinguishable.
+- `CP-R1-T10A-temporal-stability.md` — section 9, real re-runs at `asOfDate`/`-30d`/`-60d`/`-90d`, not a placeholder.
+- `CP-R1-T10A-master-migration-plan.md` — section 10, a design-only future validation plan against `master_customer`; executes no query.
+
+Required explicit inputs:
 
 ```text
 RFM_AS_OF_DATE=YYYY-MM-DD
+RFM_IDENTITY_MODE=prestashop_customer | master_customer
 ```
 
 Timezone is UTC. The window is:
@@ -34,6 +45,8 @@ Historical inactive customers do not enter active R/F/M percentile calculations 
 RFM is a population model, not a per-request runtime read. The future runtime should read a versioned snapshot by `masterCustomerId`, because score boundaries depend on the full eligible population and must remain stable for a given `modelVersion` and `asOfDate`.
 
 Identity is canonical only when `master_customer.prestashop_customer_id` is confirmed and unique. Unconsolidated PrestaShop history is measured as coverage pending and excluded from T10 v1 scoring.
+
+That canonical-identity statement describes `RFM_IDENTITY_MODE=master_customer` only. In `prestashop_customer` mode, `ps_customer.id_customer` is used directly as a provisional population key: it is valid for building and stress-testing RFM mechanics (distributions, scoring, temporal stability) today, but every result it produces stays marked `identityCanonical: false` until validated against `master_customer` per `CP-R1-T10A-master-migration-plan.md`.
 
 Lifecycle remains separate from RFM. `new_customer`, `active`, `historical_inactive`, and `no_purchase_history` describe customer lifecycle state; R/F/M scores describe relative population rank.
 
@@ -61,10 +74,15 @@ Lifecycle remains separate from RFM. `new_customer`, `active`, `historical_inact
 20. Indexes and batches: verify with `EXPLAIN`; batch the population extraction if a live read-only run exceeds safe timeout or load guardrails.
 21. Future endpoint fields: expose status, modelVersion, calculatedAt, asOfDate, window bounds, metrics, scores, percentiles, and lifecycleStage.
 22. Out of T10: no named commercial RFM segment, no endpoint in T10A, no classification, no writes, no migrations, no backfill.
+23. Identity mode: explicit `RFM_IDENTITY_MODE`, no default — see `CP-R1-T10A-identity-mode.md`.
+24. Multishop treatment: not frozen — see `CP-R1-T10A-multishop.md`.
+25. F cuts: not frozen — three models simulated, none chosen — see `CP-R1-T10A-frequency-threshold-simulation.md`.
+26. Outlier treatment: diagnosed, not excluded from the published population — see `CP-R1-T10A-frequency-outlier.md`.
+27. Conditions to freeze `rfm-v1`: not met by this run (multishop undecided, F cuts unfrozen, outlier treatment unresolved, identity still provisional) — see `decisionsClosed` in `audit-result.json`.
 
 ## Follow-up
 
 - Execute the script only with approved read-only CRM and PrestaShop credentials.
-- Unblock real execution after `master_customer` migration and population are completed.
-- Fill the aggregate output files under ignored `outputs/`.
+- `RFM_IDENTITY_MODE=master_customer` remains blocked until `master_customer` migration and population are completed; execute `CP-R1-T10A-master-migration-plan.md`'s comparison once it is.
+- This audit has now been executed for real under `RFM_IDENTITY_MODE=prestashop_customer`; every output under `outputs/` (ignored, non-productive) reflects that live run — see the extension docs listed in Facts for what each output means and what remains provisional.
 - Review live `EXPLAIN FORMAT=JSON` before implementing the future snapshot job.

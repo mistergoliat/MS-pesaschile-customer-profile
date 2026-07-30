@@ -48,8 +48,11 @@ describe('RFM population audit SQL', () => {
     const activeSql = normalized(activePopulationSql(tables));
 
     expect(populationSql).toContain('O.VALID = 1');
-    expect(populationSql).toContain('COUNT(DISTINCT CASE WHEN O.VALID = 1 THEN O.ID_ORDER ELSE NULL END)');
-    expect(populationSql).toContain('SUM(CASE WHEN O.VALID = 1 THEN O.TOTAL_PAID_TAX_INCL ELSE 0 END)');
+    // CP-R1-T10A-3 correction: lifetime columns are bounded by date_add < windowEndExclusive
+    // — "lifetime" means cumulative history through asOfDate, never unbounded history. See
+    // lib/sql.ts populationDatasetSql and populationDatasetParams.
+    expect(populationSql).toContain('COUNT(DISTINCT CASE WHEN O.VALID = 1 AND O.DATE_ADD < ? THEN O.ID_ORDER ELSE NULL END)');
+    expect(populationSql).toContain('SUM(CASE WHEN O.VALID = 1 AND O.DATE_ADD < ? THEN O.TOTAL_PAID_TAX_INCL ELSE 0 END)');
     expect(activeSql).toContain('WHERE O.VALID = 1 AND O.DATE_ADD >= ? AND O.DATE_ADD < ?');
   });
 

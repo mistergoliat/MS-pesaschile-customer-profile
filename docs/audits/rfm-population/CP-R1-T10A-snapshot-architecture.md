@@ -48,6 +48,8 @@ PrestaShop + master_customer
 
 A snapshot is appropriate because RFM scores are population-relative. Direct runtime calculation would either be expensive or unstable across requests.
 
+The `masterCustomerId` key above describes the future canonical snapshot (`RFM_IDENTITY_MODE=master_customer`). Nothing produced under `RFM_IDENTITY_MODE=prestashop_customer` today is written to this shape, or to any production table — this audit's provisional outputs stay under ignored `outputs/`, keyed by `prestashopCustomerId`, and are not a snapshot. Before a provisional snapshot keyed by `prestashopCustomerId` could ever be considered, it would need its own explicit decision, separate from this document's canonical design.
+
 ## Decisions
 
 - Snapshot frequency: daily.

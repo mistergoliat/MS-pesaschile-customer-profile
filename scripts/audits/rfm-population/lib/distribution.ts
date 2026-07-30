@@ -15,6 +15,7 @@ export type NumericDistribution = {
   readonly p80: number | null;
   readonly p90: number | null;
   readonly p95: number | null;
+  readonly p99: number | null;
   readonly max: number | null;
   readonly mostFrequentValues: readonly ValueFrequency[];
   readonly tieValueCount: number;
@@ -50,6 +51,7 @@ export function describeNumericDistribution(values: readonly number[]): NumericD
     p80: percentile(sorted, 0.8),
     p90: percentile(sorted, 0.9),
     p95: percentile(sorted, 0.95),
+    p99: percentile(sorted, 0.99),
     max: sorted.at(-1) ?? null,
     mostFrequentValues: histogram.sort((a, b) => b.count - a.count || a.value - b.value).slice(0, 10),
     tieValueCount: histogram.filter((entry) => entry.count > 1).length,
@@ -57,6 +59,16 @@ export function describeNumericDistribution(values: readonly number[]): NumericD
 }
 
 export function percentile(sortedAscending: readonly number[], fraction: number): number | null {
+  if (sortedAscending.length === 0) return null;
+  const bounded = Math.min(Math.max(fraction, 0), 1);
+  const index = Math.ceil(bounded * sortedAscending.length) - 1;
+  return sortedAscending[Math.max(index, 0)]!;
+}
+
+// Same rank-by-index approach as percentile(), but over pre-sorted audit-decimal strings
+// (see ./decimal.ts) instead of numbers — used for monetary median/percentile-by-group
+// (CP-R1-T10A section 7/8) without ever parsing the amount through a float.
+export function percentileDecimal(sortedAscending: readonly string[], fraction: number): string | null {
   if (sortedAscending.length === 0) return null;
   const bounded = Math.min(Math.max(fraction, 0), 1);
   const index = Math.ceil(bounded * sortedAscending.length) - 1;

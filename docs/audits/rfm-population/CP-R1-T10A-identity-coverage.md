@@ -2,7 +2,9 @@
 
 ## Facts
 
-The canonical path is:
+This document describes `RFM_IDENTITY_MODE=master_customer` only (`CP-R1-T10A-identity-mode.md`). When the audit runs with `RFM_IDENTITY_MODE=prestashop_customer` — as this execution did — it does not query CRM or `master_customer` at all, and `identity-coverage.json` is written as a `status: "skipped"` pointer to `prestashop-identity-quality.json` instead. Nothing in this document is claimed true for that provisional mode.
+
+The canonical path (`master_customer` mode) is:
 
 ```text
 master_customer -> prestashop_customer_id -> ps_customer -> ps_orders.id_customer
@@ -33,5 +35,6 @@ RFM scores must be attached to a stable public identity. Scoring raw PrestaShop 
 
 ## Follow-up
 
-- After a live audit run, record aggregate percentages of customers, orders, and gross spend excluded by identity coverage.
+- After a live audit run in `master_customer` mode, record aggregate percentages of customers, orders, and gross spend excluded by identity coverage.
 - Coordinate identity merge invalidation with the future snapshot pipeline.
+- Use `CP-R1-T10A-master-migration-plan.md` to validate `prestashop_customer`-mode results against this canonical path once `master_customer` is populated.

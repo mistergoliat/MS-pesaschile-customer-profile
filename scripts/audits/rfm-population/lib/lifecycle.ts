@@ -16,6 +16,17 @@ export function classifyEligibility(lifetimeValidOrderCount: number, windowValid
   return 'no_valid_purchases';
 }
 
+// CP-R1-T10A-3 correction: identifies an identity whose only valid order activity is dated
+// on/after windowEndExclusive. lib/sql.ts's populationDatasetSql now bounds
+// lifetimeValidOrderCount by date_add < windowEndExclusive, so such an identity already has
+// lifetimeValidOrderCount = 0 here — classifyEligibility(0, 0) already resolves it to
+// 'no_valid_purchases' with no special-casing. This flag exists purely so that population
+// can be counted separately (futureOnlyCustomersExcluded) instead of being indistinguishable
+// from an identity that has genuinely never placed a valid order.
+export function isFutureOnlyCustomer(hasFutureOnlyOrderFlag: boolean, lifetimeValidOrderCount: number): boolean {
+  return hasFutureOnlyOrderFlag && lifetimeValidOrderCount === 0;
+}
+
 export function classifyLifecycle(input: LifecycleInput): LifecycleStage {
   if (input.eligibilityStatus === 'no_valid_purchases') return 'no_purchase_history';
   if (input.eligibilityStatus === 'historical_inactive') return 'historical_inactive';

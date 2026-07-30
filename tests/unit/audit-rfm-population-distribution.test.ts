@@ -1,10 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { addAuditDecimals, divideAuditDecimal, formatAuditDecimal } from '../../scripts/audits/rfm-population/lib/decimal.js';
+import { addAuditDecimals, compareAuditDecimalAsc, divideAuditDecimal, formatAuditDecimal } from '../../scripts/audits/rfm-population/lib/decimal.js';
 import {
   describeNumericDistribution,
   frequentFrequencyBuckets,
   monetaryOutlierSummary,
+  percentileDecimal,
   scoreBucketSizes,
   scoreBucketSizesForDecimal,
   scoreTieSafe,
@@ -64,6 +65,20 @@ describe('RFM population audit distribution helpers', () => {
       max: '90.000000',
       top10Share: '0.900000',
     });
+  });
+
+  it('reports p99 alongside the existing percentile set (CP-R1-T10A section 7)', () => {
+    const values = Array.from({ length: 100 }, (_, index) => index + 1); // 1..100
+    const distribution = describeNumericDistribution(values);
+    expect(distribution.p99).toBe(99);
+    expect(distribution.p95).toBe(95);
+  });
+
+  it('computes a decimal-string median/percentile without parsing through float (section 8)', () => {
+    const sorted = ['10.000000', '20.000000', '30.000000'].sort(compareAuditDecimalAsc);
+    expect(percentileDecimal(sorted, 0.5)).toBe('20.000000');
+    expect(percentileDecimal([], 0.5)).toBeNull();
+    expect(percentileDecimal(['5.000000', '15.000000'], 0.5)).toBe('5.000000');
   });
 
   it('does not use parseFloat or Math.round in RFM decimal helpers', () => {
