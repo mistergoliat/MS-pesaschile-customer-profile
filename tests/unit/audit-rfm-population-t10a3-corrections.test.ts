@@ -147,7 +147,7 @@ describe('CP-R1-T10A-3 follow-up audit corrections', () => {
   // the same pattern used elsewhere in this file for SQL text assertions.
   it('commercial-validity-analysis.json basis blocks carry an explicit P0_all_shops populationScope', () => {
     const source = readFileSync('scripts/audits/rfm-population/audit-rfm-population.ts', 'utf8');
-    const fnMatch = source.match(/function buildCommercialValidityAnalysis[\s\S]*?\n}\n/);
+    const fnMatch = source.match(/function buildCommercialValidityAnalysis[\s\S]*?function compareDataDriven/);
     expect(fnMatch).not.toBeNull();
     const fn = fnMatch![0];
     expect(fn).toContain('doesLowRIdentifyRealInactivity');

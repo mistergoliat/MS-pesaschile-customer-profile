@@ -10,7 +10,16 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint . --ext .ts",
     "test": "vitest run --config vitest.config.ts",
-    "audit:rfm-population": "tsx scripts/audits/rfm-population/audit-rfm-population.ts"
+    "audit:rfm-population": "tsx scripts/audits/rfm-population/audit-rfm-population.ts",
+    "audit:rfm-online-sales-scope": "tsx scripts/snapshots/rfm-online-sales-scope-audit.ts",
+    "audit:rfm-order-monetary": "tsx scripts/snapshots/rfm-order-monetary-audit.ts",
+    "audit:rfm-historical-catalog-price": "tsx scripts/snapshots/rfm-historical-catalog-price-reconciliation.ts",
+    "audit:rfm-historical-specific-price-evidence": "tsx scripts/snapshots/rfm-historical-specific-price-evidence.ts",
+    "audit:canonical-analytical-order": "tsx scripts/snapshots/rfm-canonical-analytical-order.ts",
+    "analyze:rfm-use-cases": "tsx scripts/snapshots/rfm-use-case-analysis.ts",
+    "snapshot:rfm": "tsx scripts/snapshots/rfm-snapshot.ts",
+    "snapshot:rfm:source-drift": "tsx scripts/snapshots/rfm-source-drift.ts",
+    "snapshot:rfm:compare-source": "tsx scripts/snapshots/rfm-compare-source-artifacts.ts"
   },
   "keywords": [],
   "author": "",

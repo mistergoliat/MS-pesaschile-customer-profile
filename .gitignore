@@ -23,3 +23,23 @@ scripts/audits/product-classification/outputs/*
 # never committed. See docs/audits/rfm-population/.
 scripts/audits/rfm-population/outputs/*
 !scripts/audits/rfm-population/outputs/.gitkeep
+
+# CP-R1-T11A dry-run snapshot outputs contain aggregate production diagnostics.
+scripts/snapshots/rfm/outputs/*
+!scripts/snapshots/rfm/outputs/.gitkeep
+scripts/snapshots/rfm/validation-outputs/*
+!scripts/snapshots/rfm/validation-outputs/.gitkeep
+scripts/snapshots/rfm/drift-outputs/*
+!scripts/snapshots/rfm/drift-outputs/.gitkeep
+scripts/snapshots/rfm/use-case-outputs/*
+!scripts/snapshots/rfm/use-case-outputs/.gitkeep
+scripts/snapshots/rfm/online-scope-outputs/*
+!scripts/snapshots/rfm/online-scope-outputs/.gitkeep
+scripts/snapshots/rfm/monetary-audit-outputs/*
+!scripts/snapshots/rfm/monetary-audit-outputs/.gitkeep
+scripts/snapshots/rfm/historical-price-outputs/*
+!scripts/snapshots/rfm/historical-price-outputs/.gitkeep
+scripts/snapshots/rfm/canonical-order-outputs/*
+!scripts/snapshots/rfm/canonical-order-outputs/.gitkeep
+scripts/snapshots/rfm/historical-specific-price-outputs/*
+!scripts/snapshots/rfm/historical-specific-price-outputs/.gitkeep
