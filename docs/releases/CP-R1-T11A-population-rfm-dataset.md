@@ -2,6 +2,15 @@
 
 Fecha: 2026-08-03.
 
+> **Superado parcialmente por [CP-R1-T11A4](CP-R1-T11A4-approved-monetary-policy.md)
+> (2026-08-05).** El universo y la formula de Monetary descritos en las
+> secciones "Universo" y "Monetary Gross y Refunds" de este documento ya no
+> son el comportamiento vigente: T11A4 agrego el filtro
+> `total_paid_tax_incl > 0`, la exclusion explicita de 4 cuentas
+> operacionales y el neteo de lineas seller-service. El resto de este
+> documento (ventana, identidad provisional, scoring, snapshot, guardrails)
+> sigue vigente sin cambios.
+
 ## Resumen
 
 CP-R1-T11A introduce un dataset RFM poblacional offline, deterministico,
