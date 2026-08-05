@@ -77,7 +77,7 @@ try {
       distinctShopCount: built.manifest.distinctShopCount,
       distinctCurrencyCount: built.manifest.distinctCurrencyCount,
       distinctConversionRateCount: diagnostics.currency.distinctConversionRateCount,
-      zeroAmountOrderCount: built.manifest.zeroAmountOrderCount,
+      zeroAmountOrderCount: built.manifest.excludedZeroValueOrderCount,
       ordersUpdatedAfterReferenceTime: Number(postReferenceSummary.ordersUpdatedAfterReferenceTime ?? 0),
       sourceChecksum: built.sourceChecksum,
     });

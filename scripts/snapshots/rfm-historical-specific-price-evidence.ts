@@ -14,13 +14,14 @@ import {
   type HistoricalSpecificPriceLineEvidence,
   type HistoricalSpecificPriceLineInput,
 } from '../../src/domain/customer-orders/index.js';
+import { defaultConfirmedSellerServiceProductIds } from '../../src/domain/customer-rfm/seller-service-policy.js';
 
 const referenceTime = requiredUtcReferenceTime('RFM_REFERENCE_TIME');
 const calculationVersion = requiredEnv('RFM_CALCULATION_VERSION');
 const scope = resolveScope();
 const outputDir = path.resolve('scripts/snapshots/rfm/historical-specific-price-outputs');
 const auditQueryTimeoutMs = Number(process.env.RFM_HISTORICAL_SPECIFIC_PRICE_QUERY_TIMEOUT_MS ?? 300_000);
-const sellerServiceProductIds = parseNumberListEnv('RFM_CONFIRMED_SELLER_SERVICE_PRODUCT_IDS', [444]);
+const sellerServiceProductIds = parseNumberListEnv('RFM_CONFIRMED_SELLER_SERVICE_PRODUCT_IDS', defaultConfirmedSellerServiceProductIds);
 const logisticsProductIds = parseNumberListEnv('RFM_CONFIRMED_LOGISTICS_PRODUCT_IDS', []);
 const tablePrefix = config.prestashopDb.prefix;
 const tables = {

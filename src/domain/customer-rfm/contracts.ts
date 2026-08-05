@@ -49,9 +49,34 @@ export type ShopDiagnostics = {
 export type PopulationExclusionDiagnostics = {
   readonly invalidOrderExcludedCount: number;
   readonly futureOrderExcludedCount: number;
-  readonly zeroAmountOrderCount: number;
+  // Orders that were valid but had total_paid_tax_incl <= 0 (neutralized/free orders) and are
+  // therefore excluded from the population, not merely observed. Renamed from the old
+  // non-blocking `zeroAmountOrderCount` diagnostic once the filter became enforced.
+  readonly excludedZeroValueOrderCount: number;
+  // Customers/orders removed by the explicit operational-account policy (see
+  // operational-account-exclusion-policy.ts), measured pre-exclusion so the impact stays
+  // auditable.
+  readonly excludedOperationalAccountCount: number;
+  readonly excludedOperationalAccountOrderCount: number;
+  readonly excludedOperationalAccountValueTaxIncl: string;
   readonly unusableCustomerOrderCount: number;
   readonly missingPrestashopCustomerOrderCount: number;
+};
+
+export type SellerServiceDiagnostics = {
+  readonly policyVersion: string;
+  readonly confirmedProductIds: readonly number[];
+  readonly ordersWithSellerServiceCount: number;
+  readonly sellerServiceLineCount: number;
+  readonly excludedSellerServiceValueTaxIncl: string;
+  readonly grossOrderValueBeforeSellerServiceExclusion: string;
+  readonly monetaryAfterSellerServiceExclusion: string;
+  // Cart rules that target a specific product (ps_cart_rule.reduction_product) matching a
+  // confirmed seller-service product id, applied to an eligible order. If this is ever > 0,
+  // the gross-minus-net subtraction below stops being exact (see docs/releases/
+  // CP-R1-T11A4-approved-monetary-policy.md, "Riesgos pendientes") and the point must be
+  // re-measured before trusting Monetary for those specific orders.
+  readonly productTargetedDiscountOrderCount: number;
 };
 
 export type RfmSnapshotDiagnostics = {
@@ -62,6 +87,7 @@ export type RfmSnapshotDiagnostics = {
   readonly refunds: RefundDiagnostics;
   readonly shops: ShopDiagnostics;
   readonly exclusions: PopulationExclusionDiagnostics;
+  readonly sellerService: SellerServiceDiagnostics;
 };
 
 export type RfmSnapshotManifest = {
@@ -85,21 +111,33 @@ export type RfmSnapshotManifest = {
   readonly calculationTimezone: 'UTC';
   readonly referenceTimeTimezone: 'UTC';
   readonly recencyCalendarPolicy: 'utc-calendar-days-v1';
-  readonly operationalAccountPolicy: 'none';
+  // Monetary policy summary, restated in plain form so a manifest reader never has to infer
+  // scope from the version string alone.
+  readonly monetaryDefinition: string;
+  readonly shippingIncluded: true;
+  readonly sellerServiceExcluded: true;
+  readonly sellerServiceExclusionPolicyVersion: string;
+  readonly operationalAccountPolicyVersion: string;
   readonly historicalCustomerCount: number;
   readonly activeCustomerCount: number;
   readonly scoredCustomerCount: number;
   readonly excludedCustomerCount: number;
+  readonly excludedOperationalAccountCount: number;
   readonly validOrderCount: number;
   readonly grossOrderValueTaxIncl: string;
   readonly currencyCode: string;
   readonly distinctCurrencyCount: number;
   readonly distinctShopCount: number;
-  readonly zeroAmountOrderCount: number;
+  readonly excludedZeroValueOrderCount: number;
   readonly futureOrderExcludedCount: number;
   readonly invalidOrderExcludedCount: number;
   readonly partiallyRefundedOrderCount: number;
   readonly partiallyRefundedAmountObserved: string;
+  readonly ordersWithSellerServiceCount: number;
+  readonly sellerServiceLineCount: number;
+  readonly excludedSellerServiceValueTaxIncl: string;
+  readonly grossOrderValueBeforeSellerServiceExclusion: string;
+  readonly monetaryAfterSellerServiceExclusion: string;
   readonly recencyDistribution: DistributionSummary;
   readonly frequencyDistribution: DistributionSummary;
   readonly monetaryDistribution: DecimalDistributionSummary;
