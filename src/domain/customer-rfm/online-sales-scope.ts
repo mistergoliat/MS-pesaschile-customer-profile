@@ -424,9 +424,24 @@ export function buildRfmDiagnosticsFromOrders(
     exclusions: {
       invalidOrderExcludedCount: 0,
       futureOrderExcludedCount: orders.filter((order) => parseSourceDate(order.validOrderAt).getTime() >= reference.getTime()).length,
-      zeroAmountOrderCount: operationalOrders.filter((order) => formatRfmDecimal(order.grossOrderValueTaxIncl) === '0.000000').length,
+      excludedZeroValueOrderCount: operationalOrders.filter((order) => formatRfmDecimal(order.grossOrderValueTaxIncl) === '0.000000').length,
+      excludedOperationalAccountCount: 0,
+      excludedOperationalAccountOrderCount: 0,
+      excludedOperationalAccountValueTaxIncl: '0.000000',
       unusableCustomerOrderCount: 0,
       missingPrestashopCustomerOrderCount: 0,
+    },
+    // Sales-channel scope audit tool: does not compute seller-service exclusion itself (that
+    // policy is owned by mysql-rfm-population-reader.ts / seller-service-policy.ts).
+    sellerService: {
+      policyVersion: 'not_applicable_to_this_audit_tool',
+      confirmedProductIds: [],
+      ordersWithSellerServiceCount: 0,
+      sellerServiceLineCount: 0,
+      excludedSellerServiceValueTaxIncl: '0.000000',
+      grossOrderValueBeforeSellerServiceExclusion: addRfmDecimals(operationalOrders.map((order) => order.grossOrderValueTaxIncl)),
+      monetaryAfterSellerServiceExclusion: addRfmDecimals(operationalOrders.map((order) => order.grossOrderValueTaxIncl)),
+      productTargetedDiscountOrderCount: 0,
     },
   };
 }

@@ -785,9 +785,26 @@ function diagnosticsForRows(rows: readonly RfmPopulationSourceRow[], orders: rea
     exclusions: {
       invalidOrderExcludedCount: 0,
       futureOrderExcludedCount: 0,
-      zeroAmountOrderCount: orders.filter((order) => compareMoney(order.totalPaidTaxIncl, '0.000000') === 0).length,
+      excludedZeroValueOrderCount: orders.filter((order) => compareMoney(order.totalPaidTaxIncl, '0.000000') === 0).length,
+      excludedOperationalAccountCount: 0,
+      excludedOperationalAccountOrderCount: 0,
+      excludedOperationalAccountValueTaxIncl: '0.000000',
       unusableCustomerOrderCount: 0,
       missingPrestashopCustomerOrderCount: 0,
+    },
+    // This impact-comparison tool measures policies A-E against total_paid_tax_incl; it does
+    // not itself compute the seller-service exclusion diagnostics that the production reader
+    // does (see mysql-rfm-population-reader.ts), so this stays zeroed rather than duplicating
+    // that logic here.
+    sellerService: {
+      policyVersion: 'not_applicable_to_this_audit_tool',
+      confirmedProductIds: [],
+      ordersWithSellerServiceCount: 0,
+      sellerServiceLineCount: 0,
+      excludedSellerServiceValueTaxIncl: '0.000000',
+      grossOrderValueBeforeSellerServiceExclusion: sumMoney(orders.map((order) => order.totalPaidTaxIncl)),
+      monetaryAfterSellerServiceExclusion: sumMoney(orders.map((order) => order.totalPaidTaxIncl)),
+      productTargetedDiscountOrderCount: 0,
     },
   };
 }

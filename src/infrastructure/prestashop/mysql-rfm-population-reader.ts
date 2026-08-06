@@ -3,7 +3,12 @@ import type {
   RfmPopulationSourceRow,
   RfmSnapshotDiagnostics,
 } from '../../domain/customer-rfm/index.js';
-import { formatRfmDecimal } from '../../domain/customer-rfm/index.js';
+import {
+  defaultConfirmedSellerServiceProductIds,
+  excludedOperationalAccountPrestashopCustomerIds,
+  formatRfmDecimal,
+  sellerServiceExclusionPolicyVersion,
+} from '../../domain/customer-rfm/index.js';
 import type { QueryExecutor } from '../shared/query-executor.js';
 import {
   assertSafePrestashopTablePrefix,
@@ -24,8 +29,32 @@ const REQUIRED_COLUMNS = {
   ],
   customer: ['id_customer'],
   currency: ['id_currency', 'iso_code'],
-  order_detail: ['id_order', 'product_quantity_refunded', 'total_refunded_tax_incl'],
+  order_detail: ['id_order', 'product_id', 'total_price_tax_incl', 'product_quantity_refunded', 'total_refunded_tax_incl'],
+  order_cart_rule: ['id_order', 'id_cart_rule'],
+  cart_rule: ['id_cart_rule', 'reduction_product'],
 } as const;
+
+// Every eligible-population query in this reader shares this exact universe definition so
+// Frequency, Monetary, Recency and every diagnostic agree on who/what counts. See
+// docs/releases/CP-R1-T11A4-approved-monetary-policy.md.
+//   - o.valid = 1                                  PrestaShop-confirmed order.
+//   - o.total_paid_tax_incl > 0                     excludes neutralized/free-order zero totals.
+//   - o.id_customer > 0 AND NOT IN (...)            excludes unusable ids and the 4 confirmed
+//                                                    operational accounts (versioned policy,
+//                                                    never a name/email/frequency heuristic).
+//   - seller-service lines subtracted per order      SUM(order_detail.total_price_tax_incl) for
+//                                                    confirmed seller-service product ids,
+//                                                    floored at 0 — shipping stays included
+//                                                    because it is never touched.
+export type RfmPopulationReaderPolicy = {
+  readonly confirmedSellerServiceProductIds: readonly number[];
+  readonly excludedOperationalAccountPrestashopCustomerIds: readonly number[];
+};
+
+export const defaultRfmPopulationReaderPolicy: RfmPopulationReaderPolicy = {
+  confirmedSellerServiceProductIds: defaultConfirmedSellerServiceProductIds,
+  excludedOperationalAccountPrestashopCustomerIds,
+};
 
 export type RfmPopulationReader = {
   verifySchema(): Promise<void>;
@@ -44,14 +73,69 @@ type PopulationRow = RowDataPacket & {
 
 type DiagnosticsRow = RowDataPacket & Record<string, string | number | null>;
 
-export function createMysqlRfmPopulationReader(executor: QueryExecutor, tablePrefix: string): RfmPopulationReader {
+export function createMysqlRfmPopulationReader(
+  executor: QueryExecutor,
+  tablePrefix: string,
+  policy: RfmPopulationReaderPolicy = defaultRfmPopulationReaderPolicy,
+): RfmPopulationReader {
   assertSafePrestashopTablePrefix(tablePrefix);
   const tables = {
     orders: `${tablePrefix}orders`,
     customer: `${tablePrefix}customer`,
     currency: `${tablePrefix}currency`,
     orderDetail: `${tablePrefix}order_detail`,
+    orderCartRule: `${tablePrefix}order_cart_rule`,
+    cartRule: `${tablePrefix}cart_rule`,
   };
+  const sellerServiceIds = [...policy.confirmedSellerServiceProductIds];
+  const excludedAccountIds = [...policy.excludedOperationalAccountPrestashopCustomerIds];
+  if (sellerServiceIds.length === 0) {
+    throw new Error('RFM population reader requires at least one confirmed seller-service product id');
+  }
+  if (excludedAccountIds.length === 0) {
+    throw new Error('RFM population reader requires at least one excluded operational account id');
+  }
+  const sellerServicePlaceholders = sellerServiceIds.map(() => '?').join(', ');
+  const excludedAccountPlaceholders = excludedAccountIds.map(() => '?').join(', ');
+
+  const sellerServiceByOrderCte = `
+    seller_service_by_order AS (
+      SELECT
+        od.id_order,
+        SUM(od.total_price_tax_incl) AS seller_service_tax_incl
+      FROM ${tables.orderDetail} od
+      WHERE od.product_id IN (${sellerServicePlaceholders})
+      GROUP BY od.id_order
+    )
+  `;
+
+  // windowStart/windowEnd (2 placeholders) must be appended by the caller, in that order,
+  // after sellerServiceIds and excludedAccountIds.
+  const eligibleOrdersCte = `
+    eligible_orders AS (
+      SELECT
+        o.id_order,
+        o.id_customer,
+        o.date_add,
+        o.id_shop,
+        o.id_currency,
+        o.conversion_rate,
+        o.total_paid_tax_incl,
+        COALESCE(sso.seller_service_tax_incl, 0) AS seller_service_tax_incl,
+        GREATEST(o.total_paid_tax_incl - COALESCE(sso.seller_service_tax_incl, 0), 0) AS eligible_order_monetary_tax_incl
+      FROM ${tables.orders} o
+      INNER JOIN ${tables.customer} c
+        ON c.id_customer = o.id_customer
+      LEFT JOIN seller_service_by_order sso
+        ON sso.id_order = o.id_order
+      WHERE o.valid = 1
+        AND o.total_paid_tax_incl > 0
+        AND o.id_customer > 0
+        AND o.id_customer NOT IN (${excludedAccountPlaceholders})
+        AND o.date_add >= ?
+        AND o.date_add < ?
+    )
+  `;
 
   return {
     async verifySchema() {
@@ -60,6 +144,8 @@ export function createMysqlRfmPopulationReader(executor: QueryExecutor, tablePre
         await verifyRequiredTable(executor, tables.customer, REQUIRED_COLUMNS.customer);
         await verifyRequiredTable(executor, tables.currency, REQUIRED_COLUMNS.currency);
         await verifyRequiredTable(executor, tables.orderDetail, REQUIRED_COLUMNS.order_detail);
+        await verifyRequiredTable(executor, tables.orderCartRule, REQUIRED_COLUMNS.order_cart_rule);
+        await verifyRequiredTable(executor, tables.cartRule, REQUIRED_COLUMNS.cart_rule);
       } catch (error) {
         throw mapPrestashopReadError(error);
       }
@@ -67,48 +153,24 @@ export function createMysqlRfmPopulationReader(executor: QueryExecutor, tablePre
 
     async readPopulation(windowStartInclusive, windowEndExclusive) {
       const sql = `
-        WITH active_customers AS (
-          SELECT DISTINCT o.id_customer
-          FROM ${tables.orders} o
-          INNER JOIN ${tables.customer} c
-            ON c.id_customer = o.id_customer
-          WHERE o.valid = 1
-            AND o.id_customer > 0
-            AND o.date_add >= ?
-            AND o.date_add < ?
-        )
+        WITH ${sellerServiceByOrderCte},
+        ${eligibleOrdersCte}
         SELECT
-          ac.id_customer AS prestashopCustomerId,
-          MIN(CASE WHEN o.date_add >= ? AND o.date_add < ? THEN o.date_add ELSE NULL END) AS firstValidOrderAt,
-          MAX(o.date_add) AS lastValidOrderAt,
-          COUNT(DISTINCT CASE WHEN o.date_add >= ? AND o.date_add < ? THEN o.id_order ELSE NULL END)
-            AS frequencyOrders,
-          COALESCE(
-            SUM(CASE WHEN o.date_add >= ? AND o.date_add < ? THEN o.total_paid_tax_incl ELSE 0 END),
-            0
-          ) AS grossOrderValueTaxIncl,
-          COUNT(DISTINCT CASE WHEN o.date_add >= ? AND o.date_add < ? THEN o.id_shop ELSE NULL END)
-            AS distinctShopCount
-        FROM active_customers ac
-        INNER JOIN ${tables.orders} o
-          ON o.id_customer = ac.id_customer
-         AND o.valid = 1
-         AND o.date_add < ?
-        GROUP BY ac.id_customer
-        ORDER BY ac.id_customer ASC
+          eo.id_customer AS prestashopCustomerId,
+          MIN(eo.date_add) AS firstValidOrderAt,
+          MAX(eo.date_add) AS lastValidOrderAt,
+          COUNT(DISTINCT eo.id_order) AS frequencyOrders,
+          COALESCE(SUM(eo.eligible_order_monetary_tax_incl), 0) AS grossOrderValueTaxIncl,
+          COUNT(DISTINCT eo.id_shop) AS distinctShopCount
+        FROM eligible_orders eo
+        GROUP BY eo.id_customer
+        ORDER BY eo.id_customer ASC
       `;
       try {
         const rows = await executor.execute(sql, [
+          ...sellerServiceIds,
+          ...excludedAccountIds,
           windowStartInclusive,
-          windowEndExclusive,
-          windowStartInclusive,
-          windowEndExclusive,
-          windowStartInclusive,
-          windowEndExclusive,
-          windowStartInclusive,
-          windowEndExclusive,
-          windowStartInclusive,
-          windowEndExclusive,
           windowEndExclusive,
         ]);
         return (rows as PopulationRow[]).map(toPopulationSourceRow);
@@ -119,29 +181,40 @@ export function createMysqlRfmPopulationReader(executor: QueryExecutor, tablePre
 
     async readDiagnostics(windowStartInclusive, windowEndExclusive) {
       try {
+        // Consolidated into 5 concurrent queries (not one per concern) so this stays inside
+        // the connection pool's concurrency limit — 8-11 concurrent CTE-heavy queries here
+        // queued for a free connection long enough to blow the per-query timeout even though
+        // no single query was slow on its own.
         const [
           historical,
-          totals,
-          currency,
+          summary,
           refunds,
           shopRows,
-          crossShop,
-          customerQuality,
+          rawExclusions,
         ] = await Promise.all([
+          // Historical: same eligibility filters (amount + account, no seller-service
+          // subtraction needed for a plain customer count), unbounded window start — "how many
+          // customers have ever placed an eligible order before this snapshot".
           one(executor, `
             SELECT COUNT(DISTINCT o.id_customer) AS historicalCustomerCount
             FROM ${tables.orders} o
             INNER JOIN ${tables.customer} c
               ON c.id_customer = o.id_customer
             WHERE o.valid = 1
+              AND o.total_paid_tax_incl > 0
               AND o.id_customer > 0
+              AND o.id_customer NOT IN (${excludedAccountPlaceholders})
               AND o.date_add < ?
-          `, [windowEndExclusive]),
+          `, [...excludedAccountIds, windowEndExclusive]),
+
+          // Totals, currency, seller-service and cross-shop diagnostics for the eligible
+          // (post-filter, post-seller-service) population, in one pass over eligible_orders.
           one(executor, `
+            WITH ${sellerServiceByOrderCte},
+            ${eligibleOrdersCte}
             SELECT
-              COUNT(DISTINCT o.id_order) AS validOrderCount,
-              COALESCE(SUM(o.total_paid_tax_incl), 0) AS grossOrderValueTaxIncl,
-              COALESCE(SUM(CASE WHEN o.total_paid_tax_incl = 0 THEN 1 ELSE 0 END), 0) AS zeroAmountOrderCount,
+              COUNT(DISTINCT eo.id_order) AS validOrderCount,
+              COALESCE(SUM(eo.eligible_order_monetary_tax_incl), 0) AS grossOrderValueTaxIncl,
               (
                 SELECT COUNT(*)
                 FROM ${tables.orders} invalid_orders
@@ -156,94 +229,113 @@ export function createMysqlRfmPopulationReader(executor: QueryExecutor, tablePre
                 WHERE future_orders.valid = 1
                   AND future_orders.id_customer > 0
                   AND future_orders.date_add >= ?
-              ) AS futureOrderExcludedCount
-            FROM ${tables.orders} o
-            INNER JOIN ${tables.customer} c
-              ON c.id_customer = o.id_customer
-            WHERE o.valid = 1
-              AND o.id_customer > 0
-              AND o.date_add >= ?
-              AND o.date_add < ?
-          `, [windowStartInclusive, windowEndExclusive, windowEndExclusive, windowStartInclusive, windowEndExclusive]),
+              ) AS futureOrderExcludedCount,
+              COUNT(DISTINCT eo.id_currency) AS distinctCurrencyCount,
+              MIN(cur.iso_code) AS currencyCode,
+              COUNT(DISTINCT eo.conversion_rate) AS distinctConversionRateCount,
+              COUNT(DISTINCT CASE WHEN eo.seller_service_tax_incl > 0 THEN eo.id_order END) AS ordersWithSellerServiceCount,
+              COALESCE(SUM(eo.seller_service_tax_incl), 0) AS excludedSellerServiceValueTaxIncl,
+              COALESCE(SUM(eo.total_paid_tax_incl), 0) AS grossOrderValueBeforeSellerServiceExclusion,
+              (
+                SELECT COUNT(*)
+                FROM ${tables.orderDetail} sod
+                INNER JOIN eligible_orders eo2 ON eo2.id_order = sod.id_order
+                WHERE sod.product_id IN (${sellerServicePlaceholders})
+              ) AS sellerServiceLineCount,
+              (
+                SELECT COUNT(DISTINCT ocr.id_order)
+                FROM ${tables.orderCartRule} ocr
+                INNER JOIN ${tables.cartRule} cr
+                  ON cr.id_cart_rule = ocr.id_cart_rule
+                INNER JOIN eligible_orders eo3
+                  ON eo3.id_order = ocr.id_order
+                WHERE cr.reduction_product IN (${sellerServicePlaceholders})
+              ) AS productTargetedDiscountOrderCount,
+              (
+                SELECT COUNT(*)
+                FROM (
+                  SELECT id_customer
+                  FROM eligible_orders
+                  GROUP BY id_customer
+                  HAVING COUNT(DISTINCT id_shop) > 1
+                ) cross_shop
+              ) AS crossShopCustomers
+            FROM eligible_orders eo
+            LEFT JOIN ${tables.currency} cur
+              ON cur.id_currency = eo.id_currency
+          `, [
+            ...sellerServiceIds,
+            ...excludedAccountIds,
+            windowStartInclusive,
+            windowEndExclusive,
+            windowStartInclusive,
+            windowEndExclusive,
+            windowEndExclusive,
+            ...sellerServiceIds,
+            ...sellerServiceIds,
+          ]),
+
           one(executor, `
-            SELECT
-              COUNT(DISTINCT o.id_currency) AS distinctCurrencyCount,
-              MIN(c.iso_code) AS currencyCode,
-              COUNT(DISTINCT o.conversion_rate) AS distinctConversionRateCount
-            FROM ${tables.orders} o
-            INNER JOIN ${tables.customer} pc
-              ON pc.id_customer = o.id_customer
-            LEFT JOIN ${tables.currency} c
-              ON c.id_currency = o.id_currency
-            WHERE o.valid = 1
-              AND o.id_customer > 0
-              AND o.date_add >= ?
-              AND o.date_add < ?
-          `, [windowStartInclusive, windowEndExclusive]),
-          one(executor, `
+            WITH ${sellerServiceByOrderCte},
+            ${eligibleOrdersCte}
             SELECT
               COALESCE(SUM(CASE WHEN od.product_quantity_refunded > 0 THEN 1 ELSE 0 END), 0) AS refundedLineCount,
               COUNT(DISTINCT CASE
                 WHEN od.product_quantity_refunded > 0 OR od.total_refunded_tax_incl > 0
-                THEN o.id_order
+                THEN eo.id_order
                 ELSE NULL
               END) AS partiallyRefundedOrderCount,
               COALESCE(SUM(od.total_refunded_tax_incl), 0) AS partiallyRefundedAmountObserved
-            FROM ${tables.orders} o
-            INNER JOIN ${tables.customer} c
-              ON c.id_customer = o.id_customer
+            FROM eligible_orders eo
             INNER JOIN ${tables.orderDetail} od
-              ON od.id_order = o.id_order
-            WHERE o.valid = 1
-              AND o.id_customer > 0
-              AND o.date_add >= ?
-              AND o.date_add < ?
-          `, [windowStartInclusive, windowEndExclusive]),
+              ON od.id_order = eo.id_order
+          `, [...sellerServiceIds, ...excludedAccountIds, windowStartInclusive, windowEndExclusive]),
+
           executor.execute(`
+            WITH ${sellerServiceByOrderCte},
+            ${eligibleOrdersCte}
             SELECT
-              o.id_shop AS shopId,
-              COUNT(DISTINCT o.id_customer) AS customers,
-              COUNT(DISTINCT o.id_order) AS orders,
-              COALESCE(SUM(o.total_paid_tax_incl), 0) AS grossOrderValueTaxIncl
-            FROM ${tables.orders} o
-            INNER JOIN ${tables.customer} c
-              ON c.id_customer = o.id_customer
-            WHERE o.valid = 1
-              AND o.id_customer > 0
-              AND o.date_add >= ?
-              AND o.date_add < ?
-            GROUP BY o.id_shop
-            ORDER BY o.id_shop ASC
-          `, [windowStartInclusive, windowEndExclusive]),
-          one(executor, `
-            SELECT
-              COUNT(*) AS crossShopCustomers
-            FROM (
-              SELECT o.id_customer, COUNT(DISTINCT o.id_shop) AS shopCount
-              FROM ${tables.orders} o
-              INNER JOIN ${tables.customer} c
-                ON c.id_customer = o.id_customer
-              WHERE o.valid = 1
-                AND o.id_customer > 0
-                AND o.date_add >= ?
-                AND o.date_add < ?
-              GROUP BY o.id_customer
-              HAVING shopCount > 1
-            ) cross_shop
-          `, [windowStartInclusive, windowEndExclusive]),
+              eo.id_shop AS shopId,
+              COUNT(DISTINCT eo.id_customer) AS customers,
+              COUNT(DISTINCT eo.id_order) AS orders,
+              COALESCE(SUM(eo.eligible_order_monetary_tax_incl), 0) AS grossOrderValueTaxIncl
+            FROM eligible_orders eo
+            GROUP BY eo.id_shop
+            ORDER BY eo.id_shop ASC
+          `, [...sellerServiceIds, ...excludedAccountIds, windowStartInclusive, windowEndExclusive]),
+
+          // Raw (non-CTE) diagnostics scanning ps_orders once: the data-quality guardrail is
+          // deliberately unaffected by amount/account policy (a bad customer reference must
+          // abort regardless of whether that order would later be filtered for other reasons);
+          // the zero-value and operational-account counts are deliberately pre-filter/pre- or
+          // partially-pre-exclusion so their impact stays measurable.
           one(executor, `
             SELECT
               COALESCE(SUM(CASE WHEN o.id_customer IS NULL OR o.id_customer <= 0 THEN 1 ELSE 0 END), 0)
                 AS unusableCustomerOrderCount,
               COALESCE(SUM(CASE WHEN o.id_customer > 0 AND c.id_customer IS NULL THEN 1 ELSE 0 END), 0)
-                AS missingPrestashopCustomerOrderCount
+                AS missingPrestashopCustomerOrderCount,
+              COALESCE(SUM(CASE WHEN o.id_customer > 0 AND o.total_paid_tax_incl <= 0 THEN 1 ELSE 0 END), 0)
+                AS excludedZeroValueOrderCount,
+              COUNT(DISTINCT CASE
+                WHEN o.total_paid_tax_incl > 0 AND o.id_customer IN (${excludedAccountPlaceholders})
+                THEN o.id_customer
+              END) AS excludedOperationalAccountCount,
+              COUNT(DISTINCT CASE
+                WHEN o.total_paid_tax_incl > 0 AND o.id_customer IN (${excludedAccountPlaceholders})
+                THEN o.id_order
+              END) AS excludedOperationalAccountOrderCount,
+              COALESCE(SUM(CASE
+                WHEN o.total_paid_tax_incl > 0 AND o.id_customer IN (${excludedAccountPlaceholders})
+                THEN o.total_paid_tax_incl ELSE 0
+              END), 0) AS excludedOperationalAccountValueTaxIncl
             FROM ${tables.orders} o
             LEFT JOIN ${tables.customer} c
               ON c.id_customer = o.id_customer
             WHERE o.valid = 1
               AND o.date_add >= ?
               AND o.date_add < ?
-          `, [windowStartInclusive, windowEndExclusive]),
+          `, [...excludedAccountIds, ...excludedAccountIds, ...excludedAccountIds, windowStartInclusive, windowEndExclusive]),
         ]);
 
         const perShop = (shopRows as DiagnosticsRow[]).map((row) => ({
@@ -255,13 +347,13 @@ export function createMysqlRfmPopulationReader(executor: QueryExecutor, tablePre
 
         return {
           historicalCustomerCount: coerceNonNegativeSafeInteger(historical.historicalCustomerCount, 'historicalCustomerCount'),
-          validOrderCount: coerceNonNegativeSafeInteger(totals.validOrderCount, 'validOrderCount'),
-          grossOrderValueTaxIncl: formatRfmDecimal(String(totals.grossOrderValueTaxIncl ?? '0')),
+          validOrderCount: coerceNonNegativeSafeInteger(summary.validOrderCount, 'validOrderCount'),
+          grossOrderValueTaxIncl: formatRfmDecimal(String(summary.grossOrderValueTaxIncl ?? '0')),
           currency: {
-            distinctCurrencyCount: coerceNonNegativeSafeInteger(currency.distinctCurrencyCount, 'distinctCurrencyCount'),
-            currencyCode: coerceNullableNonEmptyString(currency.currencyCode, 'currencyCode'),
+            distinctCurrencyCount: coerceNonNegativeSafeInteger(summary.distinctCurrencyCount, 'distinctCurrencyCount'),
+            currencyCode: coerceNullableNonEmptyString(summary.currencyCode, 'currencyCode'),
             distinctConversionRateCount: coerceNonNegativeSafeInteger(
-              currency.distinctConversionRateCount,
+              summary.distinctConversionRateCount,
               'distinctConversionRateCount',
             ),
           },
@@ -276,25 +368,64 @@ export function createMysqlRfmPopulationReader(executor: QueryExecutor, tablePre
           shops: {
             distinctShopCount: perShop.length,
             perShop,
-            crossShopCustomers: coerceNonNegativeSafeInteger(crossShop.crossShopCustomers, 'crossShopCustomers'),
+            crossShopCustomers: coerceNonNegativeSafeInteger(summary.crossShopCustomers, 'crossShopCustomers'),
           },
           exclusions: {
             invalidOrderExcludedCount: coerceNonNegativeSafeInteger(
-              totals.invalidOrderExcludedCount,
+              summary.invalidOrderExcludedCount,
               'invalidOrderExcludedCount',
             ),
             futureOrderExcludedCount: coerceNonNegativeSafeInteger(
-              totals.futureOrderExcludedCount,
+              summary.futureOrderExcludedCount,
               'futureOrderExcludedCount',
             ),
-            zeroAmountOrderCount: coerceNonNegativeSafeInteger(totals.zeroAmountOrderCount, 'zeroAmountOrderCount'),
+            excludedZeroValueOrderCount: coerceNonNegativeSafeInteger(
+              rawExclusions.excludedZeroValueOrderCount,
+              'excludedZeroValueOrderCount',
+            ),
+            excludedOperationalAccountCount: coerceNonNegativeSafeInteger(
+              rawExclusions.excludedOperationalAccountCount,
+              'excludedOperationalAccountCount',
+            ),
+            excludedOperationalAccountOrderCount: coerceNonNegativeSafeInteger(
+              rawExclusions.excludedOperationalAccountOrderCount,
+              'excludedOperationalAccountOrderCount',
+            ),
+            excludedOperationalAccountValueTaxIncl: formatRfmDecimal(
+              String(rawExclusions.excludedOperationalAccountValueTaxIncl ?? '0'),
+            ),
             unusableCustomerOrderCount: coerceNonNegativeSafeInteger(
-              customerQuality.unusableCustomerOrderCount,
+              rawExclusions.unusableCustomerOrderCount,
               'unusableCustomerOrderCount',
             ),
             missingPrestashopCustomerOrderCount: coerceNonNegativeSafeInteger(
-              customerQuality.missingPrestashopCustomerOrderCount,
+              rawExclusions.missingPrestashopCustomerOrderCount,
               'missingPrestashopCustomerOrderCount',
+            ),
+          },
+          sellerService: {
+            policyVersion: sellerServiceExclusionPolicyVersion,
+            confirmedProductIds: sellerServiceIds,
+            ordersWithSellerServiceCount: coerceNonNegativeSafeInteger(
+              summary.ordersWithSellerServiceCount,
+              'ordersWithSellerServiceCount',
+            ),
+            sellerServiceLineCount: coerceNonNegativeSafeInteger(
+              summary.sellerServiceLineCount,
+              'sellerServiceLineCount',
+            ),
+            excludedSellerServiceValueTaxIncl: formatRfmDecimal(
+              String(summary.excludedSellerServiceValueTaxIncl ?? '0'),
+            ),
+            grossOrderValueBeforeSellerServiceExclusion: formatRfmDecimal(
+              String(summary.grossOrderValueBeforeSellerServiceExclusion ?? '0'),
+            ),
+            // Equal to grossOrderValueTaxIncl above by construction (same eligible_order_
+            // monetary_tax_incl sum) — not recomputed as a separate column.
+            monetaryAfterSellerServiceExclusion: formatRfmDecimal(String(summary.grossOrderValueTaxIncl ?? '0')),
+            productTargetedDiscountOrderCount: coerceNonNegativeSafeInteger(
+              summary.productTargetedDiscountOrderCount,
+              'productTargetedDiscountOrderCount',
             ),
           },
         } satisfies RfmSnapshotDiagnostics;

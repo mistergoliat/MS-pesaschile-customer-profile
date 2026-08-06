@@ -1,5 +1,15 @@
 # CP-R1-T10A-3 Operational Account Policy
 
+> **Superseded by [CP-R1-T11A4](../../releases/CP-R1-T11A4-approved-monetary-policy.md)
+> (2026-08-05).** The three-signal heuristic below was never wired into
+> production and required manual back-office review before becoming a
+> standing rule (see Decisions #4). T11A4 replaced it with an explicit,
+> evidence-backed 4-id exclusion list (`operational-account-exclusion-v1`),
+> per the audit brief's explicit instruction not to exclude accounts by
+> heuristic. The three signals documented here remain useful as a *detector*
+> for flagging future candidate operational accounts for manual review — they
+> are not an active exclusion filter.
+
 ## Facts
 
 Policy version `operational-account-v1` (`lib/operational-signals.ts`, output `operational-account-policy.json`). It never excludes an account on `frequencyOrders > N` alone. Three aggregate, explainable signals are computed per account from lifetime, per-shop data:

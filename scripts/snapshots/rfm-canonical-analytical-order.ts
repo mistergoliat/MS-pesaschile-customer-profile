@@ -21,6 +21,7 @@ import {
   type RawPrestaShopOrderDiscount,
   type RawPrestaShopOrderLine,
 } from '../../src/domain/customer-orders/index.js';
+import { defaultConfirmedSellerServiceProductIds } from '../../src/domain/customer-rfm/seller-service-policy.js';
 
 const referenceTime = requiredUtcReferenceTime('RFM_REFERENCE_TIME');
 const calculationVersion = requiredEnv('RFM_CALCULATION_VERSION');
@@ -51,7 +52,7 @@ const pool = mysql.createPool({
 try {
   await mkdir(outputDir, { recursive: true });
   const rawOrders = await readOrders();
-  const sellerServiceProductIds = parseNumberListEnv('RFM_CONFIRMED_SELLER_SERVICE_PRODUCT_IDS', [444]);
+  const sellerServiceProductIds = parseNumberListEnv('RFM_CONFIRMED_SELLER_SERVICE_PRODUCT_IDS', defaultConfirmedSellerServiceProductIds);
   const genericCustomerIds = parseNumberListEnv('RFM_CONFIRMED_GENERIC_CUSTOMER_IDS', inferGenericCustomerIds(rawOrders, sellerServiceProductIds));
   const policies = defaultAnalyticalOrderPolicies({
     genericCustomerIds,

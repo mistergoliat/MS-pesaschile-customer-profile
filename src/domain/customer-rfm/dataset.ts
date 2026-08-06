@@ -6,6 +6,8 @@ import {
 } from './decimal.js';
 import { recencyCalendarDays } from './date-window.js';
 import { sha256Stable } from './checksum.js';
+import { operationalAccountExclusionPolicyVersion } from './operational-account-exclusion-policy.js';
+import { sellerServiceExclusionPolicyVersion } from './seller-service-policy.js';
 import {
   buildRfmCode,
   defaultFrequencyThresholds,
@@ -29,12 +31,19 @@ export const rfmCalculationVersionDefault = 'rfm-population-v1';
 export const identityAuthority = 'prestashop_customer';
 export const identityAuthorityVersion = 'prestashop-customer-v1';
 export const populationScope = 'all_valid_prestashop_shops';
-export const populationPolicyVersion = 'active-365-valid-prestashop-customer-v1';
-export const monetaryPolicyVersion = 'gross-order-value-tax-incl-v1';
+// v2: population now also requires total_paid_tax_incl > 0 (excludes neutralized/free
+// orders) and excludes the 4 confirmed operational accounts — see
+// docs/releases/CP-R1-T11A4-approved-monetary-policy.md.
+export const populationPolicyVersion = 'active-365-valid-prestashop-customer-v2';
+// v2: same total_paid_tax_incl base as v1 (shipping/wrapping/discounts/IVA stay included),
+// minus the net value of confirmed seller-service lines, floored at 0.
+export const monetaryPolicyVersion = 'gross-order-value-tax-incl-minus-seller-service-v2';
+export const monetaryDefinition = 'total_paid_tax_incl (IVA y shipping incluidos) menos el valor historico de lineas seller-service confirmadas, sin bajar de 0';
 export const refundPolicyVersion = 'gross-valid-orders-v1';
 export const currencyPolicyVersion = 'single-source-currency-v1';
 export const scoringPolicyVersion = `r-tie-safe-percent-rank-v1__${frequencyScoringPolicyVersion}__m-tie-safe-percent-rank-v1`;
 export const checksumVersion = 'rfm-checksum-canonical-json-v1';
+export { operationalAccountExclusionPolicyVersion, sellerServiceExclusionPolicyVersion };
 
 export type BuildRfmSnapshotInput = {
   readonly referenceTime: string;
@@ -143,21 +152,31 @@ export function buildRfmSnapshotDataset(input: BuildRfmSnapshotInput): BuiltRfmS
     calculationTimezone: 'UTC',
     referenceTimeTimezone: 'UTC',
     recencyCalendarPolicy: 'utc-calendar-days-v1',
-    operationalAccountPolicy: 'none',
+    monetaryDefinition,
+    shippingIncluded: true,
+    sellerServiceExcluded: true,
+    sellerServiceExclusionPolicyVersion,
+    operationalAccountPolicyVersion: operationalAccountExclusionPolicyVersion,
     historicalCustomerCount: input.diagnostics.historicalCustomerCount,
     activeCustomerCount: rows.length,
     scoredCustomerCount: rows.length,
     excludedCustomerCount: Math.max(0, input.diagnostics.historicalCustomerCount - rows.length),
+    excludedOperationalAccountCount: input.diagnostics.exclusions.excludedOperationalAccountCount,
     validOrderCount: input.diagnostics.validOrderCount,
     grossOrderValueTaxIncl,
     currencyCode,
     distinctCurrencyCount: input.diagnostics.currency.distinctCurrencyCount,
     distinctShopCount: input.diagnostics.shops.distinctShopCount,
-    zeroAmountOrderCount: input.diagnostics.exclusions.zeroAmountOrderCount,
+    excludedZeroValueOrderCount: input.diagnostics.exclusions.excludedZeroValueOrderCount,
     futureOrderExcludedCount: input.diagnostics.exclusions.futureOrderExcludedCount,
     invalidOrderExcludedCount: input.diagnostics.exclusions.invalidOrderExcludedCount,
     partiallyRefundedOrderCount: input.diagnostics.refunds.partiallyRefundedOrderCount,
     partiallyRefundedAmountObserved: input.diagnostics.refunds.partiallyRefundedAmountObserved,
+    ordersWithSellerServiceCount: input.diagnostics.sellerService.ordersWithSellerServiceCount,
+    sellerServiceLineCount: input.diagnostics.sellerService.sellerServiceLineCount,
+    excludedSellerServiceValueTaxIncl: input.diagnostics.sellerService.excludedSellerServiceValueTaxIncl,
+    grossOrderValueBeforeSellerServiceExclusion: input.diagnostics.sellerService.grossOrderValueBeforeSellerServiceExclusion,
+    monetaryAfterSellerServiceExclusion: input.diagnostics.sellerService.monetaryAfterSellerServiceExclusion,
     recencyDistribution: describeNumberDistribution(rows.map((row) => row.recencyDays)),
     frequencyDistribution: describeNumberDistribution(rows.map((row) => row.frequencyOrders)),
     monetaryDistribution: describeDecimalDistribution(rows.map((row) => row.grossOrderValueTaxIncl)),

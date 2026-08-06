@@ -23,6 +23,7 @@ import {
   type MonetaryOrderInput,
   type MonetaryOrderLineInput,
   type OrderMonetaryComposition,
+  defaultConfirmedSellerServiceProductIds,
 } from '../../src/domain/customer-rfm/index.js';
 
 const referenceTime = requiredUtcReferenceTime('RFM_REFERENCE_TIME');
@@ -57,7 +58,7 @@ try {
     readOrders(),
   ]);
   const policy = normalizeMonetaryCompositionPolicy({
-    confirmedSellerServiceProductIds: parseNumberListEnv('RFM_CONFIRMED_SELLER_SERVICE_PRODUCT_IDS', [444]),
+    confirmedSellerServiceProductIds: parseNumberListEnv('RFM_CONFIRMED_SELLER_SERVICE_PRODUCT_IDS', defaultConfirmedSellerServiceProductIds),
     confirmedLogisticsProductIds: parseNumberListEnv('RFM_CONFIRMED_LOGISTICS_PRODUCT_IDS', []),
   });
   const compositions = orders.map((order) => composeOrderMonetary(order, policy));

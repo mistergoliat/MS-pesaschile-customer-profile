@@ -37,10 +37,23 @@ function reader(overrides: Partial<RfmSnapshotDiagnostics['exclusions']> = {}): 
       exclusions: {
         invalidOrderExcludedCount: 0,
         futureOrderExcludedCount: 0,
-        zeroAmountOrderCount: 0,
+        excludedZeroValueOrderCount: 0,
+        excludedOperationalAccountCount: 0,
+        excludedOperationalAccountOrderCount: 0,
+        excludedOperationalAccountValueTaxIncl: '0.000000',
         unusableCustomerOrderCount: 0,
         missingPrestashopCustomerOrderCount: 0,
         ...overrides,
+      },
+      sellerService: {
+        policyVersion: 'seller-service-exclusion-v1',
+        confirmedProductIds: [444],
+        ordersWithSellerServiceCount: 0,
+        sellerServiceLineCount: 0,
+        excludedSellerServiceValueTaxIncl: '0.000000',
+        grossOrderValueBeforeSellerServiceExclusion: '200.000000',
+        monetaryAfterSellerServiceExclusion: '200.000000',
+        productTargetedDiscountOrderCount: 0,
       },
     })),
   };
@@ -79,7 +92,7 @@ describe('createRfmSnapshot', () => {
     expect(result.mode).toBe('persisted');
     expect(result.snapshotId).toBe('123');
     expect(repository.hasPublishedSnapshot).toHaveBeenCalledWith(
-      'rfm-v1__prestashop-customer-v1__active-365-valid-prestashop-customer-v1__gross-order-value-tax-incl-v1__gross-valid-orders-v1__r-tie-safe-percent-rank-v1__frequency-thresholds-candidate-v1__m-tie-safe-percent-rank-v1__2026-08-03T00-00-00-000Z',
+      'rfm-v1__prestashop-customer-v1__active-365-valid-prestashop-customer-v2__gross-order-value-tax-incl-minus-seller-service-v2__gross-valid-orders-v1__r-tie-safe-percent-rank-v1__frequency-thresholds-candidate-v1__m-tie-safe-percent-rank-v1__2026-08-03T00-00-00-000Z',
     );
     expect(repository.publishSnapshot).toHaveBeenCalledTimes(1);
   });
