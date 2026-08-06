@@ -14,6 +14,13 @@ export class PrestashopTimeoutError extends Error {
   }
 }
 
+export class PrestashopSchemaIncompatibleError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'PrestashopSchemaIncompatibleError';
+  }
+}
+
 // Thrown when master_customer and ps_customer were both read successfully but the
 // snapshot itself could not be assembled (e.g. clock failure). Maps to profile_build_failed.
 export class CustomerProfileBuildError extends Error {

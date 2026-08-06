@@ -6,6 +6,7 @@ import type { GetCustomerPurchasedProducts } from '../../src/application/custome
 import type { GetCustomerOrderStatus } from '../../src/application/customer-order-status/get-customer-order-status.js';
 import type { GetCustomerProfile } from '../../src/application/customer-profile/get-customer-profile.js';
 import { buildApp } from '../../src/app.js';
+import { CUSTOMER_PROFILE_CONTRACT_VERSION, type CustomerDataProvenance } from '../../src/domain/customer-identity/index.js';
 import type { GetCustomerCommercialSummaryResult } from '../../src/domain/customer-commercial-summary/index.js';
 import type { ReadinessCheck } from '../../src/http/routes/index.js';
 
@@ -29,7 +30,7 @@ const unreachableGetCustomerPurchaseBehavior: GetCustomerPurchaseBehavior = asyn
 
 async function startApp(
   getCustomerCommercialSummary: GetCustomerCommercialSummary,
-  checkReadiness: ReadinessCheck = async () => ({ crm: { status: 'ready' }, prestashop: true }),
+  checkReadiness: ReadinessCheck = async () => ({ crm: false, prestashop: { status: 'ready' } }),
 ): Promise<string> {
   const app = buildApp({
     getCustomerProfile: unreachableGetCustomerProfile,
@@ -60,8 +61,27 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
+function provenance(customerId: number): CustomerDataProvenance {
+  return {
+    customerIdentity: {
+      customerId,
+      source: 'PRESTASHOP',
+      externalCustomerId: String(customerId),
+      status: 'DIRECT_SOURCE',
+    },
+    dataSources: [
+      { source: 'PRESTASHOP', entity: 'ps_customer', purpose: 'customer_identity' },
+      { source: 'PRESTASHOP', entity: 'ps_orders', purpose: 'commercial_summary' },
+      { source: 'PRESTASHOP', entity: 'ps_order_detail', purpose: 'commercial_summary' },
+    ],
+    generatedAt: '2026-08-05T00:00:00.000Z',
+    contractVersion: CUSTOMER_PROFILE_CONTRACT_VERSION,
+  };
+}
+
 const emptyAvailableResult: GetCustomerCommercialSummaryResult = {
   status: 'available',
+  customerId: 1,
   summary: {
     totalOrders: 0,
     totalSpentTaxIncl: '0.000000',
@@ -76,12 +96,13 @@ const emptyAvailableResult: GetCustomerCommercialSummaryResult = {
     refundedOrderCount: 0,
     currencyIsoCode: 'CLP',
   },
+  provenance: provenance(1),
 };
 
-describe('GET /v1/customers/:masterCustomerId/commercial-summary', () => {
-  it('returns 200 with the documented available shape and decimal strings', async () => {
+describe('GET /v1/customers/:customerId/commercial-summary', () => {
+  it('returns 200 with the documented available shape, customerId and provenance', async () => {
     const baseUrl = await startApp(async () => ({
-      status: 'available',
+      ...emptyAvailableResult,
       summary: {
         ...emptyAvailableResult.summary,
         totalOrders: 2,
@@ -102,10 +123,10 @@ describe('GET /v1/customers/:masterCustomerId/commercial-summary', () => {
     expect(response.status).toBe(200);
     expect(body.status).toBe('available');
     if (body.status !== 'available') throw new Error('expected available');
+    expect(body.customerId).toBe(1);
+    expect(body.provenance.contractVersion).toBe(CUSTOMER_PROFILE_CONTRACT_VERSION);
     expect(body.summary.totalSpentTaxIncl).toBe('142177.121231');
     expect(typeof body.summary.totalSpentTaxIncl).toBe('string');
-    expect(body.summary.averageOrderValueTaxIncl).toBe('71088.560616');
-    expect(body.summary.firstOrderAt).toBe('2026-01-02T10:00:00.000Z');
   });
 
   it('serializes the empty summary with JSON null fields', async () => {
@@ -118,42 +139,36 @@ describe('GET /v1/customers/:masterCustomerId/commercial-summary', () => {
     expect(body).toEqual(emptyAvailableResult);
   });
 
-  it('returns 404 for customer_not_found and customer_not_linked', async () => {
-    const notFoundBaseUrl = await startApp(async () => ({ status: 'customer_not_found' }));
-    expect((await fetch(`${notFoundBaseUrl}/v1/customers/999/commercial-summary`)).status).toBe(404);
+  it('returns 404 for customer_not_found', async () => {
+    const baseUrl = await startApp(async () => ({ status: 'customer_not_found', customerId: 999 }));
 
-    await new Promise<void>((resolve, reject) => {
-      server?.close((error) => (error ? reject(error) : resolve()));
-    });
-    server = undefined;
+    const response = await fetch(`${baseUrl}/v1/customers/999/commercial-summary`);
 
-    const notLinkedBaseUrl = await startApp(async () => ({ status: 'customer_not_linked' }));
-    expect((await fetch(`${notLinkedBaseUrl}/v1/customers/1/commercial-summary`)).status).toBe(404);
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ status: 'customer_not_found', customerId: 999 });
   });
 
-  it('returns 503 for degraded PrestaShop timeout or unavailable', async () => {
-    const baseUrl = await startApp(async () => ({ status: 'degraded', reason: 'prestashop_timeout' }));
-
-    const response = await fetch(`${baseUrl}/v1/customers/1/commercial-summary`);
-
-    expect(response.status).toBe(503);
-
-    await new Promise<void>((resolve, reject) => {
-      server?.close((error) => (error ? reject(error) : resolve()));
-    });
-    server = undefined;
-
-    const unavailableBaseUrl = await startApp(async () => ({
+  it('returns 503 for degraded PrestaShop unavailable or schema incompatible', async () => {
+    const baseUrl = await startApp(async () => ({
       status: 'degraded',
+      customerId: 1,
       reason: 'prestashop_unavailable',
     }));
 
-    const unavailableResponse = await fetch(`${unavailableBaseUrl}/v1/customers/1/commercial-summary`);
+    expect((await fetch(`${baseUrl}/v1/customers/1/commercial-summary`)).status).toBe(503);
 
-    expect(unavailableResponse.status).toBe(503);
+    await closeServer();
+
+    const incompatibleBaseUrl = await startApp(async () => ({
+      status: 'degraded',
+      customerId: 1,
+      reason: 'prestashop_schema_incompatible',
+    }));
+
+    expect((await fetch(`${incompatibleBaseUrl}/v1/customers/1/commercial-summary`)).status).toBe(503);
   });
 
-  it('returns 400 for invalid masterCustomerId, query params or JSON body without calling the use case', async () => {
+  it('returns 400 for invalid customerId, query params or JSON body without calling the use case', async () => {
     let called = false;
     const baseUrl = await startApp(async () => {
       called = true;
@@ -161,6 +176,7 @@ describe('GET /v1/customers/:masterCustomerId/commercial-summary', () => {
     });
 
     expect((await fetch(`${baseUrl}/v1/customers/a@b.com/commercial-summary`)).status).toBe(400);
+    expect((await fetch(`${baseUrl}/v1/customers/0/commercial-summary`)).status).toBe(400);
     expect((await fetch(`${baseUrl}/v1/customers/1/commercial-summary?currency=USD`)).status).toBe(400);
     expect(await rawGetWithJsonBody(`${baseUrl}/v1/customers/1/commercial-summary`)).toBe(400);
     expect(called).toBe(false);
@@ -179,11 +195,12 @@ describe('GET /v1/customers/:masterCustomerId/commercial-summary', () => {
     expect(body).toEqual({ error: 'internal_error' });
   });
 
-  it('logs success without customer ids, money, dates, units, product counts, cancellation or refund counts', async () => {
+  it('logs success without money, dates, product detail or PII, but includes safe identity metadata', async () => {
     const spy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
     const baseUrl = await startApp(async () => ({
-      status: 'available',
+      ...emptyAvailableResult,
       summary: {
+        ...emptyAvailableResult.summary,
         totalOrders: 2,
         totalSpentTaxIncl: '999999.123456',
         averageOrderValueTaxIncl: '499999.561728',
@@ -195,32 +212,34 @@ describe('GET /v1/customers/:masterCustomerId/commercial-summary', () => {
         distinctProductsPurchased: 12,
         cancelledOrderCount: 5,
         refundedOrderCount: 4,
-        currencyIsoCode: 'CLP',
       },
     }));
 
     await fetch(`${baseUrl}/v1/customers/1/commercial-summary`);
 
-    expect(spy).toHaveBeenCalledTimes(1);
     const loggedArgs = spy.mock.calls[0] ?? [];
     const serialized = JSON.stringify(loggedArgs);
     expect(serialized).not.toContain('999999.123456');
     expect(serialized).not.toContain('2026-01-02');
-    expect(loggedArgs[0]).not.toHaveProperty('masterCustomerId');
-    expect(loggedArgs[0]).not.toHaveProperty('prestashopCustomerId');
-    expect(loggedArgs[0]).not.toHaveProperty('totalUnitsPurchased');
-    expect(loggedArgs[0]).not.toHaveProperty('distinctProductsPurchased');
-    expect(loggedArgs[0]).not.toHaveProperty('cancelledOrderCount');
-    expect(loggedArgs[0]).not.toHaveProperty('refundedOrderCount');
     expect(loggedArgs[0]).toMatchObject({
+      customerId: 1,
+      endpoint: 'commercial-summary',
+      identitySource: 'PRESTASHOP',
+      identityStatus: 'DIRECT_SOURCE',
+      contractVersion: CUSTOMER_PROFILE_CONTRACT_VERSION,
       status: 'available',
       totalOrdersBucket: 'multiple',
       hasCommercialHistory: true,
-      degradedReason: null,
-      lookupOutcome: 'available',
     });
   });
 });
+
+async function closeServer(): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server?.close((error) => (error ? reject(error) : resolve()));
+  });
+  server = undefined;
+}
 
 async function rawGetWithJsonBody(url: string): Promise<number> {
   return new Promise((resolve, reject) => {

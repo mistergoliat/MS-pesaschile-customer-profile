@@ -1,3 +1,5 @@
+import type { CustomerDataProvenance } from '../customer-identity/index.js';
+
 // Read-only translation of ps_orders.id_carrier into a business-confirmed delivery
 // method (see resolveDeliveryMethod, CP-R1-T06 section 9). Never derived from name,
 // delay, is_module or external_module_name.
@@ -31,7 +33,7 @@ export type DeliveryEstimate =
       readonly startsFrom: null;
     };
 
-// Public payload for GET /v1/customers/{masterCustomerId}/orders/{reference}/status.
+// Public payload for GET /v1/customers/{customerId}/orders/{reference}/status.
 // currentStateId/currentStateName come exclusively from ps_orders.current_state — never
 // from ps_order_history, ps_order_state flags (paid/shipped/delivery) or keyword
 // matching on the name. isRealTimeTracking is always false: this is the last state
@@ -48,9 +50,9 @@ export type CustomerOrderStatus = {
   readonly isRealTimeTracking: false;
 };
 
-// Runtime input for GET /v1/customers/{masterCustomerId}/orders/{reference}/status.
+// Runtime input for GET /v1/customers/{customerId}/orders/{reference}/status.
 export type GetCustomerOrderStatusInput = {
-  readonly masterCustomerId: string;
+  readonly customerId: number;
   readonly orderReference: string;
 };
 
@@ -61,7 +63,7 @@ export type CustomerOrderStatusWarning =
   | 'carrier_not_found'
   | 'delivery_method_unknown';
 
-export type GetCustomerOrderStatusDegradedReason = 'prestashop_unavailable' | 'prestashop_timeout';
+export type GetCustomerOrderStatusDegradedReason = 'prestashop_unavailable' | 'prestashop_schema_incompatible';
 
 // order_not_found covers both "no such order" and "order belongs to a different
 // customer": the query that looks it up is scoped by id_customer AND reference
@@ -70,13 +72,17 @@ export type GetCustomerOrderStatusDegradedReason = 'prestashop_unavailable' | 'p
 export type GetCustomerOrderStatusResult =
   | {
       readonly status: 'available';
+      readonly customerId: number;
       readonly order: CustomerOrderStatus;
+      readonly provenance: CustomerDataProvenance;
       readonly warnings: readonly CustomerOrderStatusWarning[];
     }
   | {
-      readonly status: 'customer_not_found' | 'customer_not_linked' | 'order_not_found';
+      readonly status: 'customer_not_found' | 'order_not_found';
+      readonly customerId: number;
     }
   | {
       readonly status: 'degraded';
+      readonly customerId: number;
       readonly reason: GetCustomerOrderStatusDegradedReason;
     };

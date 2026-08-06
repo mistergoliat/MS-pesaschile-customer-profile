@@ -1,24 +1,8 @@
 import type { RowDataPacket } from 'mysql2/promise';
-import { PrestashopTimeoutError, PrestashopUnavailableError } from '../../application/customer-profile/errors.js';
 import type { CarriersReader } from '../../application/customer-order-status/ports.js';
 import type { CarrierRecord } from '../../domain/customer-order-status/carrier-record.js';
 import type { QueryExecutor } from '../shared/query-executor.js';
-
-// The prefix is concatenated into the table names because SQL cannot parameterize
-// identifiers — so it must be validated as safe before it ever touches a query string.
-const SAFE_PREFIX_PATTERN = /^[A-Za-z0-9_]+$/;
-
-const TIMEOUT_ERROR_CODES = new Set(['ETIMEDOUT', 'PROTOCOL_SEQUENCE_TIMEOUT']);
-const UNAVAILABLE_ERROR_CODES = new Set([
-  'ECONNREFUSED',
-  'ECONNRESET',
-  'ENOTFOUND',
-  'EHOSTUNREACH',
-  'EPIPE',
-  'PROTOCOL_CONNECTION_LOST',
-  'POOL_CLOSED',
-  'ER_CON_COUNT_ERROR',
-]);
+import { assertSafePrestashopTablePrefix, mapPrestashopReadError } from './commercial-summary-reader-utils.js';
 
 interface CarrierRow extends RowDataPacket {
   id_carrier: number;
@@ -34,9 +18,7 @@ interface CarrierRow extends RowDataPacket {
 // Neither `name` nor `delay` is ever used to classify anything here — see
 // resolveDeliveryMethod, which only ever looks at carrierId.
 export function createMysqlCarriersReader(executor: QueryExecutor, tablePrefix: string): CarriersReader {
-  if (!SAFE_PREFIX_PATTERN.test(tablePrefix)) {
-    throw new Error(`Unsafe PrestaShop table prefix: "${tablePrefix}"`);
-  }
+  assertSafePrestashopTablePrefix(tablePrefix);
 
   const selectByIdSql = `
     SELECT
@@ -70,7 +52,7 @@ export function createMysqlCarriersReader(executor: QueryExecutor, tablePrefix: 
       try {
         rows = await executor.execute(selectByIdSql, [safeLanguageId, safeShopId, safeCarrierId]);
       } catch (error) {
-        throw mapReadError(error);
+        throw mapPrestashopReadError(error);
       }
 
       const row = rows[0] as CarrierRow | undefined;
@@ -103,17 +85,4 @@ function resolvePositiveInt(value: number, label: string): number {
     throw new Error(`Invalid ${label}: ${String(value)}`);
   }
   return value;
-}
-
-function mapReadError(error: unknown): Error {
-  const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : null;
-
-  if (code && TIMEOUT_ERROR_CODES.has(code)) {
-    return new PrestashopTimeoutError('PrestaShop query timed out', { cause: error });
-  }
-  if (code && UNAVAILABLE_ERROR_CODES.has(code)) {
-    return new PrestashopUnavailableError('PrestaShop is unavailable', { cause: error });
-  }
-  // Unknown/unclassified failure: propagate as-is rather than guessing a degraded reason.
-  return error instanceof Error ? error : new Error('Unknown PrestaShop read error', { cause: error });
 }

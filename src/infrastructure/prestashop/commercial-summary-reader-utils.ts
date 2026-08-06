@@ -1,4 +1,8 @@
-import { PrestashopTimeoutError, PrestashopUnavailableError } from '../../application/customer-profile/errors.js';
+import {
+  PrestashopSchemaIncompatibleError,
+  PrestashopTimeoutError,
+  PrestashopUnavailableError,
+} from '../../application/customer-profile/errors.js';
 
 const SAFE_PREFIX_PATTERN = /^[A-Za-z0-9_]+$/;
 
@@ -13,6 +17,7 @@ const UNAVAILABLE_ERROR_CODES = new Set([
   'POOL_CLOSED',
   'ER_CON_COUNT_ERROR',
 ]);
+const SCHEMA_INCOMPATIBLE_ERROR_CODES = new Set(['ER_BAD_FIELD_ERROR', 'ER_NO_SUCH_TABLE']);
 
 export function assertSafePrestashopTablePrefix(tablePrefix: string): void {
   if (!SAFE_PREFIX_PATTERN.test(tablePrefix)) {
@@ -72,6 +77,11 @@ export function mapPrestashopReadError(error: unknown): Error {
   }
   if (code && UNAVAILABLE_ERROR_CODES.has(code)) {
     return new PrestashopUnavailableError('PrestaShop is unavailable', { cause: error });
+  }
+  if (code && SCHEMA_INCOMPATIBLE_ERROR_CODES.has(code)) {
+    return new PrestashopSchemaIncompatibleError('PrestaShop schema is incompatible with this service', {
+      cause: error,
+    });
   }
   return error instanceof Error ? error : new Error('Unknown PrestaShop read error', { cause: error });
 }

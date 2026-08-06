@@ -5,24 +5,35 @@ import type {
   PurchasedProductsPageRecord,
   PurchasedProductsReader,
 } from '../../src/application/customer-purchased-products/ports.js';
-import { PrestashopTimeoutError, PrestashopUnavailableError } from '../../src/application/customer-profile/errors.js';
-import type { MasterCustomerReader } from '../../src/application/customer-profile/ports.js';
-import type { MasterCustomerRecord } from '../../src/domain/customer-profile/index.js';
+import { createResolveCustomerIdentity } from '../../src/application/customer-identity/resolve-customer-identity.js';
+import type { CustomerIdentityRepository } from '../../src/application/customer-identity/ports.js';
+import {
+  PrestashopSchemaIncompatibleError,
+  PrestashopTimeoutError,
+  PrestashopUnavailableError,
+} from '../../src/application/customer-profile/errors.js';
 
-const linkedMasterCustomer: MasterCustomerRecord = {
-  id: '1',
-  firstname: 'Ana',
-  lastname: 'Perez',
-  email: 'ana@example.com',
-  platformOrigin: 'prestashop',
-  rut: null,
-  prestashopCustomerId: 555,
-};
+function identityRepositoryReturning(found: boolean): CustomerIdentityRepository {
+  return {
+    findByCustomerId: vi.fn(async (customerId) =>
+      found
+        ? {
+            customerId,
+            externalCustomerId: customerId,
+            identitySource: 'PRESTASHOP' as const,
+            identityStatus: 'DIRECT_SOURCE' as const,
+            sourceMetadata: { platform: 'PRESTASHOP' as const, entity: 'ps_customer' as const, primaryKey: 'id_customer' as const },
+          }
+        : null,
+    ),
+  };
+}
 
-const unlinkedMasterCustomer: MasterCustomerRecord = {
-  ...linkedMasterCustomer,
-  prestashopCustomerId: null,
-};
+function purchasedProductsReaderReturning(page: PurchasedProductsPageRecord): PurchasedProductsReader {
+  return { findByCustomerId: vi.fn(async () => page) };
+}
+
+const clock = { now: () => new Date('2026-08-05T00:00:00.000Z') };
 
 const productRecord: PurchasedProductRecord = {
   productId: 123,
@@ -37,174 +48,133 @@ const productRecord: PurchasedProductRecord = {
   catalogStatus: 'linked',
 };
 
-function masterReaderReturning(record: MasterCustomerRecord | null): MasterCustomerReader {
-  return { findById: vi.fn(async () => record) };
-}
-
-function purchasedProductsReaderReturning(page: PurchasedProductsPageRecord): PurchasedProductsReader {
-  return { findByCustomerId: vi.fn(async () => page) };
-}
-
-function purchasedProductsReaderThrowing(error: unknown): PurchasedProductsReader {
-  return {
-    findByCustomerId: vi.fn(async () => {
-      throw error;
-    }),
-  };
-}
-
-function unreachablePurchasedProductsReader(): PurchasedProductsReader {
-  return purchasedProductsReaderThrowing(new Error('purchased products must not be queried'));
-}
-
-function buildUseCase(overrides: {
-  masterCustomerReader?: MasterCustomerReader;
-  purchasedProductsReader?: PurchasedProductsReader;
-} = {}) {
-  return createGetCustomerPurchasedProducts({
-    masterCustomerReader: overrides.masterCustomerReader ?? masterReaderReturning(linkedMasterCustomer),
-    purchasedProductsReader:
-      overrides.purchasedProductsReader ?? purchasedProductsReaderReturning({ products: [], hasMore: false }),
-  });
-}
+const deletedProductRecord: PurchasedProductRecord = {
+  ...productRecord,
+  productId: 456,
+  catalogStatus: 'deleted_or_unavailable',
+};
 
 describe('getCustomerPurchasedProducts', () => {
-  it('is customer_not_found and never queries PrestaShop when master_customer does not exist', async () => {
-    const purchasedProductsReader = unreachablePurchasedProductsReader();
-    const getCustomerPurchasedProducts = buildUseCase({
-      masterCustomerReader: masterReaderReturning(null),
-      purchasedProductsReader,
+  it('is customer_not_found when identity is missing', async () => {
+    const reader = purchasedProductsReaderReturning({ products: [], hasMore: false });
+    const getCustomerPurchasedProducts = createGetCustomerPurchasedProducts({
+      resolveCustomerIdentity: createResolveCustomerIdentity({
+        customerIdentityRepository: identityRepositoryReturning(false),
+      }),
+      purchasedProductsReader: reader,
+      clock,
     });
 
-    const result = await getCustomerPurchasedProducts({ masterCustomerId: '999', limit: 20, offset: 0 });
+    const result = await getCustomerPurchasedProducts({ customerId: 999, limit: 20, offset: 0 });
 
-    expect(result).toEqual({ status: 'customer_not_found' });
-    expect(purchasedProductsReader.findByCustomerId).not.toHaveBeenCalled();
+    expect(result).toEqual({ status: 'customer_not_found', customerId: 999 });
+    expect(reader.findByCustomerId).not.toHaveBeenCalled();
   });
 
-  it('is customer_not_linked and never queries PrestaShop when master_customer has no link', async () => {
-    const purchasedProductsReader = unreachablePurchasedProductsReader();
-    const getCustomerPurchasedProducts = buildUseCase({
-      masterCustomerReader: masterReaderReturning(unlinkedMasterCustomer),
-      purchasedProductsReader,
+  it('returns available products with provenance', async () => {
+    const reader = purchasedProductsReaderReturning({ products: [productRecord], hasMore: true });
+    const getCustomerPurchasedProducts = createGetCustomerPurchasedProducts({
+      resolveCustomerIdentity: createResolveCustomerIdentity({
+        customerIdentityRepository: identityRepositoryReturning(true),
+      }),
+      purchasedProductsReader: reader,
+      clock,
     });
 
-    const result = await getCustomerPurchasedProducts({ masterCustomerId: '1', limit: 20, offset: 0 });
+    const result = await getCustomerPurchasedProducts({ customerId: 1, limit: 1, offset: 10 });
 
-    expect(result).toEqual({ status: 'customer_not_linked' });
-    expect(purchasedProductsReader.findByCustomerId).not.toHaveBeenCalled();
+    expect(result.status).toBe('available');
+    if (result.status !== 'available') throw new Error('expected available');
+    expect(result.customerId).toBe(1);
+    expect(result.pagination).toEqual({ limit: 1, offset: 10, returned: 1, hasMore: true });
+    expect(result.provenance.customerIdentity.externalCustomerId).toBe('1');
   });
 
-  it('returns an empty available page for linked customers without valid purchases', async () => {
-    const getCustomerPurchasedProducts = buildUseCase();
-
-    const result = await getCustomerPurchasedProducts({ masterCustomerId: '1', limit: 20, offset: 0 });
-
-    expect(result).toEqual({
-      status: 'available',
-      products: [],
-      pagination: {
-        limit: 20,
-        offset: 0,
-        returned: 0,
-        hasMore: false,
-      },
+  it('is available with an empty page (not degraded) when the customer has no purchased products yet', async () => {
+    const reader = purchasedProductsReaderReturning({ products: [], hasMore: false });
+    const getCustomerPurchasedProducts = createGetCustomerPurchasedProducts({
+      resolveCustomerIdentity: createResolveCustomerIdentity({
+        customerIdentityRepository: identityRepositoryReturning(true),
+      }),
+      purchasedProductsReader: reader,
+      clock,
     });
+
+    const result = await getCustomerPurchasedProducts({ customerId: 1, limit: 20, offset: 0 });
+
+    expect(result.status).toBe('available');
+    if (result.status !== 'available') throw new Error('expected available');
+    expect(result.products).toEqual([]);
+    expect(result.pagination).toEqual({ limit: 20, offset: 0, returned: 0, hasMore: false });
   });
 
-  it('maps one product with ISO UTC dates and pagination', async () => {
-    const getCustomerPurchasedProducts = buildUseCase({
-      purchasedProductsReader: purchasedProductsReaderReturning({ products: [productRecord], hasMore: true }),
+  it('preserves catalogStatus (linked vs deleted_or_unavailable) per product', async () => {
+    const reader = purchasedProductsReaderReturning({ products: [productRecord, deletedProductRecord], hasMore: false });
+    const getCustomerPurchasedProducts = createGetCustomerPurchasedProducts({
+      resolveCustomerIdentity: createResolveCustomerIdentity({
+        customerIdentityRepository: identityRepositoryReturning(true),
+      }),
+      purchasedProductsReader: reader,
+      clock,
     });
 
-    const result = await getCustomerPurchasedProducts({ masterCustomerId: '1', limit: 1, offset: 10 });
+    const result = await getCustomerPurchasedProducts({ customerId: 1, limit: 20, offset: 0 });
 
-    expect(result).toEqual({
-      status: 'available',
-      products: [
-        {
-          productId: 123,
-          productAttributeId: 0,
-          productName: 'Disco olimpico 20kg',
-          productReference: 'DISC20',
-          totalQuantityPurchased: 5,
-          orderCount: 2,
-          firstPurchasedAt: '2026-01-02T10:00:00.000Z',
-          lastPurchasedAt: '2026-01-05T12:30:00.000Z',
-          totalSpentTaxIncl: '99990.123456',
-          catalogStatus: 'linked',
-        },
-      ],
-      pagination: {
-        limit: 1,
-        offset: 10,
-        returned: 1,
-        hasMore: true,
-      },
-    });
+    if (result.status !== 'available') throw new Error('expected available');
+    expect(result.products.map((product) => product.catalogStatus)).toEqual(['linked', 'deleted_or_unavailable']);
   });
 
-  it('maps multiple products and calls the reader with the linked PrestaShop customer id', async () => {
-    const purchasedProductsReader = purchasedProductsReaderReturning({
-      products: [
-        productRecord,
-        {
-          ...productRecord,
-          productId: 124,
-          productAttributeId: 3,
-          productReference: null,
-          catalogStatus: 'deleted_or_unavailable',
-        },
-      ],
-      hasMore: false,
+  it('calls the reader with the resolved identity customerId, limit and offset', async () => {
+    const reader = purchasedProductsReaderReturning({ products: [], hasMore: false });
+    const getCustomerPurchasedProducts = createGetCustomerPurchasedProducts({
+      resolveCustomerIdentity: createResolveCustomerIdentity({
+        customerIdentityRepository: identityRepositoryReturning(true),
+      }),
+      purchasedProductsReader: reader,
+      clock,
     });
-    const getCustomerPurchasedProducts = buildUseCase({ purchasedProductsReader });
 
-    const result = await getCustomerPurchasedProducts({ masterCustomerId: '1', limit: 20, offset: 5 });
+    await getCustomerPurchasedProducts({ customerId: 1, limit: 5, offset: 15 });
 
-    expect(result).toMatchObject({ status: 'available', pagination: { returned: 2, hasMore: false } });
-    expect(purchasedProductsReader.findByCustomerId).toHaveBeenCalledWith({
-      prestashopCustomerId: 555,
-      limit: 20,
-      offset: 5,
-    });
+    expect(reader.findByCustomerId).toHaveBeenCalledWith({ prestashopCustomerId: 1, limit: 5, offset: 15 });
   });
 
-  it('is degraded / prestashop_timeout when the reader times out and returns no partial data', async () => {
-    const getCustomerPurchasedProducts = buildUseCase({
-      purchasedProductsReader: purchasedProductsReaderThrowing(new PrestashopTimeoutError('timed out')),
-    });
-
-    const result = await getCustomerPurchasedProducts({ masterCustomerId: '1', limit: 20, offset: 0 });
-
-    expect(result).toEqual({ status: 'degraded', reason: 'prestashop_timeout' });
-    expect(result).not.toHaveProperty('products');
-  });
-
-  it('is degraded / prestashop_unavailable when the reader is unavailable', async () => {
-    const getCustomerPurchasedProducts = buildUseCase({
-      purchasedProductsReader: purchasedProductsReaderThrowing(new PrestashopUnavailableError('down')),
-    });
-
-    const result = await getCustomerPurchasedProducts({ masterCustomerId: '1', limit: 20, offset: 0 });
-
-    expect(result).toEqual({ status: 'degraded', reason: 'prestashop_unavailable' });
-  });
-
-  it('propagates unknown reader errors and contractual invalid dates', async () => {
-    await expect(
-      buildUseCase({
-        purchasedProductsReader: purchasedProductsReaderThrowing(new Error('unknown')),
-      })({ masterCustomerId: '1', limit: 20, offset: 0 }),
-    ).rejects.toThrow('unknown');
-
-    await expect(
-      buildUseCase({
-        purchasedProductsReader: purchasedProductsReaderReturning({
-          products: [{ ...productRecord, lastPurchasedAt: new Date('not-a-date') }],
-          hasMore: false,
+  it('maps known PrestaShop failures to degraded results', async () => {
+    const buildUseCase = (error: Error) =>
+      createGetCustomerPurchasedProducts({
+        resolveCustomerIdentity: createResolveCustomerIdentity({
+          customerIdentityRepository: identityRepositoryReturning(true),
         }),
-      })({ masterCustomerId: '1', limit: 20, offset: 0 }),
-    ).rejects.toThrow();
+        purchasedProductsReader: { findByCustomerId: vi.fn(async () => Promise.reject(error)) },
+        clock,
+      });
+
+    await expect(buildUseCase(new PrestashopTimeoutError('timeout'))({ customerId: 1, limit: 20, offset: 0 })).resolves.toEqual({
+      status: 'degraded',
+      customerId: 1,
+      reason: 'prestashop_unavailable',
+    });
+    await expect(buildUseCase(new PrestashopUnavailableError('down'))({ customerId: 1, limit: 20, offset: 0 })).resolves.toEqual({
+      status: 'degraded',
+      customerId: 1,
+      reason: 'prestashop_unavailable',
+    });
+    await expect(buildUseCase(new PrestashopSchemaIncompatibleError('schema'))({ customerId: 1, limit: 20, offset: 0 })).resolves.toEqual({
+      status: 'degraded',
+      customerId: 1,
+      reason: 'prestashop_schema_incompatible',
+    });
+  });
+
+  it('propagates unclassified errors instead of degrading', async () => {
+    const getCustomerPurchasedProducts = createGetCustomerPurchasedProducts({
+      resolveCustomerIdentity: createResolveCustomerIdentity({
+        customerIdentityRepository: identityRepositoryReturning(true),
+      }),
+      purchasedProductsReader: { findByCustomerId: vi.fn(async () => Promise.reject(new Error('boom'))) },
+      clock,
+    });
+
+    await expect(getCustomerPurchasedProducts({ customerId: 1, limit: 20, offset: 0 })).rejects.toThrow('boom');
   });
 });

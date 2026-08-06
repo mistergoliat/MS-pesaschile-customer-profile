@@ -1,3 +1,5 @@
+import type { CustomerDataProvenance } from '../customer-identity/index.js';
+
 export type CustomerCommercialSummary = {
   readonly totalOrders: number;
   readonly totalSpentTaxIncl: string;
@@ -14,20 +16,24 @@ export type CustomerCommercialSummary = {
 };
 
 export type GetCustomerCommercialSummaryInput = {
-  readonly masterCustomerId: string;
+  readonly customerId: number;
 };
 
-export type GetCustomerCommercialSummaryDegradedReason = 'prestashop_unavailable' | 'prestashop_timeout';
+export type GetCustomerCommercialSummaryDegradedReason = 'prestashop_unavailable' | 'prestashop_schema_incompatible';
 
 export type GetCustomerCommercialSummaryResult =
   | {
       readonly status: 'available';
+      readonly customerId: number;
       readonly summary: CustomerCommercialSummary;
+      readonly provenance: CustomerDataProvenance;
     }
   | {
-      readonly status: 'customer_not_found' | 'customer_not_linked';
+      readonly status: 'customer_not_found';
+      readonly customerId: number;
     }
   | {
       readonly status: 'degraded';
+      readonly customerId: number;
       readonly reason: GetCustomerCommercialSummaryDegradedReason;
     };
