@@ -1,3 +1,4 @@
+import { buildCustomerDataProvenance } from '../../domain/customer-identity/index.js';
 import {
   calculateCommercialDateMetrics,
   divideDecimalMoneyByInteger,
@@ -5,12 +6,17 @@ import {
   type GetCustomerCommercialSummaryInput,
   type GetCustomerCommercialSummaryResult,
 } from '../../domain/customer-commercial-summary/index.js';
-import { PrestashopTimeoutError, PrestashopUnavailableError } from '../customer-profile/errors.js';
-import type { Clock, MasterCustomerReader } from '../customer-profile/ports.js';
+import {
+  PrestashopSchemaIncompatibleError,
+  PrestashopTimeoutError,
+  PrestashopUnavailableError,
+} from '../customer-profile/errors.js';
+import type { ResolveCustomerIdentity } from '../customer-identity/resolve-customer-identity.js';
+import type { Clock } from '../customer-profile/ports.js';
 import type { CommercialOrdersSummaryReader, CommercialProductsSummaryReader } from './ports.js';
 
 export type GetCustomerCommercialSummaryDependencies = {
-  readonly masterCustomerReader: MasterCustomerReader;
+  readonly resolveCustomerIdentity: ResolveCustomerIdentity;
   readonly commercialOrdersSummaryReader: CommercialOrdersSummaryReader;
   readonly commercialProductsSummaryReader: CommercialProductsSummaryReader;
   readonly clock: Clock;
@@ -24,19 +30,16 @@ export function createGetCustomerCommercialSummary(
   deps: GetCustomerCommercialSummaryDependencies,
 ): GetCustomerCommercialSummary {
   return async function getCustomerCommercialSummary(input) {
-    const masterCustomer = await deps.masterCustomerReader.findById(input.masterCustomerId);
-
-    if (!masterCustomer) {
-      return { status: 'customer_not_found' };
-    }
-    if (masterCustomer.prestashopCustomerId === null) {
-      return { status: 'customer_not_linked' };
+    const identityResult = await deps.resolveCustomerIdentity(input.customerId);
+    if (identityResult.status !== 'found') {
+      return { status: 'customer_not_found', customerId: input.customerId };
     }
 
     try {
-      const prestashopCustomerId = masterCustomer.prestashopCustomerId;
-      const orders = await deps.commercialOrdersSummaryReader.findByCustomerId(prestashopCustomerId);
-      const products = await deps.commercialProductsSummaryReader.findByCustomerId(prestashopCustomerId);
+      const customerId = identityResult.identity.customerId;
+      const orders = await deps.commercialOrdersSummaryReader.findByCustomerId(customerId);
+      const products = await deps.commercialProductsSummaryReader.findByCustomerId(customerId);
+      const generatedAt = deps.clock.now().toISOString();
 
       const dateMetrics = calculateCommercialDateMetrics({
         totalOrders: orders.totalOrders,
@@ -47,6 +50,7 @@ export function createGetCustomerCommercialSummary(
 
       return {
         status: 'available',
+        customerId,
         summary: {
           totalOrders: orders.totalOrders,
           totalSpentTaxIncl: formatDecimalMoney(orders.totalSpentTaxIncl),
@@ -58,19 +62,28 @@ export function createGetCustomerCommercialSummary(
           refundedOrderCount: orders.refundedOrderCount,
           currencyIsoCode: 'CLP',
         },
+        provenance: buildCustomerDataProvenance(
+          identityResult.identity,
+          [
+            { source: 'PRESTASHOP', entity: 'ps_customer', purpose: 'customer_identity' },
+            { source: 'PRESTASHOP', entity: 'ps_orders', purpose: 'commercial_summary' },
+            { source: 'PRESTASHOP', entity: 'ps_order_detail', purpose: 'commercial_summary' },
+          ],
+          generatedAt,
+        ),
       };
     } catch (error) {
-      return degradedOrThrow(error);
+      return degradedOrThrow(input.customerId, error);
     }
   };
 }
 
-function degradedOrThrow(error: unknown): GetCustomerCommercialSummaryResult {
-  if (error instanceof PrestashopTimeoutError) {
-    return { status: 'degraded', reason: 'prestashop_timeout' };
+function degradedOrThrow(customerId: number, error: unknown): GetCustomerCommercialSummaryResult {
+  if (error instanceof PrestashopTimeoutError || error instanceof PrestashopUnavailableError) {
+    return { status: 'degraded', customerId, reason: 'prestashop_unavailable' };
   }
-  if (error instanceof PrestashopUnavailableError) {
-    return { status: 'degraded', reason: 'prestashop_unavailable' };
+  if (error instanceof PrestashopSchemaIncompatibleError) {
+    return { status: 'degraded', customerId, reason: 'prestashop_schema_incompatible' };
   }
   throw error;
 }

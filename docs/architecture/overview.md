@@ -1,17 +1,22 @@
 # Customer Profile Architecture
 
-Target flow:
+Current runtime flow:
 
 ```text
-incoming message
--> Identity Resolver
--> master_customer
--> Customer Profile
--> active opportunity
--> conversational context
--> Sales Agent
+incoming HTTP request
+-> customerId
+-> ps_customer identity existence check
+-> PrestaShop reads
+-> provenance-enriched HTTP response
+-> Sales Agent future HTTP client
 ```
 
-`masterCustomerId` is the public identifier. PrestaShop ids are internal source references only.
+`customerId` is currently the direct runtime identifier and maps to `ps_customer.id_customer`.
 
-This service is read-oriented. Productive profile construction is intentionally deferred.
+This service is read-oriented and intentionally direct in the current stage:
+
+- identity source: `PRESTASHOP`
+- identity status: `DIRECT_SOURCE`
+- contract version: `customer-profile-prestashop-direct-v1`
+
+Future canonical migration to `master_customer.id` is deferred and not active at runtime.

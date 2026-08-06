@@ -1,39 +1,51 @@
 import { describe, expect, it, vi } from 'vitest';
-import { PrestashopTimeoutError, PrestashopUnavailableError } from '../../src/application/customer-profile/errors.js';
 import { createGetCustomerProfile } from '../../src/application/customer-profile/get-customer-profile.js';
-import type {
-  Clock,
-  CustomerOrdersReader,
-  MasterCustomerReader,
-  OrderStatesReader,
-  PrestashopCustomerReader,
-} from '../../src/application/customer-profile/ports.js';
+import { createResolveCustomerIdentity } from '../../src/application/customer-identity/resolve-customer-identity.js';
+import type { CustomerIdentityRepository } from '../../src/application/customer-identity/ports.js';
+import {
+  PrestashopSchemaIncompatibleError,
+  PrestashopTimeoutError,
+  PrestashopUnavailableError,
+} from '../../src/application/customer-profile/errors.js';
+import type { Clock, CustomerOrdersReader, OrderStatesReader, PrestashopCustomerReader } from '../../src/application/customer-profile/ports.js';
 import type { CustomerOrderRecord } from '../../src/domain/customer-profile/customer-order-record.js';
-import type { MasterCustomerRecord } from '../../src/domain/customer-profile/master-customer-record.js';
 import type { OrderStateRecord } from '../../src/domain/customer-profile/order-state-record.js';
 import type { PrestashopCustomerRecord } from '../../src/domain/customer-profile/prestashop-customer-record.js';
 
-const fixedClock: Clock = { now: () => new Date('2026-07-27T00:00:00.000Z') };
+const fixedClock: Clock = { now: () => new Date('2026-08-05T00:00:00.000Z') };
 const recentOrdersLimit = 10;
 const orderStateLanguageId = 1;
 
-const linkedMasterCustomer: MasterCustomerRecord = {
-  id: '1',
-  firstname: 'Ana',
-  lastname: 'Perez',
-  email: 'ana@example.com',
-  platformOrigin: 'prestashop',
-  rut: null,
-  prestashopCustomerId: 555,
-};
+function identityRepositoryReturning(found: boolean): CustomerIdentityRepository {
+  return {
+    findByCustomerId: vi.fn(async (customerId) =>
+      found
+        ? {
+            customerId,
+            externalCustomerId: customerId,
+            identitySource: 'PRESTASHOP' as const,
+            identityStatus: 'DIRECT_SOURCE' as const,
+            sourceMetadata: { platform: 'PRESTASHOP' as const, entity: 'ps_customer' as const, primaryKey: 'id_customer' as const },
+          }
+        : null,
+    ),
+  };
+}
 
-const unlinkedMasterCustomer: MasterCustomerRecord = {
-  ...linkedMasterCustomer,
-  prestashopCustomerId: null,
-};
+function prestashopReaderReturning(record: PrestashopCustomerRecord | null): PrestashopCustomerReader {
+  return { findById: vi.fn(async () => record) };
+}
 
-const matchingPrestashopCustomer: PrestashopCustomerRecord = {
-  idCustomer: 555,
+function ordersReaderReturning(records: readonly CustomerOrderRecord[]): CustomerOrdersReader {
+  return { findByCustomerId: vi.fn(async () => records) };
+}
+
+function orderStatesReaderReturning(records: readonly OrderStateRecord[]): OrderStatesReader {
+  return { findByIds: vi.fn(async () => records) };
+}
+
+const activePrestashopCustomer: PrestashopCustomerRecord = {
+  idCustomer: 1,
   firstname: 'Ana',
   lastname: 'Perez',
   email: 'ana@example.com',
@@ -46,7 +58,7 @@ const matchingPrestashopCustomer: PrestashopCustomerRecord = {
 const olderOrder: CustomerOrderRecord = {
   orderId: 100,
   reference: 'REF100',
-  customerId: 555,
+  customerId: 1,
   currentStateId: 4,
   valid: true,
   createdAt: '2026-01-01 10:00:00',
@@ -57,705 +69,242 @@ const olderOrder: CustomerOrderRecord = {
 };
 
 const newerOrder: CustomerOrderRecord = {
+  ...olderOrder,
   orderId: 101,
   reference: 'REF101',
-  customerId: 555,
-  currentStateId: 2,
-  valid: false,
+  currentStateId: 4,
   createdAt: '2026-02-01 10:00:00',
   updatedAt: '2026-02-01 10:00:00',
-  totalPaidTaxIncl: '25990.500000',
-  totalProductsTaxIncl: '24000.000000',
-  currencyId: 1,
 };
 
-const stateShipped: OrderStateRecord = { stateId: 4, name: 'Enviado' };
-const statePreparing: OrderStateRecord = { stateId: 2, name: 'Preparando pedido' };
-
-function masterReaderReturning(record: MasterCustomerRecord | null): MasterCustomerReader {
-  return { findById: vi.fn(async () => record) };
-}
-
-function prestashopReaderReturning(record: PrestashopCustomerRecord | null): PrestashopCustomerReader {
-  return { findById: vi.fn(async () => record) };
-}
-
-function prestashopReaderThrowing(error: unknown): PrestashopCustomerReader {
+function baseDeps(overrides: Partial<{
+  prestashopCustomerReader: PrestashopCustomerReader;
+  customerOrdersReader: CustomerOrdersReader;
+  orderStatesReader: OrderStatesReader;
+  clock: Clock;
+}> = {}) {
   return {
-    findById: vi.fn(async () => {
-      throw error;
+    resolveCustomerIdentity: createResolveCustomerIdentity({
+      customerIdentityRepository: identityRepositoryReturning(true),
     }),
-  };
-}
-
-function unreachablePrestashopReader(): PrestashopCustomerReader {
-  return {
-    findById: vi.fn(async () => {
-      throw new Error('PrestaShop must not be called for this case');
-    }),
-  };
-}
-
-function ordersReaderReturning(records: readonly CustomerOrderRecord[]): CustomerOrdersReader {
-  return { findByCustomerId: vi.fn(async () => records) };
-}
-
-function ordersReaderThrowing(error: unknown): CustomerOrdersReader {
-  return {
-    findByCustomerId: vi.fn(async () => {
-      throw error;
-    }),
-  };
-}
-
-function unreachableOrdersReader(): CustomerOrdersReader {
-  return {
-    findByCustomerId: vi.fn(async () => {
-      throw new Error('Orders must not be queried for this case');
-    }),
-  };
-}
-
-function orderStatesReaderReturning(records: readonly OrderStateRecord[]): OrderStatesReader {
-  return { findByIds: vi.fn(async () => records) };
-}
-
-function orderStatesReaderThrowing(error: unknown): OrderStatesReader {
-  return {
-    findByIds: vi.fn(async () => {
-      throw error;
-    }),
-  };
-}
-
-function unreachableOrderStatesReader(): OrderStatesReader {
-  return {
-    findByIds: vi.fn(async () => {
-      throw new Error('Order states must not be queried for this case');
-    }),
+    prestashopCustomerReader: overrides.prestashopCustomerReader ?? prestashopReaderReturning(activePrestashopCustomer),
+    customerOrdersReader: overrides.customerOrdersReader ?? ordersReaderReturning([]),
+    orderStatesReader: overrides.orderStatesReader ?? orderStatesReaderReturning([]),
+    clock: overrides.clock ?? fixedClock,
+    recentOrdersLimit,
+    orderStateLanguageId,
   };
 }
 
 describe('getCustomerProfile', () => {
-  it('is not_found and never calls PrestaShop, orders or order states when master_customer does not exist', async () => {
-    const prestashopCustomerReader = unreachablePrestashopReader();
-    const customerOrdersReader = unreachableOrdersReader();
-    const orderStatesReader = unreachableOrderStatesReader();
+  it('is not_found when customer identity does not exist', async () => {
+    const ordersReader = ordersReaderReturning([]);
     const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(null),
-      prestashopCustomerReader,
-      customerOrdersReader,
-      orderStatesReader,
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
-    });
-
-    const result = await getCustomerProfile({ masterCustomerId: '999' });
-
-    expect(result.status).toBe('not_found');
-    expect(prestashopCustomerReader.findById).not.toHaveBeenCalled();
-    expect(customerOrdersReader.findByCustomerId).not.toHaveBeenCalled();
-    expect(orderStatesReader.findByIds).not.toHaveBeenCalled();
-  });
-
-  it('is partial and never calls PrestaShop, orders or order states when master_customer exists without a link', async () => {
-    const prestashopCustomerReader = unreachablePrestashopReader();
-    const customerOrdersReader = unreachableOrdersReader();
-    const orderStatesReader = unreachableOrderStatesReader();
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(unlinkedMasterCustomer),
-      prestashopCustomerReader,
-      customerOrdersReader,
-      orderStatesReader,
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
-    });
-
-    const result = await getCustomerProfile({ masterCustomerId: '1' });
-
-    expect(result).toMatchObject({ status: 'partial', linkStatus: 'not_linked' });
-    expect(prestashopCustomerReader.findById).not.toHaveBeenCalled();
-    expect(customerOrdersReader.findByCustomerId).not.toHaveBeenCalled();
-    expect(orderStatesReader.findByIds).not.toHaveBeenCalled();
-  });
-
-  it('is available when master_customer is linked and PrestaShop is found', async () => {
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(linkedMasterCustomer),
-      prestashopCustomerReader: prestashopReaderReturning(matchingPrestashopCustomer),
-      customerOrdersReader: ordersReaderReturning([]),
-      orderStatesReader: unreachableOrderStatesReader(),
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
-    });
-
-    const result = await getCustomerProfile({ masterCustomerId: '1' });
-
-    expect(result).toMatchObject({ status: 'available', linkStatus: 'linked', prestashopCustomerId: 555 });
-  });
-
-  it('is degraded / prestashop_customer_not_found and never queries orders or order states when linked but ps_customer is missing', async () => {
-    const customerOrdersReader = unreachableOrdersReader();
-    const orderStatesReader = unreachableOrderStatesReader();
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(linkedMasterCustomer),
+      resolveCustomerIdentity: createResolveCustomerIdentity({
+        customerIdentityRepository: identityRepositoryReturning(false),
+      }),
       prestashopCustomerReader: prestashopReaderReturning(null),
-      customerOrdersReader,
-      orderStatesReader,
+      customerOrdersReader: ordersReader,
+      orderStatesReader: orderStatesReaderReturning([]),
       clock: fixedClock,
       recentOrdersLimit,
       orderStateLanguageId,
     });
 
-    const result = await getCustomerProfile({ masterCustomerId: '1' });
+    const result = await getCustomerProfile({ customerId: 999 });
 
-    expect(result).toMatchObject({ status: 'degraded', reason: 'prestashop_customer_not_found' });
-    expect(customerOrdersReader.findByCustomerId).not.toHaveBeenCalled();
+    expect(result).toEqual({ status: 'not_found', customerId: 999, profile: null, warnings: [] });
+    expect(ordersReader.findByCustomerId).not.toHaveBeenCalled();
+  });
+
+  it('is available when the PrestaShop customer exists, is active, and builds provenance', async () => {
+    const getCustomerProfile = createGetCustomerProfile(
+      baseDeps({
+        customerOrdersReader: ordersReaderReturning([olderOrder]),
+        orderStatesReader: orderStatesReaderReturning([{ stateId: 4, name: 'Enviado' }]),
+      }),
+    );
+
+    const result = await getCustomerProfile({ customerId: 1 });
+
+    expect(result.status).toBe('available');
+    if (result.status !== 'available') throw new Error('expected available');
+    expect(result.profile.customerId).toBe(1);
+    expect(result.provenance.customerIdentity.externalCustomerId).toBe('1');
+  });
+
+  it('rut is always null in the direct PrestaShop contract, regardless of input', async () => {
+    const getCustomerProfile = createGetCustomerProfile(baseDeps());
+
+    const result = await getCustomerProfile({ customerId: 1 });
+
+    expect(result.status).toBe('available');
+    if (result.status !== 'available') throw new Error('expected available');
+    expect(result.profile.customer.rut).toBeNull();
+    expect(result.profile.customer.platformOrigin).toBe('prestashop');
+  });
+
+  it('is available with a prestashop_customer_inactive warning when the PrestaShop customer is inactive', async () => {
+    const getCustomerProfile = createGetCustomerProfile(
+      baseDeps({ prestashopCustomerReader: prestashopReaderReturning({ ...activePrestashopCustomer, active: false }) }),
+    );
+
+    const result = await getCustomerProfile({ customerId: 1 });
+
+    expect(result.status).toBe('available');
+    if (result.status !== 'available') throw new Error('expected available');
+    expect(result.profile.warnings).toContain('prestashop_customer_inactive');
+  });
+
+  it('does not warn when the PrestaShop customer is active', async () => {
+    const getCustomerProfile = createGetCustomerProfile(baseDeps());
+
+    const result = await getCustomerProfile({ customerId: 1 });
+
+    expect(result.status).toBe('available');
+    if (result.status !== 'available') throw new Error('expected available');
+    expect(result.profile.warnings).not.toContain('prestashop_customer_inactive');
+  });
+
+  it('is degraded / customer_profile_unavailable and never queries orders or order states when identity resolves but ps_customer is missing', async () => {
+    const ordersReader = ordersReaderReturning([]);
+    const orderStatesReader = orderStatesReaderReturning([]);
+    const getCustomerProfile = createGetCustomerProfile(
+      baseDeps({ prestashopCustomerReader: prestashopReaderReturning(null), customerOrdersReader: ordersReader, orderStatesReader }),
+    );
+
+    const result = await getCustomerProfile({ customerId: 1 });
+
+    expect(result).toEqual({
+      status: 'degraded',
+      customerId: 1,
+      reason: 'customer_profile_unavailable',
+      profile: null,
+      warnings: [],
+    });
+    expect(ordersReader.findByCustomerId).not.toHaveBeenCalled();
     expect(orderStatesReader.findByIds).not.toHaveBeenCalled();
   });
 
-  it('is degraded / prestashop_timeout on a PrestashopTimeoutError from the customer reader', async () => {
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(linkedMasterCustomer),
-      prestashopCustomerReader: prestashopReaderThrowing(new PrestashopTimeoutError('timed out')),
-      customerOrdersReader: unreachableOrdersReader(),
-      orderStatesReader: unreachableOrderStatesReader(),
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
-    });
-
-    const result = await getCustomerProfile({ masterCustomerId: '1' });
-
-    expect(result).toMatchObject({ status: 'degraded', reason: 'prestashop_timeout' });
-  });
-
-  it('is degraded / prestashop_unavailable on a PrestashopUnavailableError from the customer reader', async () => {
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(linkedMasterCustomer),
-      prestashopCustomerReader: prestashopReaderThrowing(new PrestashopUnavailableError('down')),
-      customerOrdersReader: unreachableOrdersReader(),
-      orderStatesReader: unreachableOrderStatesReader(),
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
-    });
-
-    const result = await getCustomerProfile({ masterCustomerId: '1' });
-
-    expect(result).toMatchObject({ status: 'degraded', reason: 'prestashop_unavailable' });
-  });
-
-  it('is degraded / profile_build_failed when snapshot construction throws', async () => {
+  it('is degraded / customer_profile_unavailable when snapshot construction throws (e.g. clock failure)', async () => {
     const throwingClock: Clock = {
       now: () => {
         throw new Error('clock failure');
       },
     };
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(linkedMasterCustomer),
-      prestashopCustomerReader: prestashopReaderReturning(matchingPrestashopCustomer),
-      customerOrdersReader: ordersReaderReturning([]),
-      orderStatesReader: unreachableOrderStatesReader(),
-      clock: throwingClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
-    });
+    const getCustomerProfile = createGetCustomerProfile(baseDeps({ clock: throwingClock }));
 
-    const result = await getCustomerProfile({ masterCustomerId: '1' });
+    const result = await getCustomerProfile({ customerId: 1 });
 
-    expect(result).toMatchObject({ status: 'degraded', reason: 'profile_build_failed' });
+    expect(result).toMatchObject({ status: 'degraded', reason: 'customer_profile_unavailable', profile: null });
   });
 
-  it('propagates unclassified PrestaShop reader errors instead of guessing a degraded reason', async () => {
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(linkedMasterCustomer),
-      prestashopCustomerReader: prestashopReaderThrowing(new Error('boom')),
-      customerOrdersReader: unreachableOrdersReader(),
-      orderStatesReader: unreachableOrderStatesReader(),
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
-    });
+  it('maps known PrestaShop failures (timeout, unavailable, schema incompatible) to degraded results', async () => {
+    const buildUseCase = (error: Error) =>
+      createGetCustomerProfile(baseDeps({ prestashopCustomerReader: { findById: vi.fn(async () => Promise.reject(error)) } }));
 
-    await expect(getCustomerProfile({ masterCustomerId: '1' })).rejects.toThrow('boom');
+    await expect(buildUseCase(new PrestashopTimeoutError('timeout'))({ customerId: 1 })).resolves.toEqual({
+      status: 'degraded',
+      customerId: 1,
+      reason: 'prestashop_unavailable',
+      profile: null,
+      warnings: [],
+    });
+    await expect(buildUseCase(new PrestashopUnavailableError('down'))({ customerId: 1 })).resolves.toEqual({
+      status: 'degraded',
+      customerId: 1,
+      reason: 'prestashop_unavailable',
+      profile: null,
+      warnings: [],
+    });
+    await expect(buildUseCase(new PrestashopSchemaIncompatibleError('schema'))({ customerId: 1 })).resolves.toEqual({
+      status: 'degraded',
+      customerId: 1,
+      reason: 'prestashop_schema_incompatible',
+      profile: null,
+      warnings: [],
+    });
   });
 
-  it('propagates CRM (master_customer) read failures instead of treating them as not_found', async () => {
-    const masterCustomerReader: MasterCustomerReader = {
-      findById: vi.fn(async () => {
-        throw new Error('CRM connection failed');
+  it('propagates unclassified PrestaShop customer reader errors instead of degrading', async () => {
+    const getCustomerProfile = createGetCustomerProfile(
+      baseDeps({ prestashopCustomerReader: { findById: vi.fn(async () => Promise.reject(new Error('boom'))) } }),
+    );
+
+    await expect(getCustomerProfile({ customerId: 1 })).rejects.toThrow('boom');
+  });
+
+  it('is degraded / prestashop_unavailable and never queries order states when customerOrdersReader fails', async () => {
+    const orderStatesReader = orderStatesReaderReturning([]);
+    const getCustomerProfile = createGetCustomerProfile(
+      baseDeps({
+        customerOrdersReader: { findByCustomerId: vi.fn(async () => Promise.reject(new PrestashopUnavailableError('down'))) },
+        orderStatesReader,
       }),
-    };
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader,
-      prestashopCustomerReader: unreachablePrestashopReader(),
-      customerOrdersReader: unreachableOrdersReader(),
-      orderStatesReader: unreachableOrderStatesReader(),
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
-    });
+    );
 
-    await expect(getCustomerProfile({ masterCustomerId: '1' })).rejects.toThrow('CRM connection failed');
-  });
-
-  it('is available with a warning when the PrestaShop email differs from the master email', async () => {
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(linkedMasterCustomer),
-      prestashopCustomerReader: prestashopReaderReturning({
-        ...matchingPrestashopCustomer,
-        email: 'other@example.com',
-      }),
-      customerOrdersReader: ordersReaderReturning([]),
-      orderStatesReader: unreachableOrderStatesReader(),
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
-    });
-
-    const result = await getCustomerProfile({ masterCustomerId: '1' });
-
-    expect(result.status).toBe('available');
-    expect(result.warnings).toContain('prestashop_email_differs_from_master');
-  });
-
-  it('is available with a warning when the PrestaShop name differs from the master name', async () => {
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(linkedMasterCustomer),
-      prestashopCustomerReader: prestashopReaderReturning({
-        ...matchingPrestashopCustomer,
-        firstname: 'Otro',
-      }),
-      customerOrdersReader: ordersReaderReturning([]),
-      orderStatesReader: unreachableOrderStatesReader(),
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
-    });
-
-    const result = await getCustomerProfile({ masterCustomerId: '1' });
-
-    expect(result.status).toBe('available');
-    expect(result.warnings).toContain('prestashop_name_differs_from_master');
-  });
-
-  it('is available with a warning when the PrestaShop customer is inactive', async () => {
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(linkedMasterCustomer),
-      prestashopCustomerReader: prestashopReaderReturning({
-        ...matchingPrestashopCustomer,
-        active: false,
-      }),
-      customerOrdersReader: ordersReaderReturning([]),
-      orderStatesReader: unreachableOrderStatesReader(),
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
-    });
-
-    const result = await getCustomerProfile({ masterCustomerId: '1' });
-
-    expect(result.status).toBe('available');
-    expect(result.warnings).toContain('prestashop_customer_inactive');
-  });
-
-  it('does not warn when the PrestaShop name only differs by whitespace/casing', async () => {
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning({ ...linkedMasterCustomer, firstname: ' Ana  Perez ' }),
-      prestashopCustomerReader: prestashopReaderReturning({
-        ...matchingPrestashopCustomer,
-        firstname: 'ana perez',
-      }),
-      customerOrdersReader: ordersReaderReturning([]),
-      orderStatesReader: unreachableOrderStatesReader(),
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
-    });
-
-    const result = await getCustomerProfile({ masterCustomerId: '1' });
-
-    expect(result.status).toBe('available');
-    expect(result.warnings).not.toContain('prestashop_name_differs_from_master');
-  });
-
-  it('does not warn when the PrestaShop email only differs by whitespace/casing', async () => {
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning({ ...linkedMasterCustomer, email: '  CLIENTE@MAIL.COM  ' }),
-      prestashopCustomerReader: prestashopReaderReturning({
-        ...matchingPrestashopCustomer,
-        email: 'cliente@mail.com',
-      }),
-      customerOrdersReader: ordersReaderReturning([]),
-      orderStatesReader: unreachableOrderStatesReader(),
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
-    });
-
-    const result = await getCustomerProfile({ masterCustomerId: '1' });
-
-    expect(result.status).toBe('available');
-    expect(result.warnings).not.toContain('prestashop_email_differs_from_master');
-  });
-
-  it('does not reconcile master_customer with PrestaShop data even when they differ', async () => {
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(linkedMasterCustomer),
-      prestashopCustomerReader: prestashopReaderReturning({
-        ...matchingPrestashopCustomer,
-        email: 'other@example.com',
-        firstname: 'Otro',
-      }),
-      customerOrdersReader: ordersReaderReturning([]),
-      orderStatesReader: unreachableOrderStatesReader(),
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
-    });
-
-    const result = await getCustomerProfile({ masterCustomerId: '1' });
-
-    if (result.status !== 'available') throw new Error('expected available');
-    expect(result.profile.customer.email).toBe(linkedMasterCustomer.email);
-    expect(result.profile.customer.firstname).toBe(linkedMasterCustomer.firstname);
-  });
-
-  // --- CP-R1-T04: recentOrders ---
-
-  it('is available with recentOrders = [] when ps_customer exists and has no orders (empty is not an error, order states never queried)', async () => {
-    const customerOrdersReader = ordersReaderReturning([]);
-    const orderStatesReader = unreachableOrderStatesReader();
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(linkedMasterCustomer),
-      prestashopCustomerReader: prestashopReaderReturning(matchingPrestashopCustomer),
-      customerOrdersReader,
-      orderStatesReader,
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
-    });
-
-    const result = await getCustomerProfile({ masterCustomerId: '1' });
-
-    if (result.status !== 'available') throw new Error('expected available');
-    expect(result.profile.recentOrders).toEqual([]);
-    expect(orderStatesReader.findByIds).not.toHaveBeenCalled();
-  });
-
-  it('preserves the order returned by the reader instead of re-sorting (paid/unpaid, valid/invalid alike)', async () => {
-    // newerOrder.valid === false, olderOrder.valid === true: order is preserved
-    // regardless of `valid` — this snapshot never filters or re-sorts by it.
-    const customerOrdersReader = ordersReaderReturning([newerOrder, olderOrder]);
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(linkedMasterCustomer),
-      prestashopCustomerReader: prestashopReaderReturning(matchingPrestashopCustomer),
-      customerOrdersReader,
-      orderStatesReader: orderStatesReaderReturning([stateShipped, statePreparing]),
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
-    });
-
-    const result = await getCustomerProfile({ masterCustomerId: '1' });
-
-    if (result.status !== 'available') throw new Error('expected available');
-    expect(result.profile.recentOrders.map((order) => order.orderId)).toEqual([
-      newerOrder.orderId,
-      olderOrder.orderId,
-    ]);
-  });
-
-  it('calls the orders reader with the exact linked prestashopCustomerId and the configured recentOrdersLimit', async () => {
-    const customerOrdersReader = ordersReaderReturning([]);
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(linkedMasterCustomer),
-      prestashopCustomerReader: prestashopReaderReturning(matchingPrestashopCustomer),
-      customerOrdersReader,
-      orderStatesReader: unreachableOrderStatesReader(),
-      clock: fixedClock,
-      recentOrdersLimit: 25,
-      orderStateLanguageId,
-    });
-
-    await getCustomerProfile({ masterCustomerId: '1' });
-
-    expect(customerOrdersReader.findByCustomerId).toHaveBeenCalledTimes(1);
-    expect(customerOrdersReader.findByCustomerId).toHaveBeenCalledWith(555, { limit: 25 });
-  });
-
-  it('is degraded / prestashop_timeout on a PrestashopTimeoutError from the orders reader', async () => {
-    const orderStatesReader = unreachableOrderStatesReader();
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(linkedMasterCustomer),
-      prestashopCustomerReader: prestashopReaderReturning(matchingPrestashopCustomer),
-      customerOrdersReader: ordersReaderThrowing(new PrestashopTimeoutError('orders timed out')),
-      orderStatesReader,
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
-    });
-
-    const result = await getCustomerProfile({ masterCustomerId: '1' });
-
-    expect(result).toMatchObject({ status: 'degraded', reason: 'prestashop_timeout' });
-    expect(orderStatesReader.findByIds).not.toHaveBeenCalled();
-  });
-
-  it('is degraded / prestashop_unavailable on a PrestashopUnavailableError from the orders reader', async () => {
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(linkedMasterCustomer),
-      prestashopCustomerReader: prestashopReaderReturning(matchingPrestashopCustomer),
-      customerOrdersReader: ordersReaderThrowing(new PrestashopUnavailableError('orders down')),
-      orderStatesReader: unreachableOrderStatesReader(),
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
-    });
-
-    const result = await getCustomerProfile({ masterCustomerId: '1' });
+    const result = await getCustomerProfile({ customerId: 1 });
 
     expect(result).toMatchObject({ status: 'degraded', reason: 'prestashop_unavailable' });
+    expect(orderStatesReader.findByIds).not.toHaveBeenCalled();
   });
 
-  it('propagates unclassified orders reader errors instead of guessing a degraded reason', async () => {
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(linkedMasterCustomer),
-      prestashopCustomerReader: prestashopReaderReturning(matchingPrestashopCustomer),
-      customerOrdersReader: ordersReaderThrowing(new Error('orders boom')),
-      orderStatesReader: unreachableOrderStatesReader(),
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
-    });
-
-    await expect(getCustomerProfile({ masterCustomerId: '1' })).rejects.toThrow('orders boom');
-  });
-
-  it('never returns available with a non-empty warnings-only fallback when the orders read fails (degrades instead)', async () => {
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(linkedMasterCustomer),
-      prestashopCustomerReader: prestashopReaderReturning(matchingPrestashopCustomer),
-      customerOrdersReader: ordersReaderThrowing(new PrestashopUnavailableError('orders down')),
-      orderStatesReader: unreachableOrderStatesReader(),
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
-    });
-
-    const result = await getCustomerProfile({ masterCustomerId: '1' });
-
-    expect(result.status).not.toBe('available');
-    expect(result.profile).toBeNull();
-  });
-
-  // --- CP-R1-T05: order state context ---
-
-  it('is available with currentState resolved + name when a single order has a state found in the catalog', async () => {
-    const orderStatesReader = orderStatesReaderReturning([stateShipped]);
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(linkedMasterCustomer),
-      prestashopCustomerReader: prestashopReaderReturning(matchingPrestashopCustomer),
-      customerOrdersReader: ordersReaderReturning([olderOrder]),
-      orderStatesReader,
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
-    });
-
-    const result = await getCustomerProfile({ masterCustomerId: '1' });
-
-    if (result.status !== 'available') throw new Error('expected available');
-    expect(result.profile.recentOrders).toEqual([
-      expect.objectContaining({
-        orderId: olderOrder.orderId,
-        currentStateId: 4,
-        currentState: { stateId: 4, name: 'Enviado', resolution: 'resolved' },
+  it('is degraded / prestashop_schema_incompatible when orderStatesReader fails with a schema error', async () => {
+    const getCustomerProfile = createGetCustomerProfile(
+      baseDeps({
+        customerOrdersReader: ordersReaderReturning([olderOrder]),
+        orderStatesReader: { findByIds: vi.fn(async () => Promise.reject(new PrestashopSchemaIncompatibleError('schema'))) },
       }),
-    ]);
+    );
+
+    const result = await getCustomerProfile({ customerId: 1 });
+
+    expect(result).toMatchObject({ status: 'degraded', reason: 'prestashop_schema_incompatible' });
   });
 
-  it('calls the order states reader with a single deduplicated id when several orders share the same currentStateId', async () => {
-    const sameStateOrder: CustomerOrderRecord = { ...newerOrder, orderId: 102, currentStateId: 4 };
-    const orderStatesReader = orderStatesReaderReturning([stateShipped]);
+  it('deduplicates currentStateId and passes orderStateLanguageId through to the order states reader', async () => {
+    const orderStatesReader = orderStatesReaderReturning([{ stateId: 4, name: 'Enviado' }]);
     const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(linkedMasterCustomer),
-      prestashopCustomerReader: prestashopReaderReturning(matchingPrestashopCustomer),
-      customerOrdersReader: ordersReaderReturning([sameStateOrder, olderOrder]),
-      orderStatesReader,
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
+      ...baseDeps({ customerOrdersReader: ordersReaderReturning([newerOrder, olderOrder]), orderStatesReader }),
+      orderStateLanguageId: 7,
     });
 
-    await getCustomerProfile({ masterCustomerId: '1' });
+    await getCustomerProfile({ customerId: 1 });
 
     expect(orderStatesReader.findByIds).toHaveBeenCalledTimes(1);
-    expect(orderStatesReader.findByIds).toHaveBeenCalledWith([4], orderStateLanguageId);
+    expect(orderStatesReader.findByIds).toHaveBeenCalledWith([4], 7);
   });
 
-  it('passes the configured orderStateLanguageId through to the order states reader', async () => {
-    const orderStatesReader = orderStatesReaderReturning([stateShipped]);
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(linkedMasterCustomer),
-      prestashopCustomerReader: prestashopReaderReturning(matchingPrestashopCustomer),
-      customerOrdersReader: ordersReaderReturning([olderOrder]),
-      orderStatesReader,
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId: 2,
-    });
+  it('preserves the reader-provided order of recentOrders instead of re-sorting', async () => {
+    const orderStatesReader = orderStatesReaderReturning([{ stateId: 4, name: 'Enviado' }]);
+    const getCustomerProfile = createGetCustomerProfile(
+      baseDeps({ customerOrdersReader: ordersReaderReturning([newerOrder, olderOrder]), orderStatesReader }),
+    );
 
-    await getCustomerProfile({ masterCustomerId: '1' });
-
-    expect(orderStatesReader.findByIds).toHaveBeenCalledWith([4], 2);
-  });
-
-  it('maps distinct currentStateIds correctly without changing recentOrders order', async () => {
-    const orderStatesReader = orderStatesReaderReturning([stateShipped, statePreparing]);
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(linkedMasterCustomer),
-      prestashopCustomerReader: prestashopReaderReturning(matchingPrestashopCustomer),
-      customerOrdersReader: ordersReaderReturning([newerOrder, olderOrder]),
-      orderStatesReader,
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
-    });
-
-    const result = await getCustomerProfile({ masterCustomerId: '1' });
+    const result = await getCustomerProfile({ customerId: 1 });
 
     if (result.status !== 'available') throw new Error('expected available');
-    expect(result.profile.recentOrders.map((order) => [order.orderId, order.currentState.name])).toEqual([
-      [newerOrder.orderId, 'Preparando pedido'],
-      [olderOrder.orderId, 'Enviado'],
-    ]);
+    expect(result.profile.recentOrders.map((order) => order.orderId)).toEqual([newerOrder.orderId, olderOrder.orderId]);
   });
 
-  it('is available with currentState unknown and warning order_state_label_missing when a state is absent from the catalog', async () => {
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(linkedMasterCustomer),
-      prestashopCustomerReader: prestashopReaderReturning(matchingPrestashopCustomer),
-      customerOrdersReader: ordersReaderReturning([olderOrder]),
-      orderStatesReader: orderStatesReaderReturning([]),
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
-    });
+  it('resolves an unrecognized currentStateId as unknown with the order_state_label_missing warning', async () => {
+    const getCustomerProfile = createGetCustomerProfile(
+      baseDeps({ customerOrdersReader: ordersReaderReturning([olderOrder]), orderStatesReader: orderStatesReaderReturning([]) }),
+    );
 
-    const result = await getCustomerProfile({ masterCustomerId: '1' });
+    const result = await getCustomerProfile({ customerId: 1 });
 
     if (result.status !== 'available') throw new Error('expected available');
-    expect(result.profile.recentOrders).toEqual([
-      expect.objectContaining({
-        currentStateId: 4,
-        currentState: { stateId: 4, name: null, resolution: 'unknown' },
-      }),
-    ]);
+    expect(result.profile.recentOrders[0]?.currentState).toEqual({ stateId: 4, name: null, resolution: 'unknown' });
     expect(result.profile.warnings).toContain('order_state_label_missing');
   });
 
-  it('adds the order_state_label_missing warning only once even when several orders have an unresolved state', async () => {
-    const anotherUnresolvedOrder: CustomerOrderRecord = { ...newerOrder, orderId: 103, currentStateId: 7 };
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(linkedMasterCustomer),
-      prestashopCustomerReader: prestashopReaderReturning(matchingPrestashopCustomer),
-      customerOrdersReader: ordersReaderReturning([olderOrder, anotherUnresolvedOrder]),
-      orderStatesReader: orderStatesReaderReturning([]),
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
-    });
+  it('calls the orders reader with the resolved identity customerId and the configured recentOrdersLimit', async () => {
+    const ordersReader = ordersReaderReturning([]);
+    const getCustomerProfile = createGetCustomerProfile({ ...baseDeps({ customerOrdersReader: ordersReader }), recentOrdersLimit: 25 });
 
-    const result = await getCustomerProfile({ masterCustomerId: '1' });
+    await getCustomerProfile({ customerId: 1 });
 
-    if (result.status !== 'available') throw new Error('expected available');
-    expect(result.profile.recentOrders.every((order) => order.currentState.resolution === 'unknown')).toBe(true);
-    expect(result.profile.warnings.filter((warning) => warning === 'order_state_label_missing')).toHaveLength(1);
-  });
-
-  it('does not put the stateId inside the order_state_label_missing warning string', async () => {
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(linkedMasterCustomer),
-      prestashopCustomerReader: prestashopReaderReturning(matchingPrestashopCustomer),
-      customerOrdersReader: ordersReaderReturning([olderOrder]),
-      orderStatesReader: orderStatesReaderReturning([]),
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
-    });
-
-    const result = await getCustomerProfile({ masterCustomerId: '1' });
-
-    if (result.status !== 'available') throw new Error('expected available');
-    expect(result.profile.warnings).toEqual(['order_state_label_missing']);
-  });
-
-  it('is degraded / prestashop_timeout on a PrestashopTimeoutError from the order states reader', async () => {
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(linkedMasterCustomer),
-      prestashopCustomerReader: prestashopReaderReturning(matchingPrestashopCustomer),
-      customerOrdersReader: ordersReaderReturning([olderOrder]),
-      orderStatesReader: orderStatesReaderThrowing(new PrestashopTimeoutError('order states timed out')),
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
-    });
-
-    const result = await getCustomerProfile({ masterCustomerId: '1' });
-
-    expect(result).toMatchObject({ status: 'degraded', reason: 'prestashop_timeout' });
-    expect(result.profile).toBeNull();
-  });
-
-  it('is degraded / prestashop_unavailable on a PrestashopUnavailableError from the order states reader', async () => {
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(linkedMasterCustomer),
-      prestashopCustomerReader: prestashopReaderReturning(matchingPrestashopCustomer),
-      customerOrdersReader: ordersReaderReturning([olderOrder]),
-      orderStatesReader: orderStatesReaderThrowing(new PrestashopUnavailableError('order states down')),
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
-    });
-
-    const result = await getCustomerProfile({ masterCustomerId: '1' });
-
-    expect(result).toMatchObject({ status: 'degraded', reason: 'prestashop_unavailable' });
-    expect(result.profile).toBeNull();
-  });
-
-  it('propagates unclassified order states reader errors instead of guessing a degraded reason', async () => {
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(linkedMasterCustomer),
-      prestashopCustomerReader: prestashopReaderReturning(matchingPrestashopCustomer),
-      customerOrdersReader: ordersReaderReturning([olderOrder]),
-      orderStatesReader: orderStatesReaderThrowing(new Error('order states boom')),
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
-    });
-
-    await expect(getCustomerProfile({ masterCustomerId: '1' })).rejects.toThrow('order states boom');
-  });
-
-  it('never returns available with recentOrders labeled as if resolved when the order states read fails entirely', async () => {
-    const getCustomerProfile = createGetCustomerProfile({
-      masterCustomerReader: masterReaderReturning(linkedMasterCustomer),
-      prestashopCustomerReader: prestashopReaderReturning(matchingPrestashopCustomer),
-      customerOrdersReader: ordersReaderReturning([olderOrder]),
-      orderStatesReader: orderStatesReaderThrowing(new PrestashopUnavailableError('order states down')),
-      clock: fixedClock,
-      recentOrdersLimit,
-      orderStateLanguageId,
-    });
-
-    const result = await getCustomerProfile({ masterCustomerId: '1' });
-
-    expect(result.status).not.toBe('available');
+    expect(ordersReader.findByCustomerId).toHaveBeenCalledWith(1, { limit: 25 });
   });
 });

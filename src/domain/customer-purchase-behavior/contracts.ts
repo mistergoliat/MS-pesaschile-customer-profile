@@ -1,3 +1,5 @@
+import type { CustomerDataProvenance } from '../customer-identity/index.js';
+
 export type PurchaseBehaviorConcentration = {
   readonly top1Share: string;
   readonly top3Share: string;
@@ -54,27 +56,30 @@ export type PurchaseBehaviorProduct = {
 };
 
 export type GetCustomerPurchaseBehaviorInput = {
-  readonly masterCustomerId: string;
+  readonly customerId: number;
   readonly topProducts: number;
   readonly topVariants: number;
 };
 
-export type GetCustomerPurchaseBehaviorDegradedReason = 'prestashop_timeout' | 'prestashop_unavailable';
+export type GetCustomerPurchaseBehaviorDegradedReason = 'prestashop_unavailable' | 'prestashop_schema_incompatible';
 
 export type GetCustomerPurchaseBehaviorResult =
   | {
       readonly status: 'available';
+      readonly customerId: number;
       readonly currencyIsoCode: 'CLP';
       readonly calculatedAt: string;
       readonly summary: PurchaseBehaviorSummary;
       readonly topProducts: readonly PurchaseBehaviorProduct[];
       readonly topVariants: readonly PurchaseBehaviorVariant[];
+      readonly provenance: CustomerDataProvenance;
     }
   | {
-      readonly status: 'customer_not_found' | 'customer_not_linked';
+      readonly status: 'customer_not_found';
+      readonly customerId: number;
     }
   | {
       readonly status: 'degraded';
+      readonly customerId: number;
       readonly reason: GetCustomerPurchaseBehaviorDegradedReason;
     };
-

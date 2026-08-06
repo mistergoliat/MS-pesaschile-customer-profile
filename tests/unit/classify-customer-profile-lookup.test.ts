@@ -1,46 +1,46 @@
 import { describe, expect, it } from 'vitest';
-import { classifyCustomerProfileLookup } from '../../src/domain/customer-profile/index.js';
+import { classifyCustomerProfileLookup } from '../../src/domain/customer-profile/classify-lookup.js';
+import { CUSTOMER_PROFILE_CONTRACT_VERSION } from '../../src/domain/customer-identity/index.js';
 
-describe('classifyCustomerProfileLookup (runtime, masterCustomerId only)', () => {
-  it('is not_found when master_customer does not exist', () => {
-    const result = classifyCustomerProfileLookup({
-      masterCustomerId: '999',
-      masterCustomerExists: false,
-      warnings: [],
-    });
-
-    expect(result).toEqual({
+describe('classifyCustomerProfileLookup', () => {
+  it('is not_found when the customer identity was not resolved', () => {
+    expect(
+      classifyCustomerProfileLookup({
+        customerId: 999,
+        customerExists: false,
+        warnings: [],
+      }),
+    ).toEqual({
       status: 'not_found',
-      masterCustomerId: '999',
+      customerId: 999,
       profile: null,
       warnings: [],
     });
   });
 
-  it('is partial / not_linked when master_customer exists without a PrestaShop link', () => {
-    const result = classifyCustomerProfileLookup({
-      masterCustomerId: '1',
-      masterCustomerExists: true,
-      linkedPrestashopCustomerId: null,
-      degradedReason: null,
-      profile: null,
-      warnings: [],
-    });
-
-    expect(result).toEqual({
-      status: 'partial',
-      masterCustomerId: '1',
-      linkStatus: 'not_linked',
-      prestashopCustomerId: null,
+  it('is degraded when the profile payload is unavailable after identity resolution', () => {
+    expect(
+      classifyCustomerProfileLookup({
+        customerId: 1,
+        customerExists: true,
+        degradedReason: 'customer_profile_unavailable',
+        profile: null,
+        provenance: null,
+        warnings: [],
+      }),
+    ).toEqual({
+      status: 'degraded',
+      customerId: 1,
+      reason: 'customer_profile_unavailable',
       profile: null,
       warnings: [],
     });
   });
 
-  it('is available / linked when master_customer is linked and the profile builds', () => {
+  it('is available when both profile and provenance are present', () => {
     const profile = {
-      masterCustomerId: '1',
-      generatedAt: '2026-07-27T00:00:00.000Z',
+      customerId: 1,
+      generatedAt: '2026-08-05T00:00:00.000Z',
       customer: {
         firstname: 'Ana',
         lastname: 'Perez',
@@ -48,105 +48,37 @@ describe('classifyCustomerProfileLookup (runtime, masterCustomerId only)', () =>
         rut: null,
         platformOrigin: 'prestashop',
       },
-      prestashop: {
-        customerId: 555,
-        active: true,
-        shopId: 1,
-        createdAt: null,
-        updatedAt: null,
-      },
+      prestashop: { customerId: 1, active: true, shopId: 1, createdAt: null, updatedAt: null },
       recentOrders: [],
       warnings: [],
     };
+    const provenance = {
+      customerIdentity: {
+        customerId: 1,
+        source: 'PRESTASHOP' as const,
+        externalCustomerId: '1',
+        status: 'DIRECT_SOURCE' as const,
+      },
+      dataSources: [{ source: 'PRESTASHOP' as const, entity: 'ps_customer' as const, purpose: 'customer_identity' }],
+      generatedAt: '2026-08-05T00:00:00.000Z',
+      contractVersion: CUSTOMER_PROFILE_CONTRACT_VERSION as typeof CUSTOMER_PROFILE_CONTRACT_VERSION,
+    };
 
-    const result = classifyCustomerProfileLookup({
-      masterCustomerId: '1',
-      masterCustomerExists: true,
-      linkedPrestashopCustomerId: 555,
-      degradedReason: null,
-      profile,
-      warnings: [],
-    });
-
-    expect(result).toEqual({
+    expect(
+      classifyCustomerProfileLookup({
+        customerId: 1,
+        customerExists: true,
+        degradedReason: null,
+        profile,
+        provenance,
+        warnings: [],
+      }),
+    ).toEqual({
       status: 'available',
-      masterCustomerId: '1',
-      linkStatus: 'linked',
-      prestashopCustomerId: 555,
+      customerId: 1,
       profile,
+      provenance,
       warnings: [],
     });
-  });
-
-  it('is degraded / prestashop_unavailable when linked but PrestaShop does not respond', () => {
-    const result = classifyCustomerProfileLookup({
-      masterCustomerId: '1',
-      masterCustomerExists: true,
-      linkedPrestashopCustomerId: 555,
-      degradedReason: 'prestashop_unavailable',
-      profile: null,
-      warnings: [],
-    });
-
-    expect(result).toEqual({
-      status: 'degraded',
-      reason: 'prestashop_unavailable',
-      masterCustomerId: '1',
-      linkStatus: 'linked',
-      prestashopCustomerId: 555,
-      profile: null,
-      warnings: [],
-    });
-    expect(result.status).not.toBe('not_found');
-  });
-
-  it('is degraded / prestashop_timeout when linked but the PrestaShop read times out', () => {
-    const result = classifyCustomerProfileLookup({
-      masterCustomerId: '1',
-      masterCustomerExists: true,
-      linkedPrestashopCustomerId: 555,
-      degradedReason: 'prestashop_timeout',
-      profile: null,
-      warnings: [],
-    });
-
-    expect(result).toMatchObject({ status: 'degraded', reason: 'prestashop_timeout' });
-    expect(result.status).not.toBe('not_found');
-  });
-
-  it('is degraded / prestashop_customer_not_found when linked but ps_customer no longer exists', () => {
-    const result = classifyCustomerProfileLookup({
-      masterCustomerId: '1',
-      masterCustomerExists: true,
-      linkedPrestashopCustomerId: 555,
-      degradedReason: 'prestashop_customer_not_found',
-      profile: null,
-      warnings: [],
-    });
-
-    expect(result).toEqual({
-      status: 'degraded',
-      reason: 'prestashop_customer_not_found',
-      masterCustomerId: '1',
-      linkStatus: 'linked',
-      prestashopCustomerId: 555,
-      profile: null,
-      warnings: [],
-    });
-    expect(result.status).not.toBe('not_found');
-  });
-
-  it('is degraded / profile_build_failed when sources respond but the snapshot cannot be built', () => {
-    const result = classifyCustomerProfileLookup({
-      masterCustomerId: '1',
-      masterCustomerExists: true,
-      linkedPrestashopCustomerId: 555,
-      degradedReason: null,
-      profile: null,
-      warnings: [],
-    });
-
-    expect(result).toMatchObject({ status: 'degraded', reason: 'profile_build_failed' });
-    expect(result.status).not.toBe('not_found');
   });
 });

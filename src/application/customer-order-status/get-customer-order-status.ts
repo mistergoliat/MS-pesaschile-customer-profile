@@ -1,4 +1,5 @@
 import type { CarrierRecord } from '../../domain/customer-order-status/carrier-record.js';
+import { buildCustomerDataProvenance } from '../../domain/customer-identity/index.js';
 import {
   resolveDeliveryEstimate,
   resolveDeliveryMethod,
@@ -9,60 +10,46 @@ import {
   type GetCustomerOrderStatusResult,
 } from '../../domain/customer-order-status/index.js';
 import type { CustomerOrderStatusRecord } from '../../domain/customer-order-status/customer-order-status-record.js';
-import { PrestashopTimeoutError, PrestashopUnavailableError } from '../customer-profile/errors.js';
-import type { MasterCustomerReader, OrderStatesReader } from '../customer-profile/ports.js';
+import {
+  PrestashopSchemaIncompatibleError,
+  PrestashopTimeoutError,
+  PrestashopUnavailableError,
+} from '../customer-profile/errors.js';
+import type { ResolveCustomerIdentity } from '../customer-identity/resolve-customer-identity.js';
+import type { Clock, OrderStatesReader } from '../customer-profile/ports.js';
 import type { CarriersReader, CustomerOrderStatusReader } from './ports.js';
 
 export type GetCustomerOrderStatusDependencies = {
-  readonly masterCustomerReader: MasterCustomerReader;
+  readonly resolveCustomerIdentity: ResolveCustomerIdentity;
   readonly customerOrderStatusReader: CustomerOrderStatusReader;
-  // Reused from CP-R1-T05: only ever called with a single-element array here.
   readonly orderStatesReader: OrderStatesReader;
   readonly carriersReader: CarriersReader;
-  // Which ps_order_state_lang.id_lang to translate currentStateId against (PRESTASHOP_ORDER_STATE_LANG_ID).
+  readonly clock: Clock;
   readonly orderStateLanguageId: number;
-  // Which ps_carrier_lang.id_lang / id_shop to read carrier.delay from
-  // (PRESTASHOP_CARRIER_LANG_ID / PRESTASHOP_CARRIER_SHOP_ID) — deliberately independent
-  // config from orderStateLanguageId, see config.ts.
   readonly carrierLanguageId: number;
   readonly carrierShopId: number;
 };
 
 export type GetCustomerOrderStatus = (input: GetCustomerOrderStatusInput) => Promise<GetCustomerOrderStatusResult>;
 
-// Algorithm (CP-R1-T06): master_customer is always read first; PrestaShop is only ever
-// queried once master_customer exists AND is linked. The order lookup is scoped by
-// (prestashopCustomerId, reference) in the same query — never reference alone — so an
-// order that doesn't exist and one that belongs to another customer both come back as
-// order_not_found, and neither is ever distinguishable from the response. Unclassified
-// errors propagate instead of being absorbed into a result — those are service errors
-// (5xx), not lookup outcomes. Deliberately does not read ps_order_history, ps_order_state
-// flags or any keyword from currentStateName/carrier name/delay.
 export function createGetCustomerOrderStatus(deps: GetCustomerOrderStatusDependencies): GetCustomerOrderStatus {
   return async function getCustomerOrderStatus(input) {
-    const masterCustomer = await deps.masterCustomerReader.findById(input.masterCustomerId);
-
-    if (!masterCustomer) {
-      return { status: 'customer_not_found' };
-    }
-    if (masterCustomer.prestashopCustomerId === null) {
-      return { status: 'customer_not_linked' };
+    const identityResult = await deps.resolveCustomerIdentity(input.customerId);
+    if (identityResult.status !== 'found') {
+      return { status: 'customer_not_found', customerId: input.customerId };
     }
 
-    const prestashopCustomerId = masterCustomer.prestashopCustomerId;
+    const customerId = identityResult.identity.customerId;
 
     let orderRecord: CustomerOrderStatusRecord | null;
     try {
-      orderRecord = await deps.customerOrderStatusReader.findByCustomerAndReference(
-        prestashopCustomerId,
-        input.orderReference,
-      );
+      orderRecord = await deps.customerOrderStatusReader.findByCustomerAndReference(customerId, input.orderReference);
     } catch (error) {
-      return degradedOrThrow(error);
+      return degradedOrThrow(customerId, error);
     }
 
     if (!orderRecord) {
-      return { status: 'order_not_found' };
+      return { status: 'order_not_found', customerId };
     }
 
     const warnings: CustomerOrderStatusWarning[] = [];
@@ -77,14 +64,14 @@ export function createGetCustomerOrderStatus(deps: GetCustomerOrderStatusDepende
         warnings.push('order_state_label_missing');
       }
     } catch (error) {
-      return degradedOrThrow(error);
+      return degradedOrThrow(customerId, error);
     }
 
     let carrier: CarrierRecord | null;
     try {
       carrier = await deps.carriersReader.findById(orderRecord.carrierId, deps.carrierLanguageId, deps.carrierShopId);
     } catch (error) {
-      return degradedOrThrow(error);
+      return degradedOrThrow(customerId, error);
     }
 
     let deliveryMethod: DeliveryMethod;
@@ -110,18 +97,29 @@ export function createGetCustomerOrderStatus(deps: GetCustomerOrderStatusDepende
       isRealTimeTracking: false,
     };
 
-    return { status: 'available', order, warnings };
+    return {
+      status: 'available',
+      customerId,
+      order,
+      warnings,
+      provenance: buildCustomerDataProvenance(
+        identityResult.identity,
+        [
+          { source: 'PRESTASHOP', entity: 'ps_customer', purpose: 'customer_identity' },
+          { source: 'PRESTASHOP', entity: 'ps_orders', purpose: 'order_status' },
+        ],
+        deps.clock.now().toISOString(),
+      ),
+    };
   };
 }
 
-// Same PrestaShop dependency, same two known failure causes as T03–T05 — no new
-// degraded reason introduced here. Anything else propagates as a service error.
-function degradedOrThrow(error: unknown): GetCustomerOrderStatusResult {
-  if (error instanceof PrestashopTimeoutError) {
-    return { status: 'degraded', reason: 'prestashop_timeout' };
+function degradedOrThrow(customerId: number, error: unknown): GetCustomerOrderStatusResult {
+  if (error instanceof PrestashopTimeoutError || error instanceof PrestashopUnavailableError) {
+    return { status: 'degraded', customerId, reason: 'prestashop_unavailable' };
   }
-  if (error instanceof PrestashopUnavailableError) {
-    return { status: 'degraded', reason: 'prestashop_unavailable' };
+  if (error instanceof PrestashopSchemaIncompatibleError) {
+    return { status: 'degraded', customerId, reason: 'prestashop_schema_incompatible' };
   }
   throw error;
 }

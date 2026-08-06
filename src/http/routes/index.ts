@@ -6,6 +6,7 @@ import type { GetCustomerPurchaseBehavior } from '../../application/customer-pur
 import type { GetCustomerPurchasedProducts } from '../../application/customer-purchased-products/get-customer-purchased-products.js';
 import type { GetCustomerOrderStatus } from '../../application/customer-order-status/get-customer-order-status.js';
 import type { GetCustomerProfile } from '../../application/customer-profile/get-customer-profile.js';
+import { CUSTOMER_PROFILE_CONTRACT_VERSION, type CustomerIdentity } from '../../domain/customer-identity/index.js';
 import type { GetCustomerCommercialSummaryResult } from '../../domain/customer-commercial-summary/index.js';
 import type {
   GetCustomerPurchaseBehaviorInput,
@@ -14,23 +15,18 @@ import type {
 import type { GetPurchasedProductsInput, GetPurchasedProductsResult } from '../../domain/customer-purchased-products/index.js';
 import type { GetCustomerOrderStatusResult } from '../../domain/customer-order-status/index.js';
 import type { CustomerProfileLookupResult } from '../../domain/customer-profile/index.js';
-import type { CrmReadinessResult } from '../../infrastructure/crm/crm-pool.js';
+import type { PrestashopReadinessResult } from '../../infrastructure/prestashop/prestashop-pool.js';
 import { classifyErrorForLog } from '../../observability/classify-error-for-log.js';
 
-// master_customer.id is bigint(20) unsigned: unsigned-integer text only, bounded to a
-// sane length. Never accepts an email — email-based lookup does not exist in this route.
-const masterCustomerId = z
+const numericId = z
   .string()
   .trim()
   .min(1)
   .max(20)
-  .regex(/^[0-9]+$/, 'masterCustomerId must be a numeric id');
+  .regex(/^[0-9]+$/, 'customerId must be a numeric id');
 
-const masterCustomerIdParams = z.object({ masterCustomerId });
+const customerIdParams = z.object({ customerId: numericId });
 
-// ps_orders.reference is a short alphanumeric PrestaShop-generated code, never an email
-// or a PrestaShop customerId — bounded to a sane length before it ever reaches SQL
-// (mirrors MAX_REFERENCE_LENGTH in mysql-customer-order-status-reader.ts).
 const orderReference = z
   .string()
   .trim()
@@ -38,11 +34,11 @@ const orderReference = z
   .max(32)
   .regex(/^[A-Za-z0-9]+$/, 'reference must be alphanumeric');
 
-const orderStatusParams = z.object({ masterCustomerId, reference: orderReference });
+const orderStatusParams = z.object({ customerId: numericId, reference: orderReference });
 
 export type ReadinessResult = {
-  readonly crm: CrmReadinessResult;
-  readonly prestashop: boolean;
+  readonly crm: boolean;
+  readonly prestashop: PrestashopReadinessResult;
 };
 
 export type ReadinessCheck = () => Promise<ReadinessResult>;
@@ -56,6 +52,11 @@ export type RouteDependencies = {
   readonly checkReadiness: ReadinessCheck;
 };
 
+const LOG_IDENTITY: Pick<CustomerIdentity, 'identitySource' | 'identityStatus'> = {
+  identitySource: 'PRESTASHOP',
+  identityStatus: 'DIRECT_SOURCE',
+};
+
 export function buildRoutes(deps: RouteDependencies): Router {
   const router = Router();
 
@@ -65,287 +66,254 @@ export function buildRoutes(deps: RouteDependencies): Router {
 
   router.get('/health/ready', async (_request, response) => {
     const readiness = await deps.checkReadiness();
-    // CRM down or schema-incompatible => master_customer cannot be verified at all => not
-    // ready. PrestaShop down => partial responses are still possible => ready, degraded.
-    if (readiness.crm.status !== 'ready') {
+    if (readiness.prestashop.status !== 'ready') {
       response.status(503).json({
         status: 'not_ready',
-        crm: false,
-        prestashop: readiness.prestashop,
-        reason: readiness.crm.reason,
+        prestashop: false,
+        crm: readiness.crm,
+        customerIdentitySource: 'PRESTASHOP',
+        identityStatus: 'DIRECT_SOURCE',
+        contractVersion: CUSTOMER_PROFILE_CONTRACT_VERSION,
+        reason: readiness.prestashop.reason,
       });
       return;
     }
+
     response.status(200).json({
-      status: readiness.prestashop ? 'ready' : 'ready_degraded',
-      crm: true,
-      prestashop: readiness.prestashop,
+      status: 'ready',
+      prestashop: true,
+      crm: readiness.crm,
+      customerIdentitySource: 'PRESTASHOP',
+      identityStatus: 'DIRECT_SOURCE',
+      contractVersion: CUSTOMER_PROFILE_CONTRACT_VERSION,
     });
   });
 
-  router.get(
-    '/v1/customers/:masterCustomerId/profile',
-    async (request: Request, response: Response) => {
-      const parsedParams = masterCustomerIdParams.safeParse(request.params);
-      if (!parsedParams.success) {
-        response.status(400).json({ error: 'invalid_master_customer_id' });
-        return;
-      }
+  router.get('/v1/customers/:customerId/profile', async (request: Request, response: Response) => {
+    const customerId = parseCustomerIdFromParams(request.params);
+    if (customerId === null) {
+      response.status(400).json({ error: 'invalid_customer_id' });
+      return;
+    }
 
-      const requestId = randomUUID();
-      const startedAt = Date.now();
+    const requestId = randomUUID();
+    const startedAt = Date.now();
 
-      try {
-        const result = await deps.getCustomerProfile({
-          masterCustomerId: parsedParams.data.masterCustomerId,
-        });
+    try {
+      const result = await deps.getCustomerProfile({ customerId });
 
-        logLookup(requestId, parsedParams.data.masterCustomerId, result, Date.now() - startedAt);
-        response.status(statusForResult(result)).json(result);
-      } catch (error) {
-        // Logged here (not in a generic Express error middleware) so requestId and
-        // masterCustomerId are available — never error.message/stack, SQL, config or
-        // secrets, only a safe classification. Response contract stays unchanged.
-        console.error({
-          event: 'customer_profile_request_failed',
-          requestId,
-          masterCustomerId: parsedParams.data.masterCustomerId,
-          errorType: classifyErrorForLog(error),
-        });
-        response.status(500).json({ error: 'internal_error' });
-      }
-    },
-  );
+      logProfileLookup(requestId, customerId, result, Date.now() - startedAt);
+      response.status(statusForProfileResult(result)).json(result);
+    } catch (error) {
+      console.error({
+        event: 'customer_profile_request_failed',
+        requestId,
+        customerId,
+        endpoint: 'profile',
+        contractVersion: CUSTOMER_PROFILE_CONTRACT_VERSION,
+        ...LOG_IDENTITY,
+        errorType: classifyErrorForLog(error),
+      });
+      response.status(500).json({ error: 'internal_error' });
+    }
+  });
 
-  router.get(
-    '/v1/customers/:masterCustomerId/commercial-summary',
-    async (request: Request, response: Response) => {
-      const parsedParams = masterCustomerIdParams.safeParse(request.params);
-      if (!parsedParams.success) {
-        response.status(400).json({ error: 'invalid_master_customer_id' });
-        return;
-      }
-      if (Object.keys(request.query).length > 0) {
-        response.status(400).json({ error: 'unsupported_query_params' });
-        return;
-      }
-      if (request.body !== undefined) {
-        response.status(400).json({ error: 'unsupported_body' });
-        return;
-      }
+  router.get('/v1/customers/:customerId/commercial-summary', async (request: Request, response: Response) => {
+    const customerId = parseCustomerIdFromParams(request.params);
+    if (customerId === null) {
+      response.status(400).json({ error: 'invalid_customer_id' });
+      return;
+    }
+    if (Object.keys(request.query).length > 0) {
+      response.status(400).json({ error: 'unsupported_query_params' });
+      return;
+    }
+    if (request.body !== undefined) {
+      response.status(400).json({ error: 'unsupported_body' });
+      return;
+    }
 
-      const startedAt = Date.now();
+    const startedAt = Date.now();
 
-      try {
-        const result = await deps.getCustomerCommercialSummary({
-          masterCustomerId: parsedParams.data.masterCustomerId,
-        });
+    try {
+      const result = await deps.getCustomerCommercialSummary({ customerId });
 
-        logCommercialSummaryLookup(result, Date.now() - startedAt);
-        response.status(statusForCommercialSummaryResult(result)).json(result);
-      } catch (error) {
-        console.error({
-          event: 'customer_commercial_summary_request_failed',
-          status: 'error',
-          lookupOutcome: 'internal_error',
-          durationMs: Date.now() - startedAt,
-          errorType: classifyErrorForLog(error),
-        });
-        response.status(500).json({ error: 'internal_error' });
-      }
-    },
-  );
+      logCommercialSummaryLookup(customerId, result, Date.now() - startedAt);
+      response.status(statusForCommercialSummaryResult(result)).json(result);
+    } catch (error) {
+      console.error({
+        event: 'customer_commercial_summary_request_failed',
+        customerId,
+        endpoint: 'commercial-summary',
+        contractVersion: CUSTOMER_PROFILE_CONTRACT_VERSION,
+        ...LOG_IDENTITY,
+        durationMs: Date.now() - startedAt,
+        errorType: classifyErrorForLog(error),
+      });
+      response.status(500).json({ error: 'internal_error' });
+    }
+  });
 
-  router.get(
-    '/v1/customers/:masterCustomerId/purchased-products',
-    async (request: Request, response: Response) => {
-      const parsedParams = masterCustomerIdParams.safeParse(request.params);
-      if (!parsedParams.success) {
-        response.status(400).json({ error: 'invalid_master_customer_id' });
-        return;
-      }
+  router.get('/v1/customers/:customerId/purchased-products', async (request: Request, response: Response) => {
+    const customerId = parseCustomerIdFromParams(request.params);
+    if (customerId === null) {
+      response.status(400).json({ error: 'invalid_customer_id' });
+      return;
+    }
 
-      const parsedQuery = parsePurchasedProductsQuery(request.query);
-      if (!parsedQuery.ok) {
-        response.status(400).json({ error: parsedQuery.error });
-        return;
-      }
-      if (request.body !== undefined) {
-        response.status(400).json({ error: 'unsupported_body' });
-        return;
-      }
+    const parsedQuery = parsePurchasedProductsQuery(request.query);
+    if (!parsedQuery.ok) {
+      response.status(400).json({ error: parsedQuery.error });
+      return;
+    }
+    if (request.body !== undefined) {
+      response.status(400).json({ error: 'unsupported_body' });
+      return;
+    }
 
-      const startedAt = Date.now();
+    const startedAt = Date.now();
 
-      try {
-        const result = await deps.getCustomerPurchasedProducts({
-          masterCustomerId: parsedParams.data.masterCustomerId,
-          limit: parsedQuery.value.limit,
-          offset: parsedQuery.value.offset,
-        });
+    try {
+      const result = await deps.getCustomerPurchasedProducts({
+        customerId,
+        limit: parsedQuery.value.limit,
+        offset: parsedQuery.value.offset,
+      });
 
-        logPurchasedProductsLookup(result, Date.now() - startedAt);
-        response.status(statusForPurchasedProductsResult(result)).json(result);
-      } catch {
-        console.error(
-          {
-            status: 'error',
-            returnedBucket: null,
-            hasMore: null,
-            durationMs: Date.now() - startedAt,
-            degradedReason: null,
-            lookupOutcome: 'internal_error',
-          },
-          'customer purchased products lookup failed',
-        );
-        response.status(500).json({ error: 'internal_error' });
-      }
-    },
-  );
+      logPurchasedProductsLookup(customerId, result, Date.now() - startedAt);
+      response.status(statusForPurchasedProductsResult(result)).json(result);
+    } catch (error) {
+      console.error({
+        event: 'customer_purchased_products_request_failed',
+        customerId,
+        endpoint: 'purchased-products',
+        contractVersion: CUSTOMER_PROFILE_CONTRACT_VERSION,
+        ...LOG_IDENTITY,
+        durationMs: Date.now() - startedAt,
+        errorType: classifyErrorForLog(error),
+      });
+      response.status(500).json({ error: 'internal_error' });
+    }
+  });
 
-  router.get(
-    '/v1/customers/:masterCustomerId/purchase-behavior',
-    async (request: Request, response: Response) => {
-      const parsedParams = masterCustomerIdParams.safeParse(request.params);
-      if (!parsedParams.success) {
-        response.status(400).json({ error: 'invalid_master_customer_id' });
-        return;
-      }
+  router.get('/v1/customers/:customerId/purchase-behavior', async (request: Request, response: Response) => {
+    const customerId = parseCustomerIdFromParams(request.params);
+    if (customerId === null) {
+      response.status(400).json({ error: 'invalid_customer_id' });
+      return;
+    }
 
-      const parsedQuery = parsePurchaseBehaviorQuery(request.query);
-      if (!parsedQuery.ok) {
-        response.status(400).json({ error: parsedQuery.error });
-        return;
-      }
-      if (request.body !== undefined) {
-        response.status(400).json({ error: 'unsupported_body' });
-        return;
-      }
+    const parsedQuery = parsePurchaseBehaviorQuery(request.query);
+    if (!parsedQuery.ok) {
+      response.status(400).json({ error: parsedQuery.error });
+      return;
+    }
+    if (request.body !== undefined) {
+      response.status(400).json({ error: 'unsupported_body' });
+      return;
+    }
 
-      const startedAt = Date.now();
+    const startedAt = Date.now();
 
-      try {
-        const result = await deps.getCustomerPurchaseBehavior({
-          masterCustomerId: parsedParams.data.masterCustomerId,
-          topProducts: parsedQuery.value.topProducts,
-          topVariants: parsedQuery.value.topVariants,
-        });
+    try {
+      const result = await deps.getCustomerPurchaseBehavior({
+        customerId,
+        topProducts: parsedQuery.value.topProducts,
+        topVariants: parsedQuery.value.topVariants,
+      });
 
-        logPurchaseBehaviorLookup(result, Date.now() - startedAt);
-        response.status(statusForPurchaseBehaviorResult(result)).json(result);
-      } catch {
-        console.error(
-          {
-            status: 'error',
-            distinctProductBucket: null,
-            hasRepeatedProducts: null,
-            concentrationAvailable: null,
-            durationMs: Date.now() - startedAt,
-            degradedReason: null,
-            lookupOutcome: 'internal_error',
-          },
-          'customer purchase behavior lookup failed',
-        );
-        response.status(500).json({ error: 'internal_error' });
-      }
-    },
-  );
+      logPurchaseBehaviorLookup(customerId, result, Date.now() - startedAt);
+      response.status(statusForPurchaseBehaviorResult(result)).json(result);
+    } catch (error) {
+      console.error({
+        event: 'customer_purchase_behavior_request_failed',
+        customerId,
+        endpoint: 'purchase-behavior',
+        contractVersion: CUSTOMER_PROFILE_CONTRACT_VERSION,
+        ...LOG_IDENTITY,
+        durationMs: Date.now() - startedAt,
+        errorType: classifyErrorForLog(error),
+      });
+      response.status(500).json({ error: 'internal_error' });
+    }
+  });
 
-  // GET, so there is no request body to validate — only the two path params.
-  // masterCustomerId never accepts an email; reference never accepts a PrestaShop
-  // customerId — both are validated with the same regex-bounded schemas as the
-  // corresponding adapter-level checks (see mysql-customer-order-status-reader.ts).
-  router.get(
-    '/v1/customers/:masterCustomerId/orders/:reference/status',
-    async (request: Request, response: Response) => {
-      const parsedParams = orderStatusParams.safeParse(request.params);
-      if (!parsedParams.success) {
-        const invalidField = parsedParams.error.issues[0]?.path[0];
-        response.status(400).json({
-          error: invalidField === 'reference' ? 'invalid_reference' : 'invalid_master_customer_id',
-        });
-        return;
-      }
+  router.get('/v1/customers/:customerId/orders/:reference/status', async (request: Request, response: Response) => {
+    const parsedParams = orderStatusParams.safeParse(request.params);
+    if (!parsedParams.success) {
+      const invalidField = parsedParams.error.issues[0]?.path[0];
+      response.status(400).json({
+        error: invalidField === 'reference' ? 'invalid_order_reference' : 'invalid_customer_id',
+      });
+      return;
+    }
 
-      const requestId = randomUUID();
-      const startedAt = Date.now();
+    const customerId = parseCustomerId(parsedParams.data.customerId);
+    if (customerId === null) {
+      response.status(400).json({ error: 'invalid_customer_id' });
+      return;
+    }
 
-      try {
-        const result = await deps.getCustomerOrderStatus({
-          masterCustomerId: parsedParams.data.masterCustomerId,
-          orderReference: parsedParams.data.reference,
-        });
+    const requestId = randomUUID();
+    const startedAt = Date.now();
 
-        logOrderStatusLookup(requestId, result, Date.now() - startedAt);
-        response.status(statusForOrderStatusResult(result)).json(result);
-      } catch (error) {
-        // No masterCustomerId, prestashopCustomerId, orderId or reference logged here —
-        // see CP-R1-T06 section 14. Only a safe error classification.
-        console.error({
-          event: 'customer_order_status_request_failed',
-          requestId,
-          errorType: classifyErrorForLog(error),
-        });
-        response.status(500).json({ error: 'internal_error' });
-      }
-    },
-  );
+    try {
+      const result = await deps.getCustomerOrderStatus({
+        customerId,
+        orderReference: parsedParams.data.reference,
+      });
+
+      logOrderStatusLookup(requestId, customerId, result, Date.now() - startedAt);
+      response.status(statusForOrderStatusResult(result)).json(result);
+    } catch (error) {
+      console.error({
+        event: 'customer_order_status_request_failed',
+        requestId,
+        customerId,
+        endpoint: 'order-status',
+        contractVersion: CUSTOMER_PROFILE_CONTRACT_VERSION,
+        ...LOG_IDENTITY,
+        errorType: classifyErrorForLog(error),
+      });
+      response.status(500).json({ error: 'internal_error' });
+    }
+  });
 
   return router;
 }
 
-function statusForResult(result: CustomerProfileLookupResult): number {
+function parseCustomerIdFromParams(params: Record<string, unknown>): number | null {
+  const parsedParams = customerIdParams.safeParse(params);
+  if (!parsedParams.success) {
+    return null;
+  }
+  return parseCustomerId(parsedParams.data.customerId);
+}
+
+function parseCustomerId(value: string): number | null {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    return null;
+  }
+  return parsed;
+}
+
+function statusForProfileResult(result: CustomerProfileLookupResult): number {
   switch (result.status) {
     case 'available':
-    case 'partial':
       return 200;
     case 'not_found':
       return 404;
     case 'degraded':
-      // profile_build_failed: a deterministic internal failure once both reads succeeded.
-      // Every other reason is PrestaShop being a temporarily unavailable dependency.
-      return result.reason === 'profile_build_failed' ? 500 : 503;
+      return 503;
   }
 }
 
-// Structured, PII-free: no email, firstname, lastname, rut, address, order reference,
-// order amounts, currentStateId or state name ever logged here — recentOrderCount and
-// unknownOrderStateCount are aggregate numbers only.
-function logLookup(
-  requestId: string,
-  masterCustomerId: string,
-  result: CustomerProfileLookupResult,
-  durationMs: number,
-): void {
-  console.info(
-    {
-      requestId,
-      masterCustomerId,
-      status: result.status,
-      degradedReason: result.status === 'degraded' ? result.reason : null,
-      durationMs,
-      prestashopLookupAttempted: result.status === 'available' || result.status === 'degraded',
-      recentOrderCount: result.status === 'available' ? result.profile.recentOrders.length : null,
-      unknownOrderStateCount:
-        result.status === 'available'
-          ? result.profile.recentOrders.filter((order) => order.currentState.resolution === 'unknown').length
-          : null,
-    },
-    'customer profile lookup',
-  );
-}
-
-// available/order_not_found mirror T03's not_found; customer_not_found/customer_not_linked
-// also resolve to 404 — none of them ever return an order payload, and collapsing them
-// onto the same status code as order_not_found avoids leaking a distinction (link state)
-// that a caller has no legitimate use for. degraded reuses T03's convention: both known
-// reasons here are a temporarily unavailable PrestaShop dependency, never a 500.
 function statusForOrderStatusResult(result: GetCustomerOrderStatusResult): number {
   switch (result.status) {
     case 'available':
       return 200;
     case 'customer_not_found':
-    case 'customer_not_linked':
     case 'order_not_found':
       return 404;
     case 'degraded':
@@ -358,7 +326,6 @@ function statusForCommercialSummaryResult(result: GetCustomerCommercialSummaryRe
     case 'available':
       return 200;
     case 'customer_not_found':
-    case 'customer_not_linked':
       return 404;
     case 'degraded':
       return 503;
@@ -370,7 +337,6 @@ function statusForPurchasedProductsResult(result: GetPurchasedProductsResult): n
     case 'available':
       return 200;
     case 'customer_not_found':
-    case 'customer_not_linked':
       return 404;
     case 'degraded':
       return 503;
@@ -382,16 +348,49 @@ function statusForPurchaseBehaviorResult(result: GetCustomerPurchaseBehaviorResu
     case 'available':
       return 200;
     case 'customer_not_found':
-    case 'customer_not_linked':
       return 404;
     case 'degraded':
       return 503;
   }
 }
 
-function logPurchaseBehaviorLookup(result: GetCustomerPurchaseBehaviorResult, durationMs: number): void {
+function logProfileLookup(
+  requestId: string,
+  customerId: number,
+  result: CustomerProfileLookupResult,
+  durationMs: number,
+): void {
   console.info(
     {
+      requestId,
+      customerId,
+      endpoint: 'profile',
+      contractVersion: CUSTOMER_PROFILE_CONTRACT_VERSION,
+      ...LOG_IDENTITY,
+      status: result.status,
+      degradedReason: result.status === 'degraded' ? result.reason : null,
+      durationMs,
+      recentOrderCount: result.status === 'available' ? result.profile.recentOrders.length : null,
+      unknownOrderStateCount:
+        result.status === 'available'
+          ? result.profile.recentOrders.filter((order) => order.currentState.resolution === 'unknown').length
+          : null,
+    },
+    'customer profile lookup',
+  );
+}
+
+function logPurchaseBehaviorLookup(
+  customerId: number,
+  result: GetCustomerPurchaseBehaviorResult,
+  durationMs: number,
+): void {
+  console.info(
+    {
+      customerId,
+      endpoint: 'purchase-behavior',
+      contractVersion: CUSTOMER_PROFILE_CONTRACT_VERSION,
+      ...LOG_IDENTITY,
       status: result.status,
       distinctProductBucket:
         result.status === 'available' ? distinctProductBucket(result.summary.distinctProductCount) : null,
@@ -399,7 +398,6 @@ function logPurchaseBehaviorLookup(result: GetCustomerPurchaseBehaviorResult, du
       concentrationAvailable: result.status === 'available' ? result.summary.distinctProductCount > 0 : null,
       durationMs,
       degradedReason: result.status === 'degraded' ? result.reason : null,
-      lookupOutcome: result.status,
     },
     'customer purchase behavior lookup',
   );
@@ -411,15 +409,22 @@ function distinctProductBucket(count: number): 'zero' | 'one' | 'multiple' {
   return 'multiple';
 }
 
-function logPurchasedProductsLookup(result: GetPurchasedProductsResult, durationMs: number): void {
+function logPurchasedProductsLookup(
+  customerId: number,
+  result: GetPurchasedProductsResult,
+  durationMs: number,
+): void {
   console.info(
     {
+      customerId,
+      endpoint: 'purchased-products',
+      contractVersion: CUSTOMER_PROFILE_CONTRACT_VERSION,
+      ...LOG_IDENTITY,
       status: result.status,
       returnedBucket: result.status === 'available' ? returnedBucket(result.products.length) : null,
       hasMore: result.status === 'available' ? result.pagination.hasMore : null,
       durationMs,
       degradedReason: result.status === 'degraded' ? result.reason : null,
-      lookupOutcome: result.status,
     },
     'customer purchased products lookup',
   );
@@ -526,15 +531,22 @@ function parseOptionalIntegerQueryParam(
   return parsed;
 }
 
-function logCommercialSummaryLookup(result: GetCustomerCommercialSummaryResult, durationMs: number): void {
+function logCommercialSummaryLookup(
+  customerId: number,
+  result: GetCustomerCommercialSummaryResult,
+  durationMs: number,
+): void {
   console.info(
     {
+      customerId,
+      endpoint: 'commercial-summary',
+      contractVersion: CUSTOMER_PROFILE_CONTRACT_VERSION,
+      ...LOG_IDENTITY,
       status: result.status,
       totalOrdersBucket: result.status === 'available' ? totalOrdersBucket(result.summary.totalOrders) : null,
       hasCommercialHistory: result.status === 'available' ? result.summary.totalOrders > 0 : false,
       durationMs,
       degradedReason: result.status === 'degraded' ? result.reason : null,
-      lookupOutcome: result.status,
     },
     'customer commercial summary lookup',
   );
@@ -546,13 +558,19 @@ function totalOrdersBucket(totalOrders: number): 'zero' | 'one' | 'multiple' {
   return 'multiple';
 }
 
-// CP-R1-T06 section 14: no masterCustomerId, prestashopCustomerId, orderId, reference,
-// currentStateId, currentStateName, carrierId, carrierName, delay or PII — only the
-// closed set of fields the task allows.
-function logOrderStatusLookup(requestId: string, result: GetCustomerOrderStatusResult, durationMs: number): void {
+function logOrderStatusLookup(
+  requestId: string,
+  customerId: number,
+  result: GetCustomerOrderStatusResult,
+  durationMs: number,
+): void {
   console.info(
     {
       requestId,
+      customerId,
+      endpoint: 'order-status',
+      contractVersion: CUSTOMER_PROFILE_CONTRACT_VERSION,
+      ...LOG_IDENTITY,
       status: result.status,
       degradedReason: result.status === 'degraded' ? result.reason : null,
       deliveryMethod: result.status === 'available' ? result.order.deliveryMethod : null,

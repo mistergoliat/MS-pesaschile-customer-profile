@@ -1,3 +1,4 @@
+import { buildCustomerDataProvenance, type CustomerIdentity } from '../../domain/customer-identity/index.js';
 import type { Clock } from '../customer-profile/ports.js';
 import type {
   GetCustomerPurchaseBehaviorInput,
@@ -6,8 +7,12 @@ import type {
   PurchaseBehaviorProduct,
   PurchaseBehaviorVariant,
 } from '../../domain/customer-purchase-behavior/index.js';
-import { PrestashopTimeoutError, PrestashopUnavailableError } from '../customer-profile/errors.js';
-import type { MasterCustomerReader } from '../customer-profile/ports.js';
+import {
+  PrestashopSchemaIncompatibleError,
+  PrestashopTimeoutError,
+  PrestashopUnavailableError,
+} from '../customer-profile/errors.js';
+import type { ResolveCustomerIdentity } from '../customer-identity/resolve-customer-identity.js';
 import {
   addBehaviorDecimals,
   compareDecimalDesc,
@@ -28,7 +33,7 @@ const EMPTY_CONCENTRATION: PurchaseBehaviorConcentration = {
 };
 
 export type GetCustomerPurchaseBehaviorDependencies = {
-  readonly masterCustomerReader: MasterCustomerReader;
+  readonly resolveCustomerIdentity: ResolveCustomerIdentity;
   readonly customerProductBehaviorReader: CustomerProductBehaviorReader;
   readonly clock: Clock;
 };
@@ -55,27 +60,27 @@ export function createGetCustomerPurchaseBehavior(
   deps: GetCustomerPurchaseBehaviorDependencies,
 ): GetCustomerPurchaseBehavior {
   return async function getCustomerPurchaseBehavior(input) {
-    const masterCustomer = await deps.masterCustomerReader.findById(input.masterCustomerId);
-    if (!masterCustomer) {
-      return { status: 'customer_not_found' };
-    }
-    if (masterCustomer.prestashopCustomerId === null) {
-      return { status: 'customer_not_linked' };
+    const identityResult = await deps.resolveCustomerIdentity(input.customerId);
+    if (identityResult.status !== 'found') {
+      return { status: 'customer_not_found', customerId: input.customerId };
     }
 
     try {
       const calculatedAt = deps.clock.now();
+      const customerId = identityResult.identity.customerId;
       const record = await deps.customerProductBehaviorReader.findByCustomerId({
-        prestashopCustomerId: masterCustomer.prestashopCustomerId,
+        prestashopCustomerId: customerId,
       });
       return buildAvailableResult(input, record.variants, {
+        customerId,
         validOrderCount: record.validOrderCount,
         totalUnits: record.totalProductUnitsPurchased,
         totalSpent: formatBehaviorDecimal(record.totalProductSpentTaxIncl),
         calculatedAt,
+        identity: identityResult.identity,
       });
     } catch (error) {
-      return degradedOrThrow(error);
+      return degradedOrThrow(input.customerId, error);
     }
   };
 }
@@ -83,7 +88,14 @@ export function createGetCustomerPurchaseBehavior(
 function buildAvailableResult(
   input: GetCustomerPurchaseBehaviorInput,
   variants: readonly ProductBehaviorVariantRecord[],
-  totals: { readonly validOrderCount: number; readonly totalUnits: number; readonly totalSpent: string; readonly calculatedAt: Date },
+  totals: {
+    readonly customerId: number;
+    readonly validOrderCount: number;
+    readonly totalUnits: number;
+    readonly totalSpent: string;
+    readonly calculatedAt: Date;
+    readonly identity: CustomerIdentity;
+  },
 ): GetCustomerPurchaseBehaviorResult {
   validateTotals(totals, variants);
   const products = rollupProducts(variants);
@@ -91,11 +103,13 @@ function buildAvailableResult(
   const repeatedVariantSpend = addBehaviorDecimals(repeatedVariants.map((variant) => variant.totalSpentTaxIncl));
   const sortedProducts = sortProducts(products);
   const sortedVariants = sortVariants(variants);
+  const generatedAt = totals.calculatedAt.toISOString();
 
   return {
     status: 'available',
+    customerId: totals.customerId,
     currencyIsoCode: 'CLP',
-    calculatedAt: totals.calculatedAt.toISOString(),
+    calculatedAt: generatedAt,
     summary: {
       validOrderCount: totals.validOrderCount,
       distinctProductCount: products.length,
@@ -113,6 +127,16 @@ function buildAvailableResult(
     },
     topProducts: sortedProducts.slice(0, input.topProducts).map((product) => toPublicProduct(product, totals)),
     topVariants: sortedVariants.slice(0, input.topVariants).map((variant) => toPublicVariant(variant, totals)),
+    provenance: buildCustomerDataProvenance(
+      totals.identity,
+      [
+        { source: 'PRESTASHOP', entity: 'ps_customer', purpose: 'customer_identity' },
+        { source: 'PRESTASHOP', entity: 'ps_orders', purpose: 'purchase_behavior' },
+        { source: 'PRESTASHOP', entity: 'ps_order_detail', purpose: 'purchase_behavior' },
+        { source: 'PRESTASHOP', entity: 'derived_purchase_behavior', purpose: 'purchase_behavior' },
+      ],
+      generatedAt,
+    ),
   };
 }
 
@@ -273,12 +297,12 @@ function daysSince(now: Date, then: Date): number {
   return Math.floor(diff / 86_400_000);
 }
 
-function degradedOrThrow(error: unknown): GetCustomerPurchaseBehaviorResult {
-  if (error instanceof PrestashopTimeoutError) {
-    return { status: 'degraded', reason: 'prestashop_timeout' };
+function degradedOrThrow(customerId: number, error: unknown): GetCustomerPurchaseBehaviorResult {
+  if (error instanceof PrestashopTimeoutError || error instanceof PrestashopUnavailableError) {
+    return { status: 'degraded', customerId, reason: 'prestashop_unavailable' };
   }
-  if (error instanceof PrestashopUnavailableError) {
-    return { status: 'degraded', reason: 'prestashop_unavailable' };
+  if (error instanceof PrestashopSchemaIncompatibleError) {
+    return { status: 'degraded', customerId, reason: 'prestashop_schema_incompatible' };
   }
   throw error;
 }

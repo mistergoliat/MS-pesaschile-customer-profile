@@ -27,6 +27,12 @@ export function getPrestashopQueryExecutor(): QueryExecutor {
   return createQueryExecutor(getPool(), config.prestashopDb.queryTimeoutMs);
 }
 
+export type PrestashopReadinessReason = 'prestashop_unavailable' | 'prestashop_schema_incompatible';
+
+export type PrestashopReadinessResult =
+  | { readonly status: 'ready' }
+  | { readonly status: 'not_ready'; readonly reason: PrestashopReadinessReason };
+
 export async function pingPrestashop(): Promise<boolean> {
   try {
     await getPool().query('SELECT 1');
@@ -34,6 +40,26 @@ export async function pingPrestashop(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+export async function checkPrestashopReadiness(tablePrefix: string): Promise<PrestashopReadinessResult> {
+  try {
+    await getPool().query(`SELECT id_customer FROM ${tablePrefix}customer LIMIT 0`);
+    await getPool().query(`SELECT id_order, id_customer, reference FROM ${tablePrefix}orders LIMIT 0`);
+    await getPool().query(`SELECT id_order, product_id, product_quantity FROM ${tablePrefix}order_detail LIMIT 0`);
+    return { status: 'ready' };
+  } catch (error) {
+    return { status: 'not_ready', reason: classifyPrestashopReadinessError(error) };
+  }
+}
+
+function classifyPrestashopReadinessError(error: unknown): PrestashopReadinessReason {
+  const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : null;
+
+  if (code === 'ER_BAD_FIELD_ERROR' || code === 'ER_NO_SUCH_TABLE') {
+    return 'prestashop_schema_incompatible';
+  }
+  return 'prestashop_unavailable';
 }
 
 export async function closePrestashopPool(): Promise<void> {

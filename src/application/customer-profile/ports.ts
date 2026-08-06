@@ -3,27 +3,23 @@ import type { MasterCustomerRecord } from '../../domain/customer-profile/master-
 import type { OrderStateRecord } from '../../domain/customer-profile/order-state-record.js';
 import type { PrestashopCustomerRecord } from '../../domain/customer-profile/prestashop-customer-record.js';
 
-// null means "row not found". Connection/query failures must reject the promise instead
-// of resolving to null — a CRM outage is a service error, not an absent identity.
+// Deprecated runtime port kept only so legacy infrastructure/tests can still compile
+// while the direct PrestaShop identity contract fully replaces CRM at the adapter layer.
 export interface MasterCustomerReader {
   findById(masterCustomerId: string): Promise<MasterCustomerRecord | null>;
 }
 
-// null means "ps_customer row not found" (a valid outcome: prestashop_customer_not_found).
-// Timeouts/unavailability must reject with PrestashopTimeoutError / PrestashopUnavailableError.
+// null means "ps_customer row not found". Timeouts/unavailability/schema incompatibility
+// must reject with the typed PrestaShop errors defined in application/customer-profile/errors.ts.
 export interface PrestashopCustomerReader {
-  findById(prestashopCustomerId: number): Promise<PrestashopCustomerRecord | null>;
+  findById(customerId: number): Promise<PrestashopCustomerRecord | null>;
 }
 
-// Looked up exclusively by prestashopCustomerId (master_customer.prestashop_customer_id
-// -> ps_orders.id_customer) — never by email, name, rut, address, phone or id_guest.
-// An empty array is a valid, successful result (the customer has no orders); it is not
-// distinguishable here from "not fetched yet" — the caller only calls this once ps_customer
-// is confirmed to exist. Timeouts/unavailability must reject with the same
-// PrestashopTimeoutError / PrestashopUnavailableError used by PrestashopCustomerReader.
+// Looked up exclusively by ps_orders.id_customer — never by email, name, rut, address,
+// phone or id_guest. An empty array is a valid, successful result.
 export interface CustomerOrdersReader {
   findByCustomerId(
-    prestashopCustomerId: number,
+    customerId: number,
     options?: {
       readonly limit?: number;
     },
@@ -31,11 +27,8 @@ export interface CustomerOrdersReader {
 }
 
 // Looked up exclusively by numeric order state id — never by name. Accepts already-unique
-// ids (the caller dedupes) and returns zero or more matches: a stateId with no row for the
-// configured language is simply absent from the result, not an error — the caller treats
-// that as `resolution: 'unknown'`, never as a reason to fail the whole lookup. Timeouts/
-// unavailability must reject with the same PrestashopTimeoutError / PrestashopUnavailableError
-// used by the other PrestaShop readers.
+// ids (the caller dedupes) and returns zero or more matches: a stateId with no row for
+// the configured language is simply absent from the result, not an error.
 export interface OrderStatesReader {
   findByIds(stateIds: readonly number[], languageId: number): Promise<readonly OrderStateRecord[]>;
 }

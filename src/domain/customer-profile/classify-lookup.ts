@@ -3,45 +3,30 @@ import type {
   CustomerProfileLookupResult,
   CustomerProfileSnapshot,
 } from './contracts.js';
+import type { CustomerDataProvenance } from '../customer-identity/index.js';
 
-// Discriminated on masterCustomerExists so "master doesn't exist but has a PrestaShop
-// link/profile" cannot be constructed at all — not just guarded against at runtime.
 export type CustomerProfileLookupContext =
   | {
-      readonly masterCustomerId: string;
-      readonly masterCustomerExists: false;
+      readonly customerId: number;
+      readonly customerExists: false;
       readonly warnings: readonly string[];
     }
   | {
-      readonly masterCustomerId: string;
-      readonly masterCustomerExists: true;
-      readonly linkedPrestashopCustomerId: number | null;
+      readonly customerId: number;
+      readonly customerExists: true;
       readonly degradedReason: CustomerProfileDegradedReason | null;
       readonly profile: CustomerProfileSnapshot | null;
+      readonly provenance: CustomerDataProvenance | null;
       readonly warnings: readonly string[];
     };
 
-// Pure outcome classification for GET /v1/customers/{masterCustomerId}/profile.
-// Does not read master_customer, does not read PrestaShop, does not search by email
-// — the caller resolves those facts and passes them in. See CP-R1-T02B / CP-R1-T03.
 export function classifyCustomerProfileLookup(
   context: CustomerProfileLookupContext,
 ): CustomerProfileLookupResult {
-  if (!context.masterCustomerExists) {
+  if (!context.customerExists) {
     return {
       status: 'not_found',
-      masterCustomerId: context.masterCustomerId,
-      profile: null,
-      warnings: context.warnings,
-    };
-  }
-
-  if (context.linkedPrestashopCustomerId === null) {
-    return {
-      status: 'partial',
-      masterCustomerId: context.masterCustomerId,
-      linkStatus: 'not_linked',
-      prestashopCustomerId: null,
+      customerId: context.customerId,
       profile: null,
       warnings: context.warnings,
     };
@@ -51,22 +36,17 @@ export function classifyCustomerProfileLookup(
     return {
       status: 'degraded',
       reason: context.degradedReason,
-      masterCustomerId: context.masterCustomerId,
-      linkStatus: 'linked',
-      prestashopCustomerId: context.linkedPrestashopCustomerId,
+      customerId: context.customerId,
       profile: null,
       warnings: context.warnings,
     };
   }
 
-  // Linked, no explicit failure reason, but no profile to serve: don't guess — degrade.
-  if (!context.profile) {
+  if (!context.profile || !context.provenance) {
     return {
       status: 'degraded',
-      reason: 'profile_build_failed',
-      masterCustomerId: context.masterCustomerId,
-      linkStatus: 'linked',
-      prestashopCustomerId: context.linkedPrestashopCustomerId,
+      reason: 'customer_profile_unavailable',
+      customerId: context.customerId,
       profile: null,
       warnings: context.warnings,
     };
@@ -74,10 +54,9 @@ export function classifyCustomerProfileLookup(
 
   return {
     status: 'available',
-    masterCustomerId: context.masterCustomerId,
-    linkStatus: 'linked',
-    prestashopCustomerId: context.linkedPrestashopCustomerId,
+    customerId: context.customerId,
     profile: context.profile,
+    provenance: context.provenance,
     warnings: context.warnings,
   };
 }

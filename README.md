@@ -2,72 +2,101 @@
 
 Read-oriented Customer Profile microservice for PesasChile.
 
-This service will expose commercial customer profile snapshots for two future consumers:
-
-- CRM Customer 360.
-- Autonomous sales worker.
-
-The public customer identifier is always `masterCustomerId`.
-
-`ps_customer.id_customer` is an internal operational reference used only after identity has been resolved from CRM identity data. It must never become the public customer identity.
+This service currently serves PrestaShop customer data directly. The public runtime identifier is `customerId`, interpreted as `ps_customer.id_customer`.
 
 ## Sources
 
-- CRM source: `main_management`, centered on `master_customer`.
-- PrestaShop source: `pesas_productiva`, centered on `ps_customer`, orders, order details, carts, discounts, addresses, and service metadata.
-
-CRM and PrestaShop have separate logical connection settings even when they share physical infrastructure.
+- Runtime identity and customer data: PrestaShop (`pesas_productiva`), centered on `ps_customer`, `ps_orders` and `ps_order_detail`.
+- CRM is optional diagnostic context only in this stage. It is not required for runtime reads or readiness.
 
 ## Scope
 
-`GET /v1/customers/{masterCustomerId}/profile` is implemented as a minimal runtime read foundation (CP-R1-T03): given a `masterCustomerId` already confirmed by onboarding / Identity Resolver, it reads `master_customer`, reads the linked `ps_customer` if any, and returns `available` / `partial` / `not_found` / `degraded`. See [`docs/design/CP-R1-T03-customer-profile-runtime-read-foundation.md`](docs/design/CP-R1-T03-customer-profile-runtime-read-foundation.md) for the full contract.
+`GET /v1/customers/{customerId}/profile` returns a direct PrestaShop customer profile with recent orders, preserving current business fields and adding `provenance`.
 
-Customer Profile incluye hasta N órdenes recientes pagadas según la regla empresarial de PesasChile (`CUSTOMER_PROFILE_RECENT_ORDERS_LIMIT`, default 10, máx. 50): toda fila persistida en `ps_orders` cuenta como orden pagada. Ver [`docs/design/CP-R1-T04-customer-orders-read-model.md`](docs/design/CP-R1-T04-customer-orders-read-model.md).
+`GET /v1/customers/{customerId}/orders/{reference}/status` returns the latest order state recorded in PrestaShop for a specific order owned by that same `customerId`.
 
-Cada `recentOrder` ahora incluye además `currentState` (CP-R1-T05): el nombre del estado (`ps_order_state_lang.name`, en el idioma configurado por `PRESTASHOP_ORDER_STATE_LANG_ID`) cuando PrestaShop tiene una traducción para ese `currentStateId`, o `{ name: null, resolution: 'unknown' }` si no la tiene — sin que eso degrade el resto del perfil. Ver [`docs/design/CP-R1-T05-order-state-context-read-model.md`](docs/design/CP-R1-T05-order-state-context-read-model.md). El nombre proviene tal cual de PrestaShop: todavía **no** existe interpretación semántica (no hay "despachado"/"entregado" derivado de keywords), ni tracking real, ni la capacidad de que Sales AI consulte cualquier pedido por referencia, teléfono o email. Sigue sin devolver spend agregado, direcciones ni oportunidad activa.
+`GET /v1/customers/{customerId}/commercial-summary` returns aggregated historical commerce metrics derived from valid PrestaShop orders.
 
-`GET /v1/customers/{masterCustomerId}/orders/{reference}/status` (CP-R1-T06) responde el estado de **una** orden puntual de un cliente: último `currentStateId`/nombre registrado en PrestaShop, `deliveryMethod` (derivado de un mapa de negocio explícito sobre `id_carrier`), un `deliveryEstimate` general declarado por método (nunca una fecha calculada) y `isRealTimeTracking: false` siempre presente. La pertenencia de la orden al cliente se valida en la misma consulta (`id_customer AND reference`); una orden inexistente y una que pertenece a otro cliente producen exactamente el mismo `order_not_found`. No usa `ps_order_history`, no clasifica por keywords ni por flags, no calcula ETA ni feriados, y no integra con ningún Carrier MS. Ver [`docs/releases/CP-R1-T06-customer-order-status-capability.md`](docs/releases/CP-R1-T06-customer-order-status-capability.md).
+`GET /v1/customers/{customerId}/purchased-products` returns aggregated historical purchased products derived from valid PrestaShop order lines.
 
-`GET /v1/customers/{masterCustomerId}/commercial-summary` (CP-R1-T07) responde un resumen comercial agregado, bajo demanda y directamente contra PrestaShop, para clientes vinculados por `master_customer.prestashop_customer_id`. Una compra comercial valida es exclusivamente `ps_orders.valid = 1`: no usa existencia de fila, `current_state = 2`, flags `paid`, nombres de estados ni `ps_order_history`. Devuelve totales de ordenes validas, gasto bruto tax-incl en strings de seis decimales, promedio, primera/ultima compra, recencia, frecuencia, unidades brutas, productos distintos agregados, cancelaciones (`current_state = 6`) y reembolsos (`current_state = 7`). La moneda publica es fija `CLP`. No devuelve productos individuales, `product_name`, referencias, categorias, segmentacion, recomendaciones ni cambia `/profile`. Ver [`docs/releases/CP-R1-T07-customer-commercial-summary.md`](docs/releases/CP-R1-T07-customer-commercial-summary.md).
+`GET /v1/customers/{customerId}/purchase-behavior` returns derived purchase behavior metrics calculated from valid PrestaShop order lines.
 
-`GET /v1/customers/{masterCustomerId}/purchased-products` (CP-R1-T08) responde productos historicos comprados, agregados por `product_id + product_attribute_id`, solo desde lineas de ordenes con `ps_orders.valid = 1`. Usa la autoridad historica de `ps_order_detail` para `product_name`, `product_reference`, cantidades y `total_price_tax_incl`; el nombre/referencia publicados corresponden a la linea mas reciente de la agrupacion, con desempate deterministico. Incluye productos eliminados como `deleted_or_unavailable`, pagina con `limit`/`offset`, ordena por ultima compra descendente y no devuelve categorias, marcas, imagenes, precio actual, stock, recomendaciones ni gasto neto. Ver [`docs/releases/CP-R1-T08-purchased-products.md`](docs/releases/CP-R1-T08-purchased-products.md).
+Every useful response now includes:
 
-`GET /v1/customers/{masterCustomerId}/purchase-behavior` (CP-R1-T09) responde indicadores relativos de comportamiento de compra: repeticion por producto y variante, participaciones de gasto/ordenes/unidades, concentracion de gasto, HHI, diversidad efectiva y recencia por elemento. Calcula sobre el 100% del historial valido (`ps_orders.valid = 1` + `ps_order_detail`) y limita solo la presentacion con `topProducts`/`topVariants` de 1 a 10. No usa categorias, marcas, catalogo actual, score compuesto, clustering, recomendaciones, cache ni snapshot, y no modifica `/profile`, T07 ni T08. Ver [`docs/releases/CP-R1-T09-customer-product-behavior.md`](docs/releases/CP-R1-T09-customer-product-behavior.md).
+- `customerId`
+- `provenance.customerIdentity`
+- `provenance.dataSources`
+- `provenance.generatedAt`
+- `provenance.contractVersion = customer-profile-prestashop-direct-v1`
 
-This endpoint is internal and read-only, with no email-based lookup and no service-to-service authentication yet — it is not fit for public exposure without a gateway/auth layer in front.
+`GET /health/ready` depends only on the PrestaShop runtime contract required by this stage:
 
-`GET /health/ready` checks CRM connectivity *and* minimal schema compatibility (not just "can we connect"): if `master_customer.prestashop_customer_id` is missing, it reports `503 not_ready` with `reason: crm_schema_incompatible` instead of announcing `ready` and only failing on the first real profile request. Logs never contain a raw MySQL driver message (which can include host, port or user) — only a closed set of safe labels such as `crm_unavailable` or `prestashop_timeout`.
+- connectivity
+- `ps_customer`
+- `ps_orders`
+- `ps_order_detail`
+
+CRM incompatibility must not block readiness.
 
 ```text
-GET /v1/customers/{masterCustomerId}/profile
-GET /v1/customers/{masterCustomerId}/orders/{reference}/status
-GET /v1/customers/{masterCustomerId}/commercial-summary
-GET /v1/customers/{masterCustomerId}/purchased-products
-GET /v1/customers/{masterCustomerId}/purchase-behavior
+GET /v1/customers/{customerId}/profile
+GET /v1/customers/{customerId}/orders/{reference}/status
+GET /v1/customers/{customerId}/commercial-summary
+GET /v1/customers/{customerId}/purchased-products
+GET /v1/customers/{customerId}/purchase-behavior
 GET /health
 GET /health/ready
 ```
 
-### Environment (CP-R1-T06)
+## Identity
 
-`PRESTASHOP_CARRIER_LANG_ID` / `PRESTASHOP_CARRIER_SHOP_ID` (`ps_carrier_lang.id_lang` / `id_shop`, para leer `delay`): obligatorias, sin default silencioso — deliberadamente independientes de `PRESTASHOP_ORDER_STATE_LANG_ID` aunque puedan terminar apuntando al mismo idioma en la instalación real.
+Current identity authority:
+`ps_customer.id_customer`
 
-## Out Of Scope
+Future canonical identity authority:
+`master_customer.id`
 
-- Creating customers.
-- Merging customers.
-- Creating opportunities.
-- Managing conversations or messages.
-- Making commercial decisions.
-- Writing to PrestaShop.
-- A monolithic Customer 360.
-- Worker implementation.
-- Identity graph, probabilistic matching, event sourcing, queues, CQRS, or ORM.
+For migrated PrestaShop customers, the planned compatibility assumption remains:
+`master_customer.id = ps_customer.id_customer`
+
+That future migration is documented but not implemented in this stage.
+
+### Breaking change: `customerId` is not `masterCustomerId`
+
+The five routes above kept their URL shape (`/v1/customers/{id}/...`) across
+this change, but the identifier they accept did not: it used to be
+`masterCustomerId` (`master_customer.id`, resolved through
+`master_customer.prestashop_customer_id`), it is now `customerId`
+(`ps_customer.id_customer`), read directly. `masterCustomerId` is no longer
+accepted by these routes, there is no automatic translation between the two
+ID spaces, and a numerically valid `masterCustomerId` cannot be told apart
+from a valid `customerId` by format alone — both are positive numeric
+strings. Any existing consumer must migrate explicitly. Full before/after
+contract table:
+[`docs/releases/CP-R1-T12A-direct-prestashop-customer-input.md`](docs/releases/CP-R1-T12A-direct-prestashop-customer-input.md#breaking-contract-mastercustomerid---customerid).
+
+### `customer.rut` is always `null`
+
+`profile.customer.rut` in `GET /v1/customers/{customerId}/profile` is always
+`null` in this contract version (`customer-profile-prestashop-direct-v1`):
+`rut` came exclusively from `master_customer.rut`, which this service no
+longer reads. It is not resolved by DNI/PII, not fabricated, and recovering
+it is out of scope for this stage — see
+[`docs/releases/CP-R1-T12A-direct-prestashop-customer-input.md`](docs/releases/CP-R1-T12A-direct-prestashop-customer-input.md#field-changes-customerrut).
+
+## Security and Logging
+
+- No CRM lookup at runtime.
+- No email-, phone- or RUT-based lookup.
+- No writes to PrestaShop.
+- Logs include safe technical metadata such as `customerId`, `identitySource`, `contractVersion`, endpoint status and duration.
+- Logs do not include raw SQL errors, credentials or customer PII.
 
 ## Development
 
 ```bash
 npm run typecheck
 npm run lint
+npm run build
 npm test
 ```

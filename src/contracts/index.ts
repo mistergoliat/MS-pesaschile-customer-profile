@@ -13,6 +13,13 @@ export type {
   IdentityResolutionStatus,
 } from '../domain/identity-resolution/index.js';
 export type {
+  CustomerDataProvenance,
+  CustomerDataSource,
+  CustomerDataSourceEntity,
+  CustomerIdentity,
+  ResolveCustomerIdentityResult,
+} from '../domain/customer-identity/index.js';
+export type {
   CustomerOrderStatus,
   CustomerOrderStatusWarning,
   DeliveryEstimate,

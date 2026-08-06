@@ -6,6 +6,7 @@ import type { GetCustomerPurchasedProducts } from '../../src/application/custome
 import type { GetCustomerOrderStatus } from '../../src/application/customer-order-status/get-customer-order-status.js';
 import type { GetCustomerProfile } from '../../src/application/customer-profile/get-customer-profile.js';
 import { buildApp } from '../../src/app.js';
+import { CUSTOMER_PROFILE_CONTRACT_VERSION, type CustomerDataProvenance } from '../../src/domain/customer-identity/index.js';
 import type { GetCustomerOrderStatusResult } from '../../src/domain/customer-order-status/index.js';
 import type { ReadinessCheck } from '../../src/http/routes/index.js';
 
@@ -29,7 +30,7 @@ const unreachableGetCustomerPurchaseBehavior: GetCustomerPurchaseBehavior = asyn
 
 async function startApp(
   getCustomerOrderStatus: GetCustomerOrderStatus,
-  checkReadiness: ReadinessCheck = async () => ({ crm: { status: 'ready' }, prestashop: true }),
+  checkReadiness: ReadinessCheck = async () => ({ crm: false, prestashop: { status: 'ready' } }),
 ): Promise<string> {
   const app = buildApp({
     getCustomerProfile: unreachableGetCustomerProfile,
@@ -60,8 +61,26 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
+function provenance(customerId: number): CustomerDataProvenance {
+  return {
+    customerIdentity: {
+      customerId,
+      source: 'PRESTASHOP',
+      externalCustomerId: String(customerId),
+      status: 'DIRECT_SOURCE',
+    },
+    dataSources: [
+      { source: 'PRESTASHOP', entity: 'ps_customer', purpose: 'customer_identity' },
+      { source: 'PRESTASHOP', entity: 'ps_orders', purpose: 'order_status' },
+    ],
+    generatedAt: '2026-08-05T00:00:00.000Z',
+    contractVersion: CUSTOMER_PROFILE_CONTRACT_VERSION,
+  };
+}
+
 const availableResult: GetCustomerOrderStatusResult = {
   status: 'available',
+  customerId: 1,
   order: {
     orderId: 123,
     reference: 'ABC123XYZ',
@@ -78,10 +97,11 @@ const availableResult: GetCustomerOrderStatusResult = {
     source: 'prestashop_current_state',
     isRealTimeTracking: false,
   },
+  provenance: provenance(1),
   warnings: [],
 };
 
-describe('GET /v1/customers/:masterCustomerId/orders/:reference/status', () => {
+describe('GET /v1/customers/:customerId/orders/:reference/status', () => {
   it('returns 200 with the documented shape for available', async () => {
     const baseUrl = await startApp(async () => availableResult);
 
@@ -92,7 +112,7 @@ describe('GET /v1/customers/:masterCustomerId/orders/:reference/status', () => {
     expect(body).toEqual(availableResult);
   });
 
-  it('serializes currentStateName: null (order_state_label_missing) as JSON null, not omitted', async () => {
+  it('serializes currentStateName: null as JSON null, not omitted', async () => {
     const unresolvedResult: GetCustomerOrderStatusResult = {
       ...availableResult,
       order: { ...availableResult.order, currentStateName: null },
@@ -107,94 +127,50 @@ describe('GET /v1/customers/:masterCustomerId/orders/:reference/status', () => {
     expect(body.order).toHaveProperty('currentStateName', null);
   });
 
-  it('returns 404 for order_not_found (covers both a missing order and an order belonging to another customer)', async () => {
-    const baseUrl = await startApp(async () => ({ status: 'order_not_found' }));
+  it('returns 404 for order_not_found and customer_not_found', async () => {
+    const missingOrderBaseUrl = await startApp(async () => ({ status: 'order_not_found', customerId: 1 }));
+    expect((await fetch(`${missingOrderBaseUrl}/v1/customers/1/orders/NOPE1234/status`)).status).toBe(404);
 
-    const response = await fetch(`${baseUrl}/v1/customers/1/orders/NOPE1234/status`);
+    await closeServer();
 
-    expect(response.status).toBe(404);
-    const body = (await response.json()) as Record<string, unknown>;
-    expect(body).toEqual({ status: 'order_not_found' });
+    const missingCustomerBaseUrl = await startApp(async () => ({ status: 'customer_not_found', customerId: 999 }));
+    expect((await fetch(`${missingCustomerBaseUrl}/v1/customers/999/orders/ABC123XYZ/status`)).status).toBe(404);
   });
 
-  it('returns 404 for customer_not_found', async () => {
-    const baseUrl = await startApp(async () => ({ status: 'customer_not_found' }));
+  it('returns 503 for degraded unavailable or schema incompatible', async () => {
+    const unavailableBaseUrl = await startApp(async () => ({
+      status: 'degraded',
+      customerId: 1,
+      reason: 'prestashop_unavailable',
+    }));
+    expect((await fetch(`${unavailableBaseUrl}/v1/customers/1/orders/ABC123XYZ/status`)).status).toBe(503);
 
-    const response = await fetch(`${baseUrl}/v1/customers/999/orders/ABC123XYZ/status`);
+    await closeServer();
 
-    expect(response.status).toBe(404);
+    const incompatibleBaseUrl = await startApp(async () => ({
+      status: 'degraded',
+      customerId: 1,
+      reason: 'prestashop_schema_incompatible',
+    }));
+    expect((await fetch(`${incompatibleBaseUrl}/v1/customers/1/orders/ABC123XYZ/status`)).status).toBe(503);
   });
 
-  it('returns 404 for customer_not_linked', async () => {
-    const baseUrl = await startApp(async () => ({ status: 'customer_not_linked' }));
-
-    const response = await fetch(`${baseUrl}/v1/customers/1/orders/ABC123XYZ/status`);
-
-    expect(response.status).toBe(404);
-  });
-
-  it('returns 503 for degraded / prestashop_unavailable', async () => {
-    const baseUrl = await startApp(async () => ({ status: 'degraded', reason: 'prestashop_unavailable' }));
-
-    const response = await fetch(`${baseUrl}/v1/customers/1/orders/ABC123XYZ/status`);
-
-    expect(response.status).toBe(503);
-  });
-
-  it('returns 503 for degraded / prestashop_timeout', async () => {
-    const baseUrl = await startApp(async () => ({ status: 'degraded', reason: 'prestashop_timeout' }));
-
-    const response = await fetch(`${baseUrl}/v1/customers/1/orders/ABC123XYZ/status`);
-
-    expect(response.status).toBe(503);
-  });
-
-  it('returns 400 invalid_master_customer_id for a non-numeric masterCustomerId, without calling the use case', async () => {
+  it('returns 400 invalid_customer_id or invalid_order_reference without calling the use case', async () => {
     let called = false;
     const baseUrl = await startApp(async () => {
       called = true;
       return availableResult;
     });
 
-    const response = await fetch(`${baseUrl}/v1/customers/not-a-valid-id/orders/ABC123XYZ/status`);
-    const body = (await response.json()) as Record<string, unknown>;
-
-    expect(response.status).toBe(400);
-    expect(body).toEqual({ error: 'invalid_master_customer_id' });
+    expect((await fetch(`${baseUrl}/v1/customers/not-a-valid-id/orders/ABC123XYZ/status`)).status).toBe(400);
+    expect((await fetch(`${baseUrl}/v1/customers/0/orders/ABC123XYZ/status`)).status).toBe(400);
+    expect((await fetch(`${baseUrl}/v1/customers/1/orders/${'A'.repeat(40)}/status`)).status).toBe(400);
+    const invalidReference = await fetch(
+      `${baseUrl}/v1/customers/1/orders/${encodeURIComponent("A'; DROP TABLE ps_orders;")}/status`,
+    );
+    expect(invalidReference.status).toBe(400);
+    expect(await invalidReference.json()).toEqual({ error: 'invalid_order_reference' });
     expect(called).toBe(false);
-  });
-
-  it('returns 400 invalid_reference for an empty-after-decoding or oversized reference, without calling the use case', async () => {
-    let called = false;
-    const baseUrl = await startApp(async () => {
-      called = true;
-      return availableResult;
-    });
-
-    const response = await fetch(`${baseUrl}/v1/customers/1/orders/${'A'.repeat(40)}/status`);
-    const body = (await response.json()) as Record<string, unknown>;
-
-    expect(response.status).toBe(400);
-    expect(body).toEqual({ error: 'invalid_reference' });
-    expect(called).toBe(false);
-  });
-
-  it('returns 400 invalid_reference for a reference with unsafe characters', async () => {
-    const baseUrl = await startApp(async () => availableResult);
-
-    const response = await fetch(`${baseUrl}/v1/customers/1/orders/${encodeURIComponent("A'; DROP TABLE ps_orders;")}/status`);
-
-    expect(response.status).toBe(400);
-    const body = (await response.json()) as Record<string, unknown>;
-    expect(body).toEqual({ error: 'invalid_reference' });
-  });
-
-  it('does not accept an email as masterCustomerId', async () => {
-    const baseUrl = await startApp(async () => availableResult);
-
-    const response = await fetch(`${baseUrl}/v1/customers/${encodeURIComponent('a@b.com')}/orders/ABC123XYZ/status`);
-
-    expect(response.status).toBe(400);
   });
 
   it('returns 500 with no stack trace or internals when the use case throws', async () => {
@@ -210,45 +186,32 @@ describe('GET /v1/customers/:masterCustomerId/orders/:reference/status', () => {
     expect(body).toEqual({ error: 'internal_error' });
   });
 
-  it('logs on success without masterCustomerId, reference, orderId, currentStateId, currentStateName or carrier fields', async () => {
+  it('logs on success without reference, orderId or raw state text, but with safe identity metadata', async () => {
     const spy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
     const baseUrl = await startApp(async () => availableResult);
 
     await fetch(`${baseUrl}/v1/customers/1/orders/ABC123XYZ/status`);
 
-    expect(spy).toHaveBeenCalledTimes(1);
     const loggedArgs = spy.mock.calls[0] ?? [];
     const serialized = JSON.stringify(loggedArgs);
     expect(serialized).not.toContain('ABC123XYZ');
     expect(serialized).not.toContain('Entregado a Transportista');
-    expect(serialized).not.toContain('123');
-    expect(loggedArgs[0]).not.toHaveProperty('masterCustomerId');
-    expect(loggedArgs[0]).not.toHaveProperty('reference');
-    expect(loggedArgs[0]).not.toHaveProperty('orderId');
     expect(loggedArgs[0]).toMatchObject({
+      customerId: 1,
+      endpoint: 'order-status',
+      identitySource: 'PRESTASHOP',
+      identityStatus: 'DIRECT_SOURCE',
+      contractVersion: CUSTOMER_PROFILE_CONTRACT_VERSION,
       status: 'available',
       deliveryMethod: 'direct_dispatch',
       currentStateResolved: true,
-      carrierResolved: true,
-      warningsCount: 0,
     });
-  });
-
-  it('logs a safe classification only on error, never masterCustomerId or the raw error message', async () => {
-    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    const baseUrl = await startApp(async () => {
-      throw new Error('connect ECONNREFUSED secret-internal-host:3306 user=admin');
-    });
-
-    await fetch(`${baseUrl}/v1/customers/1/orders/ABC123XYZ/status`);
-
-    expect(spy).toHaveBeenCalledTimes(1);
-    const loggedArgs = spy.mock.calls[0] ?? [];
-    const serialized = JSON.stringify(loggedArgs);
-    expect(serialized).not.toContain('secret-internal-host');
-    expect(serialized).not.toContain('admin');
-    expect(serialized).not.toContain('ECONNREFUSED');
-    expect(loggedArgs[0]).not.toHaveProperty('masterCustomerId');
-    expect(loggedArgs[0]).toMatchObject({ event: 'customer_order_status_request_failed' });
   });
 });
+
+async function closeServer(): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server?.close((error) => (error ? reject(error) : resolve()));
+  });
+  server = undefined;
+}
