@@ -39,10 +39,10 @@ export function createMysqlRfmSnapshotRepository(
   testHooks: RfmSnapshotRepositoryTestHooks = {},
 ): RfmSnapshotRepository {
   return {
-    async hasPublishedSnapshot(snapshotKey) {
+    async findPublishedSnapshot(snapshotKey) {
       const [rows] = await pool.execute<RowDataPacket[]>(
         `
-          SELECT id
+          SELECT id, dataset_checksum
           FROM customer_rfm_snapshot
           WHERE snapshot_key = ?
             AND status = 'published'
@@ -50,7 +50,14 @@ export function createMysqlRfmSnapshotRepository(
         `,
         [snapshotKey],
       );
-      return rows.length > 0;
+      const row = rows[0];
+      if (!row) {
+        return null;
+      }
+      return {
+        snapshotId: String(row.id),
+        datasetChecksum: String(row.dataset_checksum),
+      };
     },
 
     async publishSnapshot(input) {
@@ -175,13 +182,16 @@ async function insertRows(
           recency_score,
           frequency_score,
           monetary_score,
-          rfm_code
+          rfm_code,
+          segment_code,
+          segment_version
         )
-        VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         snapshotId,
         row.prestashopCustomerId,
+        row.masterCustomerId,
         row.identityResolutionStatus,
         toMysqlDateTimeFromSource(row.firstValidOrderAt),
         toMysqlDateTimeFromSource(row.lastValidOrderAt),
@@ -194,6 +204,8 @@ async function insertRows(
         row.frequencyScore,
         row.monetaryScore,
         row.rfmCode,
+        row.segmentCode,
+        row.segmentVersion,
       ],
     );
   }
@@ -228,7 +240,9 @@ async function calculatePersistedDatasetChecksum(
         recency_score AS recencyScore,
         frequency_score AS frequencyScore,
         monetary_score AS monetaryScore,
-        rfm_code AS rfmCode
+        rfm_code AS rfmCode,
+        segment_code AS segmentCode,
+        segment_version AS segmentVersion
       FROM customer_rfm_snapshot_row
       WHERE snapshot_id = ?
       ORDER BY prestashop_customer_id ASC
@@ -254,7 +268,7 @@ async function calculatePersistedDatasetChecksum(
 function toPersistedChecksumRow(row: RowDataPacket): PersistRfmSnapshotInput['rows'][number] {
   return {
     prestashopCustomerId: Number(row.prestashopCustomerId),
-    masterCustomerId: null,
+    masterCustomerId: row.masterCustomerId === null ? null : String(row.masterCustomerId),
     identityResolutionStatus: 'provisional',
     firstValidOrderAt: normalizePersistedMysqlDateTime(String(row.firstValidOrderAt)),
     lastValidOrderAt: normalizePersistedMysqlDateTime(String(row.lastValidOrderAt)),
@@ -267,7 +281,16 @@ function toPersistedChecksumRow(row: RowDataPacket): PersistRfmSnapshotInput['ro
     frequencyScore: Number(row.frequencyScore) as PersistRfmSnapshotInput['rows'][number]['frequencyScore'],
     monetaryScore: Number(row.monetaryScore) as PersistRfmSnapshotInput['rows'][number]['monetaryScore'],
     rfmCode: String(row.rfmCode),
+    segmentCode: requirePersistedString(row.segmentCode, 'segmentCode') as PersistRfmSnapshotInput['rows'][number]['segmentCode'],
+    segmentVersion: requirePersistedString(row.segmentVersion, 'segmentVersion'),
   };
+}
+
+function requirePersistedString(value: unknown, field: string): string {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new Error(`Invalid persisted ${field}`);
+  }
+  return value;
 }
 
 function normalizePersistedMysqlDateTime(value: string): string {

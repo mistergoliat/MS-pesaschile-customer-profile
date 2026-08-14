@@ -50,3 +50,11 @@ export type {
   PurchaseBehaviorSummary,
   PurchaseBehaviorVariant,
 } from '../domain/customer-purchase-behavior/index.js';
+export type {
+  CustomerRfmDegradedReason,
+  CustomerRfmMetricsPayload,
+  CustomerRfmNotAvailableReason,
+  CustomerRfmSegmentPayload,
+  CustomerRfmSnapshotPayload,
+  GetCustomerRfmResult,
+} from '../domain/customer-rfm/index.js';

@@ -3,6 +3,7 @@ import {
   buildRfmSnapshotDataset,
   buildRfmSnapshotWindow,
   defaultFrequencyThresholds,
+  rfmCommercialSegmentVersion,
   recencyCalendarDays,
   scoreFrequencyThresholds,
   scoreMonetaryTieSafe,
@@ -148,6 +149,8 @@ describe('buildRfmSnapshotDataset', () => {
       grossOrderValueTaxIncl: '0.000000',
       averageOrderValueTaxIncl: '0.000000',
       frequencyScore: 1,
+      segmentCode: 'NEEDS_ATTENTION',
+      segmentVersion: 'rfm-commercial-v1',
     });
     expect(result.rows[1]?.rfmCode).toMatch(/^R\dF\dM\d$/);
     expect(result.rows[1]?.grossOrderValueTaxIncl).toBe('120.000000');
@@ -180,7 +183,24 @@ describe('buildRfmSnapshotDataset', () => {
       excludedSellerServiceValueTaxIncl: '4.000000',
       grossOrderValueBeforeSellerServiceExclusion: '1324.000000',
       monetaryAfterSellerServiceExclusion: '1320.000000',
+      canonicalIdentitySource: 'master_customer.prestashop_customer_id',
+      canonicalMatchedCount: 0,
+      canonicalUnmatchedCount: 3,
+      canonicalAmbiguousCount: 0,
+      canonicalCoveragePct: '0.000000',
+      segmentVersion: rfmCommercialSegmentVersion,
     });
+    expect(result.manifest.segmentCounts).toEqual({
+      CHAMPION: 0,
+      LOYAL: 1,
+      POTENTIAL_LOYAL: 1,
+      RECENT_HIGH_VALUE: 0,
+      RECENT_ONE_TIME: 0,
+      NEEDS_ATTENTION: 1,
+      AT_RISK_HIGH_VALUE: 0,
+      HIBERNATING: 0,
+    });
+    expect(result.manifest.segmentPercentages.POTENTIAL_LOYAL).toBe('33.333333');
     expect(result.manifest.frequencyThresholds).toEqual(defaultFrequencyThresholds);
     expect(JSON.stringify(result.manifest)).not.toMatch(/email|phone|address|rut|dni/i);
 
@@ -193,6 +213,46 @@ describe('buildRfmSnapshotDataset', () => {
     });
     expect(second.datasetChecksum).toBe(result.datasetChecksum);
     expect(second.sourceChecksum).toBe(result.sourceChecksum);
+  });
+
+  it('includes canonical identity mapping in rows, manifest and dataset checksum without changing R/F/M', () => {
+    const window = buildRfmSnapshotWindow(referenceTime);
+    const baseline = buildRfmSnapshotDataset({
+      ...window,
+      generatedAt,
+      calculationVersion: 'rfm-v1',
+      sourceRows: rows(),
+      diagnostics: diagnostics(),
+    });
+
+    const canonical = buildRfmSnapshotDataset({
+      ...window,
+      generatedAt,
+      calculationVersion: 'rfm-v1',
+      sourceRows: rows(),
+      diagnostics: diagnostics(),
+      canonicalIdentityResolutions: [
+        { prestashopCustomerId: 10, status: 'matched', masterCustomerId: '9001' },
+        { prestashopCustomerId: 20, status: 'unmatched', masterCustomerId: null },
+        { prestashopCustomerId: 30, status: 'ambiguous', masterCustomerId: null },
+      ],
+      canonicalIdentityCoverage: {
+        populationSize: 3,
+        canonicalMatchedCount: 1,
+        canonicalUnmatchedCount: 1,
+        canonicalAmbiguousCount: 1,
+        canonicalCoveragePct: '33.333333',
+      },
+    });
+
+    expect(canonical.rows.find((row) => row.prestashopCustomerId === 10)?.masterCustomerId).toBe('9001');
+    expect(canonical.rows.map((row) => row.recencyDays)).toEqual(baseline.rows.map((row) => row.recencyDays));
+    expect(canonical.rows.map((row) => row.frequencyScore)).toEqual(baseline.rows.map((row) => row.frequencyScore));
+    expect(canonical.rows.map((row) => row.monetaryScore)).toEqual(baseline.rows.map((row) => row.monetaryScore));
+    expect(canonical.rows.map((row) => row.segmentCode)).toEqual(baseline.rows.map((row) => row.segmentCode));
+    expect(canonical.manifest.canonicalMatchedCount).toBe(1);
+    expect(canonical.manifest.canonicalAmbiguousCount).toBe(1);
+    expect(canonical.datasetChecksum).not.toBe(baseline.datasetChecksum);
   });
 
   it('aborts on multi-currency, incompatible conversion rates, duplicate customers and bad scores inputs', () => {

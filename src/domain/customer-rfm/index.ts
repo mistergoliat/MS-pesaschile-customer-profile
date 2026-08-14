@@ -4,6 +4,7 @@ export * from './dataset.js';
 export * from './date-window.js';
 export * from './decimal.js';
 export * from './scoring.js';
+export * from './segmentation.js';
 export * from './source-drift.js';
 export * from './timezone-policy.js';
 export * from './use-case-analysis.js';

@@ -14,6 +14,14 @@ const envSchema = z.object({
   CRM_DB_CONNECTION_LIMIT: z.coerce.number().int().positive().default(5),
   CRM_DB_QUERY_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
 
+  RFM_SNAPSHOT_DB_HOST: z.string().min(1),
+  RFM_SNAPSHOT_DB_PORT: z.coerce.number().int().positive().default(3306),
+  RFM_SNAPSHOT_DB_USER: z.string().min(1),
+  RFM_SNAPSHOT_DB_PASSWORD: z.string().min(1),
+  RFM_SNAPSHOT_DB_NAME: z.string().min(1),
+  RFM_SNAPSHOT_DB_CONNECTION_LIMIT: z.coerce.number().int().positive().default(5),
+  RFM_SNAPSHOT_DB_QUERY_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
+
   PRESTASHOP_DB_HOST: z.string().min(1),
   PRESTASHOP_DB_PORT: z.coerce.number().int().positive().default(3306),
   PRESTASHOP_DB_USER: z.string().min(1),
@@ -66,6 +74,15 @@ export const config = {
     database: raw.CRM_DB_NAME,
     connectionLimit: raw.CRM_DB_CONNECTION_LIMIT,
     queryTimeoutMs: raw.CRM_DB_QUERY_TIMEOUT_MS,
+  },
+  rfmSnapshotDb: {
+    host: raw.RFM_SNAPSHOT_DB_HOST,
+    port: raw.RFM_SNAPSHOT_DB_PORT,
+    user: raw.RFM_SNAPSHOT_DB_USER,
+    password: raw.RFM_SNAPSHOT_DB_PASSWORD,
+    database: raw.RFM_SNAPSHOT_DB_NAME,
+    connectionLimit: raw.RFM_SNAPSHOT_DB_CONNECTION_LIMIT,
+    queryTimeoutMs: raw.RFM_SNAPSHOT_DB_QUERY_TIMEOUT_MS,
   },
   prestashopDb: {
     host: raw.PRESTASHOP_DB_HOST,

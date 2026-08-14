@@ -11,6 +11,7 @@ import {
   monetaryPolicyVersion,
   populationPolicyVersion,
   populationScope,
+  rfmCommercialSegmentVersion,
   refundPolicyVersion,
   scoringPolicyVersion,
   sha256Stable,
@@ -35,6 +36,8 @@ function input(): PersistRfmSnapshotInput {
       frequencyScore: 2,
       monetaryScore: 5,
       rfmCode: 'R5F2M5',
+      segmentCode: 'POTENTIAL_LOYAL',
+      segmentVersion: rfmCommercialSegmentVersion,
     },
   ];
   const datasetChecksum = checksumDataset('rfm-v1', rows);
@@ -134,6 +137,32 @@ function input(): PersistRfmSnapshotInput {
       frequencyThresholds: {},
       sourceChecksum: 'a'.repeat(64),
       datasetChecksum,
+      canonicalIdentitySource: 'master_customer.prestashop_customer_id',
+      canonicalMatchedCount: 0,
+      canonicalUnmatchedCount: 1,
+      canonicalAmbiguousCount: 0,
+      canonicalCoveragePct: '0.000000',
+      segmentVersion: rfmCommercialSegmentVersion,
+      segmentCounts: {
+        CHAMPION: 0,
+        LOYAL: 0,
+        POTENTIAL_LOYAL: 1,
+        RECENT_HIGH_VALUE: 0,
+        RECENT_ONE_TIME: 0,
+        NEEDS_ATTENTION: 0,
+        AT_RISK_HIGH_VALUE: 0,
+        HIBERNATING: 0,
+      },
+      segmentPercentages: {
+        CHAMPION: '0.000000',
+        LOYAL: '0.000000',
+        POTENTIAL_LOYAL: '100.000000',
+        RECENT_HIGH_VALUE: '0.000000',
+        RECENT_ONE_TIME: '0.000000',
+        NEEDS_ATTENTION: '0.000000',
+        AT_RISK_HIGH_VALUE: '0.000000',
+        HIBERNATING: '0.000000',
+      },
     },
     datasetChecksum,
     generatedAt: '2026-08-03T01:00:00.000Z',
@@ -228,6 +257,8 @@ function toPersistedRowData(row: PersistRfmSnapshotInput['rows'][number]): RowDa
     frequencyScore: row.frequencyScore,
     monetaryScore: row.monetaryScore,
     rfmCode: row.rfmCode,
+    segmentCode: row.segmentCode,
+    segmentVersion: row.segmentVersion,
   } as unknown as RowDataPacket;
 }
 

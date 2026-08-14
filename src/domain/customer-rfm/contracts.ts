@@ -1,7 +1,9 @@
 import type { RfmScore } from './scoring.js';
+import type { RfmCommercialSegmentCode } from './segmentation.js';
 
 export type IdentityResolutionStatus = 'provisional';
 export type RfmSnapshotStatus = 'building' | 'validated' | 'published' | 'failed' | 'superseded';
+export type CanonicalIdentityResolutionStatus = 'matched' | 'unmatched' | 'ambiguous';
 
 export type RfmPopulationSourceRow = {
   readonly prestashopCustomerId: number;
@@ -13,7 +15,7 @@ export type RfmPopulationSourceRow = {
 };
 
 export type RfmSnapshotRow = RfmPopulationSourceRow & {
-  readonly masterCustomerId: null;
+  readonly masterCustomerId: string | null;
   readonly identityResolutionStatus: IdentityResolutionStatus;
   readonly recencyDays: number;
   readonly averageOrderValueTaxIncl: string;
@@ -21,6 +23,8 @@ export type RfmSnapshotRow = RfmPopulationSourceRow & {
   readonly frequencyScore: RfmScore;
   readonly monetaryScore: RfmScore;
   readonly rfmCode: string;
+  readonly segmentCode: RfmCommercialSegmentCode;
+  readonly segmentVersion: string;
 };
 
 export type CurrencyDiagnostics = {
@@ -153,7 +157,129 @@ export type RfmSnapshotManifest = {
   readonly frequencyThresholds: unknown;
   readonly sourceChecksum: string;
   readonly datasetChecksum: string;
+  readonly canonicalIdentitySource: 'master_customer.prestashop_customer_id';
+  readonly canonicalMatchedCount: number;
+  readonly canonicalUnmatchedCount: number;
+  readonly canonicalAmbiguousCount: number;
+  readonly canonicalCoveragePct: string;
+  readonly segmentVersion: string;
+  readonly segmentCounts: Record<RfmCommercialSegmentCode, number>;
+  readonly segmentPercentages: Record<RfmCommercialSegmentCode, string>;
 };
+
+export type CanonicalIdentityResolution = {
+  readonly prestashopCustomerId: number;
+  readonly status: CanonicalIdentityResolutionStatus;
+  readonly masterCustomerId: string | null;
+};
+
+export type CanonicalIdentityCoverageSummary = {
+  readonly populationSize: number;
+  readonly canonicalMatchedCount: number;
+  readonly canonicalUnmatchedCount: number;
+  readonly canonicalAmbiguousCount: number;
+  readonly canonicalCoveragePct: string;
+};
+
+export type CurrentRfmSnapshotMetadata = {
+  readonly snapshotId: string;
+  readonly snapshotKey: string;
+  readonly status: 'published';
+  readonly calculationVersion: string;
+  readonly identityAuthority: string;
+  readonly identityAuthorityVersion: string;
+  readonly referenceTime: Date;
+  readonly generatedAt: Date;
+  readonly publishedAt: Date;
+  readonly populationSize: number;
+  readonly currencyCode: string;
+  readonly datasetChecksum: string;
+};
+
+export type CurrentPrestashopCustomerRfmRecord = {
+  readonly prestashopCustomerId: number;
+  readonly masterCustomerId: string | null;
+  readonly identityResolutionStatus: IdentityResolutionStatus;
+  readonly firstValidOrderAt: Date;
+  readonly lastValidOrderAt: Date;
+  readonly recencyDays: number;
+  readonly frequencyOrders: number;
+  readonly grossOrderValueTaxIncl: string;
+  readonly averageOrderValueTaxIncl: string;
+  readonly distinctShopCount: number;
+  readonly recencyScore: RfmScore;
+  readonly frequencyScore: RfmScore;
+  readonly monetaryScore: RfmScore;
+  readonly rfmCode: string;
+  readonly segmentCode: RfmCommercialSegmentCode | null;
+  readonly segmentVersion: string | null;
+  readonly snapshot: CurrentRfmSnapshotMetadata;
+};
+
+export type CurrentMasterCustomerRfmRecord = Omit<CurrentPrestashopCustomerRfmRecord, 'masterCustomerId'> & {
+  readonly masterCustomerId: string;
+};
+
+export type CurrentMasterCustomerRfmLookup = {
+  readonly snapshot: CurrentRfmSnapshotMetadata | null;
+  readonly record: CurrentMasterCustomerRfmRecord | null;
+};
+
+export const CUSTOMER_RFM_RUNTIME_CONTRACT_VERSION = 'customer-rfm-runtime-v1';
+
+export type CustomerRfmNotAvailableReason = 'no_current_rfm_record';
+export type CustomerRfmDegradedReason = 'no_published_rfm_snapshot';
+
+export type CustomerRfmSnapshotPayload = {
+  readonly snapshotId: string;
+  readonly calculationVersion: string;
+  readonly referenceTime: string;
+  readonly publishedAt: string;
+  readonly currencyCode: string;
+};
+
+export type CustomerRfmMetricsPayload = {
+  readonly recencyDays: number;
+  readonly frequencyOrders: number;
+  readonly grossOrderValueTaxIncl: string;
+  readonly averageOrderValueTaxIncl: string;
+  readonly recencyScore: RfmScore;
+  readonly frequencyScore: RfmScore;
+  readonly monetaryScore: RfmScore;
+  readonly rfmCode: string;
+};
+
+export type CustomerRfmSegmentPayload = {
+  readonly code: RfmCommercialSegmentCode | null;
+  readonly version: string | null;
+};
+
+export type GetCustomerRfmResult =
+  | {
+      readonly status: 'available';
+      readonly masterCustomerId: string;
+      readonly snapshot: CustomerRfmSnapshotPayload;
+      readonly rfm: CustomerRfmMetricsPayload;
+      readonly segment: CustomerRfmSegmentPayload;
+      readonly contractVersion: typeof CUSTOMER_RFM_RUNTIME_CONTRACT_VERSION;
+    }
+  | {
+      readonly status: 'customer_not_found';
+      readonly masterCustomerId: string;
+      readonly contractVersion: typeof CUSTOMER_RFM_RUNTIME_CONTRACT_VERSION;
+    }
+  | {
+      readonly status: 'rfm_not_available';
+      readonly masterCustomerId: string;
+      readonly reason: CustomerRfmNotAvailableReason;
+      readonly contractVersion: typeof CUSTOMER_RFM_RUNTIME_CONTRACT_VERSION;
+    }
+  | {
+      readonly status: 'degraded';
+      readonly masterCustomerId: string;
+      readonly reason: CustomerRfmDegradedReason;
+      readonly contractVersion: typeof CUSTOMER_RFM_RUNTIME_CONTRACT_VERSION;
+    };
 
 export type FrequencyOutlierDiagnostics = {
   readonly maximumFrequencyOrders: number | null;

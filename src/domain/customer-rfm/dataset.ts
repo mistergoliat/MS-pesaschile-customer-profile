@@ -18,7 +18,15 @@ import {
   type FrequencyThresholds,
   type RfmScore,
 } from './scoring.js';
+import {
+  classifyRfmCommercialSegment,
+  rfmCommercialSegmentCodes,
+  rfmCommercialSegmentVersion,
+  type RfmCommercialSegmentCode,
+} from './segmentation.js';
 import type {
+  CanonicalIdentityCoverageSummary,
+  CanonicalIdentityResolution,
   DecimalDistributionSummary,
   DistributionSummary,
   RfmPopulationSourceRow,
@@ -53,6 +61,8 @@ export type BuildRfmSnapshotInput = {
   readonly calculationVersion: string;
   readonly sourceRows: readonly RfmPopulationSourceRow[];
   readonly diagnostics: RfmSnapshotDiagnostics;
+  readonly canonicalIdentityResolutions?: readonly CanonicalIdentityResolution[];
+  readonly canonicalIdentityCoverage?: CanonicalIdentityCoverageSummary;
   readonly frequencyThresholds?: FrequencyThresholds;
   readonly snapshotId?: string | null;
 };
@@ -73,6 +83,7 @@ export function buildRfmSnapshotDataset(input: BuildRfmSnapshotInput): BuiltRfmS
   const normalizedSourceRows = input.sourceRows
     .map(normalizeSourceRow)
     .sort((a, b) => a.prestashopCustomerId - b.prestashopCustomerId);
+  const canonicalIdentity = resolveCanonicalIdentity(normalizedSourceRows, input);
   const recencyValues = normalizedSourceRows.map((row) => recencyCalendarDays(input.referenceTime, row.lastValidOrderAt));
   const monetaryValues = normalizedSourceRows.map((row) => row.grossOrderValueTaxIncl);
   const recencyScores = scoreRecencyTieSafe(recencyValues);
@@ -90,9 +101,18 @@ export function buildRfmSnapshotDataset(input: BuildRfmSnapshotInput): BuiltRfmS
     }
     const frequencyScore = scoreFrequencyThresholds(row.frequencyOrders, frequencyThresholds);
     const averageOrderValueTaxIncl = divideRfmDecimal(row.grossOrderValueTaxIncl, row.frequencyOrders);
+    const segment = classifyRfmCommercialSegment({
+      recencyScore,
+      frequencyScore,
+      monetaryScore,
+    });
+    const identityResolution = canonicalIdentity.byPrestashopCustomerId.get(row.prestashopCustomerId);
+    if (!identityResolution) {
+      throw new Error(`Missing canonical identity resolution for prestashopCustomerId ${String(row.prestashopCustomerId)}`);
+    }
     return {
       ...row,
-      masterCustomerId: null,
+      masterCustomerId: identityResolution.masterCustomerId,
       identityResolutionStatus: 'provisional',
       recencyDays,
       averageOrderValueTaxIncl,
@@ -100,6 +120,8 @@ export function buildRfmSnapshotDataset(input: BuildRfmSnapshotInput): BuiltRfmS
       frequencyScore,
       monetaryScore,
       rfmCode: buildRfmCode(recencyScore, frequencyScore, monetaryScore),
+      segmentCode: segment.segmentCode,
+      segmentVersion: segment.segmentVersion,
     } satisfies RfmSnapshotRow;
   });
 
@@ -192,6 +214,14 @@ export function buildRfmSnapshotDataset(input: BuildRfmSnapshotInput): BuiltRfmS
     frequencyThresholds,
     sourceChecksum,
     datasetChecksum,
+    canonicalIdentitySource: 'master_customer.prestashop_customer_id',
+    canonicalMatchedCount: canonicalIdentity.coverage.canonicalMatchedCount,
+    canonicalUnmatchedCount: canonicalIdentity.coverage.canonicalUnmatchedCount,
+    canonicalAmbiguousCount: canonicalIdentity.coverage.canonicalAmbiguousCount,
+    canonicalCoveragePct: canonicalIdentity.coverage.canonicalCoveragePct,
+    segmentVersion: rfmCommercialSegmentVersion,
+    segmentCounts: countSegments(rows),
+    segmentPercentages: summarizeSegmentPercentages(rows),
   };
 
   assertRfmManifestHasNoPii(manifest);
@@ -229,6 +259,79 @@ function normalizeSourceRow(row: RfmPopulationSourceRow): RfmPopulationSourceRow
   return {
     ...row,
     grossOrderValueTaxIncl: formatRfmDecimal(row.grossOrderValueTaxIncl),
+  };
+}
+
+function resolveCanonicalIdentity(
+  rows: readonly RfmPopulationSourceRow[],
+  input: BuildRfmSnapshotInput,
+): {
+  readonly byPrestashopCustomerId: Map<number, CanonicalIdentityResolution>;
+  readonly coverage: CanonicalIdentityCoverageSummary;
+} {
+  const resolutions = input.canonicalIdentityResolutions ?? rows.map((row) => ({
+    prestashopCustomerId: row.prestashopCustomerId,
+    status: 'unmatched' as const,
+    masterCustomerId: null,
+  }));
+
+  const byPrestashopCustomerId = new Map<number, CanonicalIdentityResolution>();
+  for (const resolution of resolutions) {
+    if (!Number.isSafeInteger(resolution.prestashopCustomerId) || resolution.prestashopCustomerId <= 0) {
+      throw new Error('RFM dataset contains invalid canonical identity prestashopCustomerId');
+    }
+    if (!['matched', 'unmatched', 'ambiguous'].includes(resolution.status)) {
+      throw new Error('RFM dataset contains invalid canonical identity status');
+    }
+    if (resolution.status === 'matched' && !resolution.masterCustomerId) {
+      throw new Error('Matched canonical identity resolution requires masterCustomerId');
+    }
+    if (resolution.status !== 'matched' && resolution.masterCustomerId !== null) {
+      throw new Error('Non-matched canonical identity resolution must not carry masterCustomerId');
+    }
+    if (byPrestashopCustomerId.has(resolution.prestashopCustomerId)) {
+      throw new Error('RFM dataset contains duplicate canonical identity resolutions');
+    }
+    byPrestashopCustomerId.set(resolution.prestashopCustomerId, resolution);
+  }
+
+  for (const row of rows) {
+    if (!byPrestashopCustomerId.has(row.prestashopCustomerId)) {
+      throw new Error(`Missing canonical identity resolution for prestashopCustomerId ${String(row.prestashopCustomerId)}`);
+    }
+  }
+
+  const coverage =
+    input.canonicalIdentityCoverage ??
+    summarizeCanonicalIdentityCoverage(Array.from(byPrestashopCustomerId.values()), rows.length);
+
+  if (coverage.populationSize !== rows.length) {
+    throw new Error('Canonical identity coverage population size must match RFM population size');
+  }
+  if (
+    coverage.canonicalMatchedCount + coverage.canonicalUnmatchedCount + coverage.canonicalAmbiguousCount !==
+    coverage.populationSize
+  ) {
+    throw new Error('Canonical identity coverage counts do not add up to the RFM population size');
+  }
+
+  return { byPrestashopCustomerId, coverage };
+}
+
+function summarizeCanonicalIdentityCoverage(
+  resolutions: readonly CanonicalIdentityResolution[],
+  populationSize: number,
+): CanonicalIdentityCoverageSummary {
+  const canonicalMatchedCount = resolutions.filter((resolution) => resolution.status === 'matched').length;
+  const canonicalUnmatchedCount = resolutions.filter((resolution) => resolution.status === 'unmatched').length;
+  const canonicalAmbiguousCount = resolutions.filter((resolution) => resolution.status === 'ambiguous').length;
+
+  return {
+    populationSize,
+    canonicalMatchedCount,
+    canonicalUnmatchedCount,
+    canonicalAmbiguousCount,
+    canonicalCoveragePct: populationSize === 0 ? '0.000000' : ((canonicalMatchedCount / populationSize) * 100).toFixed(6),
   };
 }
 
@@ -385,6 +488,28 @@ function countStrings(values: readonly string[]): Record<string, number> {
   const counts: Record<string, number> = {};
   for (const value of values) counts[value] = (counts[value] ?? 0) + 1;
   return Object.fromEntries(Object.entries(counts).sort(([a], [b]) => a.localeCompare(b)));
+}
+
+function countSegments(rows: readonly RfmSnapshotRow[]): Record<RfmCommercialSegmentCode, number> {
+  const counts = Object.fromEntries(rfmCommercialSegmentCodes.map((segmentCode: RfmCommercialSegmentCode) => [segmentCode, 0])) as Record<
+    RfmCommercialSegmentCode,
+    number
+  >;
+  for (const row of rows) {
+    counts[row.segmentCode] = (counts[row.segmentCode] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function summarizeSegmentPercentages(rows: readonly RfmSnapshotRow[]): Record<RfmCommercialSegmentCode, string> {
+  const counts = countSegments(rows);
+  const total = rows.length;
+  return Object.fromEntries(
+    rfmCommercialSegmentCodes.map((segmentCode: RfmCommercialSegmentCode) => [
+      segmentCode,
+      total === 0 ? '0.000000' : ((counts[segmentCode] / total) * 100).toFixed(6),
+    ]),
+  ) as Record<RfmCommercialSegmentCode, string>;
 }
 
 function summarizeNumberValuesByScore(values: readonly (readonly [RfmScore, number])[]): Record<string, { readonly min: number | null; readonly max: number | null; readonly uniqueValueCount: number }> {

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { GetCustomerCommercialSummary } from '../../application/customer-commercial-summary/get-customer-commercial-summary.js';
 import type { GetCustomerPurchaseBehavior } from '../../application/customer-purchase-behavior/get-customer-purchase-behavior.js';
 import type { GetCustomerPurchasedProducts } from '../../application/customer-purchased-products/get-customer-purchased-products.js';
+import type { GetCustomerRfm } from '../../application/customer-rfm/get-customer-rfm.js';
 import type { GetCustomerOrderStatus } from '../../application/customer-order-status/get-customer-order-status.js';
 import type { GetCustomerProfile } from '../../application/customer-profile/get-customer-profile.js';
 import { CUSTOMER_PROFILE_CONTRACT_VERSION, type CustomerIdentity } from '../../domain/customer-identity/index.js';
@@ -13,6 +14,10 @@ import type {
   GetCustomerPurchaseBehaviorResult,
 } from '../../domain/customer-purchase-behavior/index.js';
 import type { GetPurchasedProductsInput, GetPurchasedProductsResult } from '../../domain/customer-purchased-products/index.js';
+import {
+  CUSTOMER_RFM_RUNTIME_CONTRACT_VERSION,
+  type GetCustomerRfmResult,
+} from '../../domain/customer-rfm/index.js';
 import type { GetCustomerOrderStatusResult } from '../../domain/customer-order-status/index.js';
 import type { CustomerProfileLookupResult } from '../../domain/customer-profile/index.js';
 import type { PrestashopReadinessResult } from '../../infrastructure/prestashop/prestashop-pool.js';
@@ -49,6 +54,7 @@ export type RouteDependencies = {
   readonly getCustomerCommercialSummary: GetCustomerCommercialSummary;
   readonly getCustomerPurchasedProducts: GetCustomerPurchasedProducts;
   readonly getCustomerPurchaseBehavior: GetCustomerPurchaseBehavior;
+  readonly getCustomerRfm: GetCustomerRfm;
   readonly checkReadiness: ReadinessCheck;
 };
 
@@ -238,6 +244,41 @@ export function buildRoutes(deps: RouteDependencies): Router {
     }
   });
 
+  router.get('/v1/customers/:masterCustomerId/rfm', async (request: Request, response: Response) => {
+    const masterCustomerId = parseMasterCustomerIdFromParams(request.params);
+    if (masterCustomerId === null) {
+      response.status(400).json({ error: 'invalid_master_customer_id' });
+      return;
+    }
+    if (Object.keys(request.query).length > 0) {
+      response.status(400).json({ error: 'unsupported_query_params' });
+      return;
+    }
+    if (request.body !== undefined) {
+      response.status(400).json({ error: 'unsupported_body' });
+      return;
+    }
+
+    const startedAt = Date.now();
+
+    try {
+      const result = await deps.getCustomerRfm({ masterCustomerId });
+
+      logCustomerRfmLookup(masterCustomerId, result, Date.now() - startedAt);
+      response.status(statusForCustomerRfmResult(result)).json(result);
+    } catch (error) {
+      console.error({
+        event: 'customer_rfm_request_failed',
+        endpoint: 'rfm',
+        masterCustomerId,
+        contractVersion: CUSTOMER_RFM_RUNTIME_CONTRACT_VERSION,
+        durationMs: Date.now() - startedAt,
+        errorType: classifyErrorForLog(error),
+      });
+      response.status(500).json({ error: 'internal_error' });
+    }
+  });
+
   router.get('/v1/customers/:customerId/orders/:reference/status', async (request: Request, response: Response) => {
     const parsedParams = orderStatusParams.safeParse(request.params);
     if (!parsedParams.success) {
@@ -298,6 +339,18 @@ function parseCustomerId(value: string): number | null {
   return parsed;
 }
 
+function parseMasterCustomerIdFromParams(params: Record<string, unknown>): string | null {
+  const parsed = z
+    .object({
+      masterCustomerId: numericId,
+    })
+    .safeParse(params);
+  if (!parsed.success) {
+    return null;
+  }
+  return /^0+$/.test(parsed.data.masterCustomerId) ? null : parsed.data.masterCustomerId;
+}
+
 function statusForProfileResult(result: CustomerProfileLookupResult): number {
   switch (result.status) {
     case 'available':
@@ -348,6 +401,18 @@ function statusForPurchaseBehaviorResult(result: GetCustomerPurchaseBehaviorResu
     case 'available':
       return 200;
     case 'customer_not_found':
+      return 404;
+    case 'degraded':
+      return 503;
+  }
+}
+
+function statusForCustomerRfmResult(result: GetCustomerRfmResult): number {
+  switch (result.status) {
+    case 'available':
+      return 200;
+    case 'customer_not_found':
+    case 'rfm_not_available':
       return 404;
     case 'degraded':
       return 503;
@@ -580,5 +645,24 @@ function logOrderStatusLookup(
       durationMs,
     },
     'customer order status lookup',
+  );
+}
+
+function logCustomerRfmLookup(masterCustomerId: string, result: GetCustomerRfmResult, durationMs: number): void {
+  console.info(
+    {
+      masterCustomerId,
+      endpoint: 'rfm',
+      contractVersion: CUSTOMER_RFM_RUNTIME_CONTRACT_VERSION,
+      status: result.status,
+      hasSegment:
+        result.status === 'available' ? result.segment.code !== null && result.segment.version !== null : null,
+      segmentCode: result.status === 'available' ? result.segment.code : null,
+      snapshotId: result.status === 'available' ? result.snapshot.snapshotId : null,
+      degradedReason: result.status === 'degraded' ? result.reason : null,
+      unavailableReason: result.status === 'rfm_not_available' ? result.reason : null,
+      durationMs,
+    },
+    'customer rfm lookup',
   );
 }

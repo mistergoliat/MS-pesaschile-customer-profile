@@ -3,6 +3,7 @@ import {
   assertRfmUseCaseReportHasNoPii,
   buildLifetimeCustomerMetrics,
   buildRfmUseCaseAnalysis,
+  classifyRfmCommercialSegment,
   type HistoricalRfmOrderInput,
   type RfmScore,
   type RfmSnapshotRow,
@@ -25,6 +26,11 @@ function row(input: {
   const recencyScore = input.r ?? 5;
   const frequencyScore = input.f ?? (input.frequency >= 6 ? 5 : input.frequency >= 4 ? 4 : input.frequency >= 3 ? 3 : input.frequency >= 2 ? 2 : 1);
   const monetaryScore = input.m ?? 3;
+  const segment = classifyRfmCommercialSegment({
+    recencyScore,
+    frequencyScore,
+    monetaryScore,
+  });
   return {
     prestashopCustomerId: input.id,
     masterCustomerId: null,
@@ -40,6 +46,8 @@ function row(input: {
     frequencyScore,
     monetaryScore,
     rfmCode: `R${recencyScore}F${frequencyScore}M${monetaryScore}`,
+    segmentCode: segment.segmentCode,
+    segmentVersion: segment.segmentVersion,
   };
 }
 

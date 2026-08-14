@@ -9,6 +9,7 @@ const {
   getCustomerCommercialSummary,
   getCustomerPurchasedProducts,
   getCustomerPurchaseBehavior,
+  getCustomerRfm,
   checkReadiness,
   shutdown,
 } = bootstrap();
@@ -18,6 +19,7 @@ const app = buildApp({
   getCustomerCommercialSummary,
   getCustomerPurchasedProducts,
   getCustomerPurchaseBehavior,
+  getCustomerRfm,
   checkReadiness,
 });
 

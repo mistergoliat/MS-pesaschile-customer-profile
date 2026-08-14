@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GetCustomerCommercialSummary } from '../../src/application/customer-commercial-summary/get-customer-commercial-summary.js';
 import type { GetCustomerPurchaseBehavior } from '../../src/application/customer-purchase-behavior/get-customer-purchase-behavior.js';
 import type { GetCustomerPurchasedProducts } from '../../src/application/customer-purchased-products/get-customer-purchased-products.js';
+import type { GetCustomerRfm } from '../../src/application/customer-rfm/get-customer-rfm.js';
 import type { GetCustomerOrderStatus } from '../../src/application/customer-order-status/get-customer-order-status.js';
 import type { GetCustomerProfile } from '../../src/application/customer-profile/get-customer-profile.js';
 import { buildApp } from '../../src/app.js';
@@ -24,6 +25,9 @@ const unreachableGetCustomerCommercialSummary: GetCustomerCommercialSummary = as
 const unreachableGetCustomerPurchasedProducts: GetCustomerPurchasedProducts = async () => {
   throw new Error('getCustomerPurchasedProducts must not be called from the purchase behavior route tests');
 };
+const unreachableGetCustomerRfm: GetCustomerRfm = async () => {
+  throw new Error('getCustomerRfm must not be called from the purchase behavior route tests');
+};
 
 async function startApp(
   getCustomerPurchaseBehavior: GetCustomerPurchaseBehavior,
@@ -35,6 +39,7 @@ async function startApp(
     getCustomerCommercialSummary: unreachableGetCustomerCommercialSummary,
     getCustomerPurchasedProducts: unreachableGetCustomerPurchasedProducts,
     getCustomerPurchaseBehavior,
+    getCustomerRfm: unreachableGetCustomerRfm,
     checkReadiness,
   });
   server = createServer(app);

@@ -15,8 +15,10 @@ import {
   createGetCustomerPurchaseBehavior,
   type GetCustomerPurchaseBehavior,
 } from './application/customer-purchase-behavior/get-customer-purchase-behavior.js';
+import { createGetCustomerRfm, type GetCustomerRfm } from './application/customer-rfm/get-customer-rfm.js';
 import { createGetCustomerProfile, type GetCustomerProfile } from './application/customer-profile/get-customer-profile.js';
 import { config } from './config.js';
+import { createMysqlMasterCustomerReader, getCrmQueryExecutor } from './infrastructure/crm/index.js';
 import {
   checkPrestashopReadiness,
   closePrestashopPool,
@@ -33,6 +35,8 @@ import { createMysqlCommercialOrdersSummaryReader } from './infrastructure/prest
 import { createMysqlCommercialProductsSummaryReader } from './infrastructure/prestashop/mysql-commercial-products-summary-reader.js';
 import { createMysqlPurchasedProductsReader } from './infrastructure/prestashop/mysql-purchased-products-reader.js';
 import { createMysqlCustomerProductBehaviorReader } from './infrastructure/prestashop/mysql-customer-product-behavior-reader.js';
+import { createMysqlRfmSnapshotReader } from './infrastructure/rfm/mysql-rfm-snapshot-reader.js';
+import { closeRfmSnapshotPool, getRfmSnapshotQueryExecutor } from './infrastructure/rfm/rfm-snapshot-pool.js';
 import { SystemClock } from './infrastructure/shared/system-clock.js';
 import type { ReadinessCheck } from './http/routes/index.js';
 
@@ -45,6 +49,7 @@ export type Bootstrap = {
   readonly getCustomerCommercialSummary: GetCustomerCommercialSummary;
   readonly getCustomerPurchasedProducts: GetCustomerPurchasedProducts;
   readonly getCustomerPurchaseBehavior: GetCustomerPurchaseBehavior;
+  readonly getCustomerRfm: GetCustomerRfm;
   readonly checkReadiness: ReadinessCheck;
   readonly shutdown: () => Promise<void>;
 };
@@ -88,6 +93,8 @@ export function bootstrap(): Bootstrap {
     getPrestashopQueryExecutor(),
     config.prestashopDb.prefix,
   );
+  const masterCustomerReader = createMysqlMasterCustomerReader(getCrmQueryExecutor());
+  const currentRfmSnapshotReader = createMysqlRfmSnapshotReader(getRfmSnapshotQueryExecutor());
 
   const getCustomerProfile = createGetCustomerProfile({
     resolveCustomerIdentity,
@@ -131,6 +138,11 @@ export function bootstrap(): Bootstrap {
     clock: systemClock,
   });
 
+  const getCustomerRfm = createGetCustomerRfm({
+    masterCustomerReader,
+    currentRfmSnapshotReader,
+  });
+
   const checkReadiness: ReadinessCheck = async () => {
     const [prestashop, crm] = await Promise.all([
       checkPrestashopReadiness(config.prestashopDb.prefix),
@@ -146,9 +158,10 @@ export function bootstrap(): Bootstrap {
     getCustomerCommercialSummary,
     getCustomerPurchasedProducts,
     getCustomerPurchaseBehavior,
+    getCustomerRfm,
     checkReadiness,
     shutdown: async () => {
-      await closePrestashopPool();
+      await Promise.all([closePrestashopPool(), closeRfmSnapshotPool()]);
     },
   };
 }

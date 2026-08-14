@@ -1,8 +1,8 @@
 import type { RowDataPacket } from 'mysql2/promise';
-import { CrmSchemaIncompatibleError, CrmTimeoutError, CrmUnavailableError } from '../../application/customer-profile/errors.js';
 import type { MasterCustomerReader } from '../../application/customer-profile/ports.js';
 import type { MasterCustomerRecord } from '../../domain/customer-profile/master-customer-record.js';
 import type { QueryExecutor } from '../shared/query-executor.js';
+import { mapCrmReadError } from './crm-read-error.js';
 
 const SELECT_BY_ID_SQL = `
   SELECT id, firstname, lastname, email, platform_origin, rut, prestashop_customer_id
@@ -10,17 +10,6 @@ const SELECT_BY_ID_SQL = `
   WHERE id = ?
   LIMIT 1
 `;
-
-const TIMEOUT_ERROR_CODES = new Set(['ETIMEDOUT', 'PROTOCOL_SEQUENCE_TIMEOUT']);
-const UNAVAILABLE_ERROR_CODES = new Set([
-  'ECONNREFUSED',
-  'ECONNRESET',
-  'ENOTFOUND',
-  'EHOSTUNREACH',
-  'PROTOCOL_CONNECTION_LOST',
-  'ER_ACCESS_DENIED_ERROR',
-]);
-const SCHEMA_INCOMPATIBLE_ERROR_CODES = new Set(['ER_BAD_FIELD_ERROR', 'ER_NO_SUCH_TABLE']);
 
 interface MasterCustomerRow extends RowDataPacket {
   id: string;
@@ -42,7 +31,7 @@ export function createMysqlMasterCustomerReader(executor: QueryExecutor): Master
       try {
         rows = await executor.execute(SELECT_BY_ID_SQL, [masterCustomerId]);
       } catch (error) {
-        throw mapReadError(error);
+        throw mapCrmReadError(error);
       }
 
       const row = rows[0] as MasterCustomerRow | undefined;
@@ -62,20 +51,4 @@ export function createMysqlMasterCustomerReader(executor: QueryExecutor): Master
       return record;
     },
   };
-}
-
-function mapReadError(error: unknown): Error {
-  const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : null;
-
-  if (code && SCHEMA_INCOMPATIBLE_ERROR_CODES.has(code)) {
-    return new CrmSchemaIncompatibleError('CRM schema is incompatible with this service', { cause: error });
-  }
-  if (code && TIMEOUT_ERROR_CODES.has(code)) {
-    return new CrmTimeoutError('CRM query timed out', { cause: error });
-  }
-  if (code && UNAVAILABLE_ERROR_CODES.has(code)) {
-    return new CrmUnavailableError('CRM is unavailable', { cause: error });
-  }
-  // Unknown/unclassified failure: propagate as-is rather than guessing a reason.
-  return error instanceof Error ? error : new Error('Unknown CRM read error', { cause: error });
 }

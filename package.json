@@ -18,6 +18,7 @@
     "audit:canonical-analytical-order": "tsx scripts/snapshots/rfm-canonical-analytical-order.ts",
     "analyze:rfm-use-cases": "tsx scripts/snapshots/rfm-use-case-analysis.ts",
     "snapshot:rfm": "tsx scripts/snapshots/rfm-snapshot.ts",
+    "snapshot:rfm:scheduled": "tsx scripts/snapshots/rfm-snapshot-scheduled.ts",
     "snapshot:rfm:source-drift": "tsx scripts/snapshots/rfm-source-drift.ts",
     "snapshot:rfm:compare-source": "tsx scripts/snapshots/rfm-compare-source-artifacts.ts"
   },

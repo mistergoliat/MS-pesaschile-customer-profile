@@ -10,15 +10,22 @@ import {
   populationScope,
   refundPolicyVersion,
   scoringPolicyVersion,
+  type CanonicalIdentityCoverageSummary,
   type BuiltRfmSnapshot,
   type RfmSnapshotManifest,
   type RfmSnapshotRow,
 } from '../../domain/customer-rfm/index.js';
+import type { RfmCanonicalIdentityResolver } from './ports.js';
 import type { RfmPopulationReader } from '../../infrastructure/prestashop/mysql-rfm-population-reader.js';
 
 export type RfmSnapshotRepository = {
-  hasPublishedSnapshot(snapshotKey: string): Promise<boolean>;
+  findPublishedSnapshot(snapshotKey: string): Promise<PublishedRfmSnapshot | null>;
   publishSnapshot(input: PersistRfmSnapshotInput): Promise<PersistRfmSnapshotResult>;
+};
+
+export type PublishedRfmSnapshot = {
+  readonly snapshotId: string;
+  readonly datasetChecksum: string;
 };
 
 export type PersistRfmSnapshotInput = {
@@ -51,18 +58,26 @@ export type CreateRfmSnapshotInput = {
 };
 
 export type CreateRfmSnapshotResult = {
-  readonly mode: 'dry_run' | 'persisted';
+  readonly mode: 'dry_run' | 'persisted' | 'skipped_existing';
   readonly snapshotKey: string;
   readonly snapshotId: string | null;
   readonly manifest: RfmSnapshotManifest;
   readonly rows: readonly RfmSnapshotRow[];
 };
 
+export class RfmSnapshotKeyConflictError extends Error {
+  constructor() {
+    super('A published RFM snapshot already exists for this snapshot key with a different dataset checksum');
+    this.name = 'RfmSnapshotKeyConflictError';
+  }
+}
+
 export async function createRfmSnapshot(
   input: CreateRfmSnapshotInput,
   deps: {
     readonly reader: RfmPopulationReader;
     readonly repository?: RfmSnapshotRepository;
+    readonly canonicalIdentityResolver?: RfmCanonicalIdentityResolver;
   },
 ): Promise<CreateRfmSnapshotResult> {
   const window = buildRfmSnapshotWindow(input.referenceTime);
@@ -81,6 +96,17 @@ export async function createRfmSnapshot(
     throw new Error('RFM source contains valid orders linked to missing ps_customer rows');
   }
 
+  const canonicalIdentity = deps.canonicalIdentityResolver
+    ? await deps.canonicalIdentityResolver.resolvePrestashopCustomerIds(sourceRows.map((row) => row.prestashopCustomerId))
+    : {
+        resolutions: sourceRows.map((row) => ({
+          prestashopCustomerId: row.prestashopCustomerId,
+          status: 'unmatched' as const,
+          masterCustomerId: null,
+        })),
+        coverage: buildDefaultCanonicalCoverage(sourceRows.length),
+      };
+
   const built = buildRfmSnapshotDataset({
     referenceTime: window.referenceTime,
     windowStartInclusive: window.windowStartInclusive,
@@ -89,6 +115,8 @@ export async function createRfmSnapshot(
     calculationVersion: input.calculationVersion,
     sourceRows,
     diagnostics,
+    canonicalIdentityResolutions: canonicalIdentity.resolutions,
+    canonicalIdentityCoverage: canonicalIdentity.coverage,
   });
 
   if (input.dryRun) {
@@ -104,8 +132,18 @@ export async function createRfmSnapshot(
   if (!deps.repository) {
     throw new Error('RFM snapshot repository is required when RFM_DRY_RUN is false');
   }
-  if (await deps.repository.hasPublishedSnapshot(snapshotKey)) {
-    throw new Error('A published RFM snapshot already exists for this snapshot key');
+  const existingSnapshot = await deps.repository.findPublishedSnapshot(snapshotKey);
+  if (existingSnapshot) {
+    if (existingSnapshot.datasetChecksum === built.datasetChecksum) {
+      return {
+        mode: 'skipped_existing',
+        snapshotKey,
+        snapshotId: existingSnapshot.snapshotId,
+        manifest: withSnapshotId(built, existingSnapshot.snapshotId),
+        rows: built.rows,
+      };
+    }
+    throw new RfmSnapshotKeyConflictError();
   }
 
   const persisted = await deps.repository.publishSnapshot({
@@ -137,6 +175,16 @@ export async function createRfmSnapshot(
     snapshotId: persisted.snapshotId,
     manifest: withSnapshotId(built, persisted.snapshotId),
     rows: built.rows,
+  };
+}
+
+function buildDefaultCanonicalCoverage(populationSize: number): CanonicalIdentityCoverageSummary {
+  return {
+    populationSize,
+    canonicalMatchedCount: 0,
+    canonicalUnmatchedCount: populationSize,
+    canonicalAmbiguousCount: 0,
+    canonicalCoveragePct: '0.000000',
   };
 }
 
