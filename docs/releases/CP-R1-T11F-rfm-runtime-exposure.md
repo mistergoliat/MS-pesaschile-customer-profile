@@ -373,3 +373,7 @@ Las alternativas naturales quedan:
 
 La eleccion debe depender de si el mecanismo operacional de snapshots ya es
 fiable sin CLI manual.
+
+**Actualizacion (2026-08-15):** se eligio T11G. T11H fue implementado y
+validado despues, cross-repo, en `CRM-Customer-360` — ver
+[CP-R1-T11H-cross-repo-reference.md](CP-R1-T11H-cross-repo-reference.md).

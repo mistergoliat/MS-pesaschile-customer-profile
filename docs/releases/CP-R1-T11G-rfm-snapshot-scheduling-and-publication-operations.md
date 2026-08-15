@@ -365,3 +365,10 @@ Recommended next operational/consumption step after T11G:
 
 **CP-R1 post-T11G: integrate actual platform scheduling + downstream consumer
 activation against the already published RFM contract.**
+
+**Update (2026-08-15):** downstream consumer activation is done. It shipped
+cross-repo as T11H / T11H.1 in `CRM-Customer-360`, consuming the T11F
+contract as-is — see
+[CP-R1-T11H-cross-repo-reference.md](CP-R1-T11H-cross-repo-reference.md).
+Platform scheduler wiring (cron/container job/EventBridge) outside this repo
+remains the only open item from this section.
