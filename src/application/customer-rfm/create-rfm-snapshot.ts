@@ -11,10 +11,12 @@ import {
   refundPolicyVersion,
   scoringPolicyVersion,
   type CanonicalIdentityCoverageSummary,
+  type CanonicalIdentityResolution,
   type BuiltRfmSnapshot,
   type RfmSnapshotManifest,
   type RfmSnapshotRow,
 } from '../../domain/customer-rfm/index.js';
+import { CrmSchemaIncompatibleError, CrmTimeoutError, CrmUnavailableError } from '../customer-profile/errors.js';
 import type { RfmCanonicalIdentityResolver } from './ports.js';
 import type { RfmPopulationReader } from '../../infrastructure/prestashop/mysql-rfm-population-reader.js';
 
@@ -97,15 +99,8 @@ export async function createRfmSnapshot(
   }
 
   const canonicalIdentity = deps.canonicalIdentityResolver
-    ? await deps.canonicalIdentityResolver.resolvePrestashopCustomerIds(sourceRows.map((row) => row.prestashopCustomerId))
-    : {
-        resolutions: sourceRows.map((row) => ({
-          prestashopCustomerId: row.prestashopCustomerId,
-          status: 'unmatched' as const,
-          masterCustomerId: null,
-        })),
-        coverage: buildDefaultCanonicalCoverage(sourceRows.length),
-      };
+    ? await resolveCanonicalIdentityFailOpen(deps.canonicalIdentityResolver, sourceRows.map((row) => row.prestashopCustomerId))
+    : unmatchedCanonicalIdentity(sourceRows.map((row) => row.prestashopCustomerId));
 
   const built = buildRfmSnapshotDataset({
     referenceTime: window.referenceTime,
@@ -175,6 +170,40 @@ export async function createRfmSnapshot(
     snapshotId: persisted.snapshotId,
     manifest: withSnapshotId(built, persisted.snapshotId),
     rows: built.rows,
+  };
+}
+
+// master_customer_id is an optional enrichment on every RFM row, never a precondition for
+// the primary PrestaShop-rooted snapshot (see CP-R1-RFM-data-ownership-crm-architecture-
+// audit.md §7/§14/§15). A CRM outage or schema gap (e.g. migration 001 not applied) must
+// degrade every customer to "unmatched", never abort the snapshot — the same outcome as if
+// no resolver had been wired at all. Only the three classified CRM infra-error types are
+// caught here; an unrecognized error still propagates and aborts, since that indicates a
+// real bug rather than a known, tolerable CRM degradation.
+async function resolveCanonicalIdentityFailOpen(
+  resolver: RfmCanonicalIdentityResolver,
+  prestashopCustomerIds: readonly number[],
+): Promise<{ resolutions: readonly CanonicalIdentityResolution[]; coverage: CanonicalIdentityCoverageSummary }> {
+  try {
+    return await resolver.resolvePrestashopCustomerIds(prestashopCustomerIds);
+  } catch (error) {
+    if (error instanceof CrmUnavailableError || error instanceof CrmTimeoutError || error instanceof CrmSchemaIncompatibleError) {
+      return unmatchedCanonicalIdentity(prestashopCustomerIds);
+    }
+    throw error;
+  }
+}
+
+function unmatchedCanonicalIdentity(
+  prestashopCustomerIds: readonly number[],
+): { resolutions: readonly CanonicalIdentityResolution[]; coverage: CanonicalIdentityCoverageSummary } {
+  return {
+    resolutions: prestashopCustomerIds.map((prestashopCustomerId) => ({
+      prestashopCustomerId,
+      status: 'unmatched' as const,
+      masterCustomerId: null,
+    })),
+    coverage: buildDefaultCanonicalCoverage(prestashopCustomerIds.length),
   };
 }
 

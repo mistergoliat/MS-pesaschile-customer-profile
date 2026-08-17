@@ -4,6 +4,7 @@ import type { GetCustomerCommercialSummary } from '../../src/application/custome
 import type { GetCustomerPurchaseBehavior } from '../../src/application/customer-purchase-behavior/get-customer-purchase-behavior.js';
 import type { GetCustomerPurchasedProducts } from '../../src/application/customer-purchased-products/get-customer-purchased-products.js';
 import type { GetCustomerRfm } from '../../src/application/customer-rfm/get-customer-rfm.js';
+import type { GetCustomerRfmByCustomerId } from '../../src/application/customer-rfm/get-customer-rfm-by-customer-id.js';
 import type { GetCustomerOrderStatus } from '../../src/application/customer-order-status/get-customer-order-status.js';
 import type { GetCustomerProfile } from '../../src/application/customer-profile/get-customer-profile.js';
 import { buildApp } from '../../src/app.js';
@@ -28,6 +29,9 @@ const unreachableGetCustomerPurchaseBehavior: GetCustomerPurchaseBehavior = asyn
 const unreachableGetCustomerRfm: GetCustomerRfm = async () => {
   throw new Error('getCustomerRfm must not be called from the purchased products route tests');
 };
+const unreachableGetCustomerRfmByCustomerId: GetCustomerRfmByCustomerId = async () => {
+  throw new Error('getCustomerRfmByCustomerId must not be called from the purchased products route tests');
+};
 
 async function startApp(
   getCustomerPurchasedProducts: GetCustomerPurchasedProducts,
@@ -40,6 +44,7 @@ async function startApp(
     getCustomerPurchasedProducts,
     getCustomerPurchaseBehavior: unreachableGetCustomerPurchaseBehavior,
     getCustomerRfm: unreachableGetCustomerRfm,
+    getCustomerRfmByCustomerId: unreachableGetCustomerRfmByCustomerId,
     checkReadiness,
   });
   server = createServer(app);

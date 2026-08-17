@@ -225,10 +225,18 @@ export type CurrentMasterCustomerRfmLookup = {
   readonly record: CurrentMasterCustomerRfmRecord | null;
 };
 
+export type CurrentPrestashopCustomerRfmLookup = {
+  readonly snapshot: CurrentRfmSnapshotMetadata | null;
+  readonly record: CurrentPrestashopCustomerRfmRecord | null;
+};
+
 export const CUSTOMER_RFM_RUNTIME_CONTRACT_VERSION = 'customer-rfm-runtime-v1';
 
 export type CustomerRfmNotAvailableReason = 'no_current_rfm_record';
-export type CustomerRfmDegradedReason = 'no_published_rfm_snapshot';
+// rfm_not_configured: RFM_SNAPSHOT_DB_* is absent from this process's environment (see
+// config.ts) — a distinct, non-infrastructure-failure reason from rfm_unavailable, which
+// means the RFM DB IS configured but could not be reached/queried.
+export type CustomerRfmDegradedReason = 'no_published_rfm_snapshot' | 'rfm_not_configured' | 'rfm_unavailable';
 
 export type CustomerRfmSnapshotPayload = {
   readonly snapshotId: string;
@@ -277,6 +285,38 @@ export type GetCustomerRfmResult =
   | {
       readonly status: 'degraded';
       readonly masterCustomerId: string;
+      readonly reason: CustomerRfmDegradedReason;
+      readonly contractVersion: typeof CUSTOMER_RFM_RUNTIME_CONTRACT_VERSION;
+    };
+
+// Primary RFM identity contract (customerId = ps_customer.id_customer), independent of
+// CRM/master_customer — see CP-R1-RFM-data-ownership-crm-architecture-audit.md. Mirrors
+// GetCustomerRfmResult's shape exactly, with the identity field swapped; kept as a
+// separate type (not a generic <TId>) because the two identity spaces must never be
+// structurally interchangeable at the type level.
+export type GetCustomerRfmByCustomerIdResult =
+  | {
+      readonly status: 'available';
+      readonly customerId: number;
+      readonly snapshot: CustomerRfmSnapshotPayload;
+      readonly rfm: CustomerRfmMetricsPayload;
+      readonly segment: CustomerRfmSegmentPayload;
+      readonly contractVersion: typeof CUSTOMER_RFM_RUNTIME_CONTRACT_VERSION;
+    }
+  | {
+      readonly status: 'customer_not_found';
+      readonly customerId: number;
+      readonly contractVersion: typeof CUSTOMER_RFM_RUNTIME_CONTRACT_VERSION;
+    }
+  | {
+      readonly status: 'rfm_not_available';
+      readonly customerId: number;
+      readonly reason: CustomerRfmNotAvailableReason;
+      readonly contractVersion: typeof CUSTOMER_RFM_RUNTIME_CONTRACT_VERSION;
+    }
+  | {
+      readonly status: 'degraded';
+      readonly customerId: number;
       readonly reason: CustomerRfmDegradedReason;
       readonly contractVersion: typeof CUSTOMER_RFM_RUNTIME_CONTRACT_VERSION;
     };

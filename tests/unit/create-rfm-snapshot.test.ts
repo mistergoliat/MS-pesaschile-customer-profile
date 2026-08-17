@@ -4,6 +4,7 @@ import {
   RfmSnapshotKeyConflictError,
   type RfmSnapshotRepository,
 } from '../../src/application/customer-rfm/create-rfm-snapshot.js';
+import { CrmSchemaIncompatibleError, CrmTimeoutError, CrmUnavailableError } from '../../src/application/customer-profile/errors.js';
 import type { RfmCanonicalIdentityResolver } from '../../src/application/customer-rfm/ports.js';
 import type { RfmPopulationReader } from '../../src/infrastructure/prestashop/mysql-rfm-population-reader.js';
 import type { RfmSnapshotDiagnostics } from '../../src/domain/customer-rfm/index.js';
@@ -191,9 +192,11 @@ describe('createRfmSnapshot', () => {
     expect(result.manifest.segmentCounts.POTENTIAL_LOYAL).toBe(1);
   });
 
-  it('propagates canonical identity resolver errors instead of converting them to unmatched', async () => {
+  it('propagates unrecognized resolver errors instead of masking them as unmatched', async () => {
+    // Deliberately NOT one of CrmUnavailableError/CrmTimeoutError/CrmSchemaIncompatibleError:
+    // an unclassified error means a real bug, which must still fail loudly.
     const canonicalIdentityResolver: RfmCanonicalIdentityResolver = {
-      resolvePrestashopCustomerIds: vi.fn(async () => Promise.reject(new Error('crm down'))),
+      resolvePrestashopCustomerIds: vi.fn(async () => Promise.reject(new Error('unexpected resolver bug'))),
     };
 
     await expect(
@@ -201,6 +204,55 @@ describe('createRfmSnapshot', () => {
         { referenceTime, calculationVersion: 'rfm-v1', generatedAt, dryRun: true },
         { reader: reader(), canonicalIdentityResolver },
       ),
-    ).rejects.toThrow('crm down');
+    ).rejects.toThrow('unexpected resolver bug');
+  });
+
+  it.each([
+    ['CrmUnavailableError', new CrmUnavailableError('CRM is unavailable')],
+    ['CrmTimeoutError', new CrmTimeoutError('CRM query timed out')],
+    ['CrmSchemaIncompatibleError', new CrmSchemaIncompatibleError('master_customer.prestashop_customer_id missing')],
+  ] as const)(
+    'degrades to unmatched instead of aborting the snapshot when the resolver throws %s',
+    async (_name, error) => {
+      const canonicalIdentityResolver: RfmCanonicalIdentityResolver = {
+        resolvePrestashopCustomerIds: vi.fn(async () => Promise.reject(error)),
+      };
+
+      const result = await createRfmSnapshot(
+        { referenceTime, calculationVersion: 'rfm-v1', generatedAt, dryRun: true },
+        { reader: reader(), canonicalIdentityResolver },
+      );
+
+      expect(result.mode).toBe('dry_run');
+      expect(result.rows[0]).toMatchObject({
+        masterCustomerId: null,
+        // The primary RFM calculation is untouched by the CRM failure.
+        grossOrderValueTaxIncl: '200.000000',
+        recencyDays: 1,
+        frequencyOrders: 2,
+      });
+      expect(result.manifest.canonicalMatchedCount).toBe(0);
+      expect(result.manifest.canonicalUnmatchedCount).toBe(1);
+      expect(result.manifest.canonicalCoveragePct).toBe('0.000000');
+    },
+  );
+
+  it('produces the same fallback shape whether the resolver is absent or fails open', async () => {
+    const throwingResolver: RfmCanonicalIdentityResolver = {
+      resolvePrestashopCustomerIds: vi.fn(async () => Promise.reject(new CrmUnavailableError('down'))),
+    };
+
+    const withoutResolver = await createRfmSnapshot(
+      { referenceTime, calculationVersion: 'rfm-v1', generatedAt, dryRun: true },
+      { reader: reader() },
+    );
+    const withFailingResolver = await createRfmSnapshot(
+      { referenceTime, calculationVersion: 'rfm-v1', generatedAt, dryRun: true },
+      { reader: reader(), canonicalIdentityResolver: throwingResolver },
+    );
+
+    expect(withFailingResolver.manifest.canonicalMatchedCount).toBe(withoutResolver.manifest.canonicalMatchedCount);
+    expect(withFailingResolver.manifest.canonicalCoveragePct).toBe(withoutResolver.manifest.canonicalCoveragePct);
+    expect(withFailingResolver.rows[0]?.masterCustomerId).toBe(withoutResolver.rows[0]?.masterCustomerId);
   });
 });

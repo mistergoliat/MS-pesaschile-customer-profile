@@ -270,8 +270,8 @@ function toPersistedChecksumRow(row: RowDataPacket): PersistRfmSnapshotInput['ro
     prestashopCustomerId: Number(row.prestashopCustomerId),
     masterCustomerId: row.masterCustomerId === null ? null : String(row.masterCustomerId),
     identityResolutionStatus: 'provisional',
-    firstValidOrderAt: normalizePersistedMysqlDateTime(String(row.firstValidOrderAt)),
-    lastValidOrderAt: normalizePersistedMysqlDateTime(String(row.lastValidOrderAt)),
+    firstValidOrderAt: normalizePersistedDateTime(row.firstValidOrderAt, 'firstValidOrderAt'),
+    lastValidOrderAt: normalizePersistedDateTime(row.lastValidOrderAt, 'lastValidOrderAt'),
     recencyDays: Number(row.recencyDays),
     frequencyOrders: Number(row.frequencyOrders),
     grossOrderValueTaxIncl: formatRfmDecimal(String(row.grossOrderValueTaxIncl)),
@@ -295,6 +295,25 @@ function requirePersistedString(value: unknown, field: string): string {
 
 function normalizePersistedMysqlDateTime(value: string): string {
   return value.replace(/\.000000$/, '');
+}
+
+// Tolerates both shapes a mysql2 connection can hand back for a datetime(6) column
+// (a string when the pool sets dateStrings: true, a JS Date otherwise), so the checksum
+// re-verification in publishSnapshot() doesn't silently depend on that one pool option
+// being set correctly — confirmed directly (CP-R1-TRACK-A-A3B) that String(dateObject)
+// produces a locale-formatted string, not the MySQL DATETIME format the checksum expects.
+// Mirrors mysql-rfm-snapshot-reader.ts's parseRequiredUtcDateTime for the read side.
+function normalizePersistedDateTime(value: unknown, field: string): string {
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) {
+      throw new Error(`Invalid persisted ${field}`);
+    }
+    return value.toISOString().slice(0, 19).replace('T', ' ');
+  }
+  if (typeof value === 'string') {
+    return normalizePersistedMysqlDateTime(value);
+  }
+  throw new Error(`Invalid persisted ${field}`);
 }
 
 async function persistManifestWithSnapshotId(

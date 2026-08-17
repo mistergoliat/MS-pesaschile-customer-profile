@@ -55,6 +55,13 @@ export async function runRfmSnapshotCommand(config: SnapshotCommandConfig, optio
         connectionLimit: config.snapshotDb.connectionLimit,
         supportBigNumbers: true,
         bigNumberStrings: true,
+        // Required for calculatePersistedDatasetChecksum's re-read-and-verify step
+        // (mysql-rfm-snapshot-repository.ts) to match the original checksum's string-typed
+        // dates. Without this, mysql2 returns datetime(6) columns as JS Date objects, and
+        // String(dateObject) produces a locale-formatted string instead of the MySQL
+        // DATETIME format the checksum expects — every real (non-empty) snapshot would fail
+        // publish-time verification. Confirmed directly (CP-R1-TRACK-A-A3B), not theoretical.
+        dateStrings: true,
         timezone: 'Z',
       })
     : null;

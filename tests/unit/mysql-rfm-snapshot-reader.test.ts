@@ -1,6 +1,7 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import { describe, expect, it } from 'vitest';
 import { createMysqlRfmSnapshotReader } from '../../src/infrastructure/rfm/mysql-rfm-snapshot-reader.js';
+import { RfmUnavailableError } from '../../src/application/customer-profile/errors.js';
 import type { QueryExecutor } from '../../src/infrastructure/shared/query-executor.js';
 
 function queuedExecutor(responses: ReadonlyArray<readonly RowDataPacket[] | Error>) {
@@ -236,5 +237,79 @@ describe('createMysqlRfmSnapshotReader', () => {
     const reader = createMysqlRfmSnapshotReader(executor);
 
     await expect(reader.getCurrentMasterCustomerRfm('9001')).rejects.toThrow(/multiple rows/);
+  });
+
+  describe('getCurrentPrestashopCustomerRfmLookup', () => {
+    it('keeps "no published snapshot" distinguishable from "row not found" — snapshot null, record null', async () => {
+      const { executor, calls } = queuedExecutor([[]]);
+      const reader = createMysqlRfmSnapshotReader(executor);
+
+      await expect(reader.getCurrentPrestashopCustomerRfmLookup(777)).resolves.toEqual({
+        snapshot: null,
+        record: null,
+      });
+      expect(calls).toHaveLength(1);
+    });
+
+    it('returns the current snapshot alongside a null record when the customer is absent from it', async () => {
+      const { executor } = queuedExecutor([[currentSnapshotRow], []]);
+      const reader = createMysqlRfmSnapshotReader(executor);
+
+      const lookup = await reader.getCurrentPrestashopCustomerRfmLookup(777);
+
+      expect(lookup.snapshot).toEqual({
+        snapshotId: '55',
+        snapshotKey: 'rfm-population-v1__2026-08-03T00-00-00-000Z',
+        status: 'published',
+        calculationVersion: 'rfm-population-v1',
+        identityAuthority: 'prestashop_customer',
+        identityAuthorityVersion: 'prestashop-customer-v1',
+        referenceTime: new Date('2026-08-03T00:00:00.000Z'),
+        generatedAt: new Date('2026-08-03T01:00:00.000Z'),
+        publishedAt: new Date('2026-08-03T01:00:00.000Z'),
+        populationSize: 14164,
+        currencyCode: 'CLP',
+        datasetChecksum: 'a'.repeat(64),
+      });
+      expect(lookup.record).toBeNull();
+    });
+
+    it('returns snapshot and record together when the customer has a current row', async () => {
+      const { executor } = queuedExecutor([[currentSnapshotRow], [customerRow]]);
+      const reader = createMysqlRfmSnapshotReader(executor);
+
+      const lookup = await reader.getCurrentPrestashopCustomerRfmLookup(777);
+
+      expect(lookup.snapshot?.snapshotId).toBe('55');
+      expect(lookup.record).toMatchObject({ prestashopCustomerId: 777, rfmCode: 'R5F3M4' });
+    });
+
+    it('getCurrentPrestashopCustomerRfm delegates to the lookup and returns only the record', async () => {
+      const { executor, calls } = queuedExecutor([[currentSnapshotRow], [customerRow]]);
+      const reader = createMysqlRfmSnapshotReader(executor);
+
+      const record = await reader.getCurrentPrestashopCustomerRfm(777);
+
+      expect(record).toMatchObject({ prestashopCustomerId: 777 });
+      expect(calls).toHaveLength(2);
+    });
+  });
+
+  describe('RFM DB error wrapping', () => {
+    it('wraps a connection-refused driver error into RfmUnavailableError', async () => {
+      const driverError = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:3306'), { code: 'ECONNREFUSED' });
+      const { executor } = queuedExecutor([driverError]);
+      const reader = createMysqlRfmSnapshotReader(executor);
+
+      await expect(reader.getCurrentSnapshot()).rejects.toBeInstanceOf(RfmUnavailableError);
+    });
+
+    it('wraps a connection-refused error on the row query the same way', async () => {
+      const driverError = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:3306'), { code: 'ECONNREFUSED' });
+      const { executor } = queuedExecutor([[currentSnapshotRow], driverError]);
+      const reader = createMysqlRfmSnapshotReader(executor);
+
+      await expect(reader.getCurrentPrestashopCustomerRfmLookup(777)).rejects.toBeInstanceOf(RfmUnavailableError);
+    });
   });
 });

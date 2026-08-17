@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { runRfmSnapshotOperation } from '../../src/application/customer-rfm/run-rfm-snapshot-operation.js';
+import { CrmSchemaIncompatibleError } from '../../src/application/customer-profile/errors.js';
 import type { RfmCanonicalIdentityResolver } from '../../src/application/customer-rfm/ports.js';
 import type { RfmSnapshotRepository } from '../../src/application/customer-rfm/create-rfm-snapshot.js';
 import type { RfmSnapshotDiagnostics } from '../../src/domain/customer-rfm/index.js';
@@ -247,6 +248,41 @@ describe('runRfmSnapshotOperation', () => {
         errorType: 'Error',
         errorCode: 'ECONNREFUSED',
       }),
+    );
+  });
+
+  it('still succeeds end-to-end when the CRM enrichment step throws a classified CRM error (migration 001 not applied)', async () => {
+    const fakeRunRepository = runRepository();
+    const fakeRepository = repository();
+
+    const result = await runRfmSnapshotOperation(
+      {
+        triggerSource: 'scheduled',
+        calculationVersion: 'rfm-population-v1',
+        dryRun: false,
+        referenceTime: null,
+        generatedAt: null,
+      },
+      {
+        reader: reader(),
+        canonicalIdentityResolver: {
+          resolvePrestashopCustomerIds: vi.fn(async () =>
+            Promise.reject(new CrmSchemaIncompatibleError('master_customer.prestashop_customer_id missing')),
+          ),
+        },
+        repository: fakeRepository,
+        runRepository: fakeRunRepository,
+        clock: clock('2026-08-14T15:45:12.000Z', '2026-08-14T15:45:12.000Z', '2026-08-14T15:45:12.500Z'),
+      },
+    );
+
+    expect(result.status).toBe('succeeded');
+    expect(result.mode).toBe('persisted');
+    expect(result.summary?.canonicalMatchedCount).toBe(0);
+    expect(result.summary?.canonicalUnmatchedCount).toBe(1);
+    expect(fakeRepository.publishSnapshot).toHaveBeenCalled();
+    expect(fakeRunRepository.completeRun).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: '7001', status: 'succeeded' }),
     );
   });
 });

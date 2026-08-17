@@ -143,7 +143,13 @@ function buildExecutionConfig(
           user: requiredEnv(raw.RFM_SNAPSHOT_DB_USER, 'RFM_SNAPSHOT_DB_USER'),
           password: requiredEnv(raw.RFM_SNAPSHOT_DB_PASSWORD, 'RFM_SNAPSHOT_DB_PASSWORD'),
           database: requiredEnv(raw.RFM_SNAPSHOT_DB_NAME, 'RFM_SNAPSHOT_DB_NAME'),
-          connectionLimit: raw.RFM_SNAPSHOT_DB_CONNECTION_LIMIT ?? 1,
+          // Must be >= 2: tryAcquireExecutionLock() holds one dedicated connection checked
+          // out from this pool for the entire run (that's how GET_LOCK's session-scoped
+          // lock stays alive), while createRun/completeRun/publishSnapshot each need their
+          // own connection from the same pool concurrently. A limit of 1 deadlocks forever
+          // on the first run-log write — confirmed directly, not theoretical (CP-R1-TRACK-
+          // A-A3B). 5 matches config.ts's own RFM_SNAPSHOT_DB_CONNECTION_LIMIT default.
+          connectionLimit: raw.RFM_SNAPSHOT_DB_CONNECTION_LIMIT ?? 5,
         },
   };
 }
