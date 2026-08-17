@@ -61,3 +61,33 @@ export class CrmSchemaIncompatibleError extends Error {
     this.name = 'CrmSchemaIncompatibleError';
   }
 }
+
+// Thrown by the RFM snapshot reader for RFM_SNAPSHOT_DB read failures once it IS
+// configured. A missing row/snapshot is a valid null/degraded result, never one of these.
+// Distinct from the "not configured at all" case, which never reaches the reader.
+export class RfmUnavailableError extends Error {
+  readonly code = 'rfm_unavailable';
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'RfmUnavailableError';
+  }
+}
+
+export class RfmTimeoutError extends Error {
+  readonly code = 'rfm_timeout';
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'RfmTimeoutError';
+  }
+}
+
+export class RfmSchemaIncompatibleError extends Error {
+  readonly code = 'rfm_schema_incompatible';
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'RfmSchemaIncompatibleError';
+  }
+}

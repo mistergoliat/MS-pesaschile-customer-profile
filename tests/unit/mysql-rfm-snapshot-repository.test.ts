@@ -315,6 +315,28 @@ describe('createMysqlRfmSnapshotRepository', () => {
     expect(connection.commit).not.toHaveBeenCalled();
   });
 
+  // CP-R1-TRACK-A-A3B: without dateStrings:true on the snapshot pool, mysql2 returns
+  // datetime(6) columns as JS Date objects instead of strings — confirmed directly against
+  // real infra, where this made every real (non-empty) snapshot fail publish-time checksum
+  // verification. Proves the checksum logic itself now tolerates both shapes, so a future
+  // pool-config regression (e.g. TD-007's config consolidation) can't silently reintroduce
+  // this failure mode undetected.
+  it('matches the checksum whether the driver returns dates as strings or as Date objects', async () => {
+    const stringRow = toPersistedRowData(input().rows[0]!);
+    const dateRow = {
+      ...stringRow,
+      firstValidOrderAt: new Date('2026-08-01T10:00:00.000Z'),
+      lastValidOrderAt: new Date('2026-08-02T10:00:00.000Z'),
+    } as unknown as RowDataPacket;
+
+    const { pool: poolWithDates } = fakePool({ persistedRows: [dateRow] });
+    const snapshotInput = input();
+
+    const result = await createMysqlRfmSnapshotRepository(poolWithDates).publishSnapshot(snapshotInput);
+
+    expect(result.datasetChecksum).toBe(snapshotInput.datasetChecksum);
+  });
+
   it('maps duplicate snapshot key errors to a controlled failure', async () => {
     const { pool, connection } = fakePool({ duplicateHeader: true });
 

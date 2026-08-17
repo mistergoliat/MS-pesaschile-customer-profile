@@ -22,6 +22,7 @@ function readerReturning(result: CurrentRfmSnapshotMetadata | null): CurrentRfmS
   return {
     getCurrentSnapshot: vi.fn(async () => result),
     getCurrentPrestashopCustomerRfm: vi.fn(async () => null),
+    getCurrentPrestashopCustomerRfmLookup: vi.fn(async () => ({ snapshot: result, record: null })),
     getCurrentMasterCustomerRfm: vi.fn(async () => null),
     getCurrentMasterCustomerRfmLookup: vi.fn(async () => ({ snapshot: result, record: null })),
   };

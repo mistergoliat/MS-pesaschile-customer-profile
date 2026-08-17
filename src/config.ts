@@ -14,11 +14,15 @@ const envSchema = z.object({
   CRM_DB_CONNECTION_LIMIT: z.coerce.number().int().positive().default(5),
   CRM_DB_QUERY_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
 
-  RFM_SNAPSHOT_DB_HOST: z.string().min(1),
+  // RFM is an optional runtime capability (see CP-R1-RFM-data-ownership-crm-architecture-
+  // audit.md §21): the HTTP server must boot and the other five endpoints must keep working
+  // even when RFM_SNAPSHOT_DB_* is entirely absent. Individually optional here; enforced
+  // all-or-nothing below so a partially-set family fails fast instead of booting half-wired.
+  RFM_SNAPSHOT_DB_HOST: z.string().min(1).optional(),
   RFM_SNAPSHOT_DB_PORT: z.coerce.number().int().positive().default(3306),
-  RFM_SNAPSHOT_DB_USER: z.string().min(1),
-  RFM_SNAPSHOT_DB_PASSWORD: z.string().min(1),
-  RFM_SNAPSHOT_DB_NAME: z.string().min(1),
+  RFM_SNAPSHOT_DB_USER: z.string().min(1).optional(),
+  RFM_SNAPSHOT_DB_PASSWORD: z.string().min(1).optional(),
+  RFM_SNAPSHOT_DB_NAME: z.string().min(1).optional(),
   RFM_SNAPSHOT_DB_CONNECTION_LIMIT: z.coerce.number().int().positive().default(5),
   RFM_SNAPSHOT_DB_QUERY_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
 
@@ -54,6 +58,27 @@ const envSchema = z.object({
   // ps_carrier_lang is also keyed by id_shop; no prior recorded decision about which
   // shop PesasChile operates as for carrier delay text, so this must be set explicitly.
   PRESTASHOP_CARRIER_SHOP_ID: z.coerce.number().int().positive(),
+}).superRefine((data, ctx) => {
+  const rfmFields = {
+    RFM_SNAPSHOT_DB_HOST: data.RFM_SNAPSHOT_DB_HOST,
+    RFM_SNAPSHOT_DB_USER: data.RFM_SNAPSHOT_DB_USER,
+    RFM_SNAPSHOT_DB_PASSWORD: data.RFM_SNAPSHOT_DB_PASSWORD,
+    RFM_SNAPSHOT_DB_NAME: data.RFM_SNAPSHOT_DB_NAME,
+  } as const;
+  const presentCount = Object.values(rfmFields).filter((value) => value !== undefined).length;
+  // All-or-nothing: either RFM is fully unconfigured (runs degraded) or fully configured.
+  // A partially-set family is always a misconfiguration, never a valid intermediate state.
+  if (presentCount !== 0 && presentCount !== Object.keys(rfmFields).length) {
+    for (const [field, value] of Object.entries(rfmFields)) {
+      if (value === undefined) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [field],
+          message: `${field} is required once any RFM_SNAPSHOT_DB_* variable is set (all-or-nothing)`,
+        });
+      }
+    }
+  }
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -63,6 +88,32 @@ if (!parsed.success) {
 }
 
 const raw = parsed.data;
+
+export type RfmSnapshotDbConfig = {
+  readonly host: string;
+  readonly port: number;
+  readonly user: string;
+  readonly password: string;
+  readonly database: string;
+  readonly connectionLimit: number;
+  readonly queryTimeoutMs: number;
+};
+
+const rfmSnapshotDb: RfmSnapshotDbConfig | null =
+  raw.RFM_SNAPSHOT_DB_HOST !== undefined &&
+  raw.RFM_SNAPSHOT_DB_USER !== undefined &&
+  raw.RFM_SNAPSHOT_DB_PASSWORD !== undefined &&
+  raw.RFM_SNAPSHOT_DB_NAME !== undefined
+    ? {
+        host: raw.RFM_SNAPSHOT_DB_HOST,
+        port: raw.RFM_SNAPSHOT_DB_PORT,
+        user: raw.RFM_SNAPSHOT_DB_USER,
+        password: raw.RFM_SNAPSHOT_DB_PASSWORD,
+        database: raw.RFM_SNAPSHOT_DB_NAME,
+        connectionLimit: raw.RFM_SNAPSHOT_DB_CONNECTION_LIMIT,
+        queryTimeoutMs: raw.RFM_SNAPSHOT_DB_QUERY_TIMEOUT_MS,
+      }
+    : null;
 
 export const config = {
   port: raw.PORT,
@@ -75,15 +126,7 @@ export const config = {
     connectionLimit: raw.CRM_DB_CONNECTION_LIMIT,
     queryTimeoutMs: raw.CRM_DB_QUERY_TIMEOUT_MS,
   },
-  rfmSnapshotDb: {
-    host: raw.RFM_SNAPSHOT_DB_HOST,
-    port: raw.RFM_SNAPSHOT_DB_PORT,
-    user: raw.RFM_SNAPSHOT_DB_USER,
-    password: raw.RFM_SNAPSHOT_DB_PASSWORD,
-    database: raw.RFM_SNAPSHOT_DB_NAME,
-    connectionLimit: raw.RFM_SNAPSHOT_DB_CONNECTION_LIMIT,
-    queryTimeoutMs: raw.RFM_SNAPSHOT_DB_QUERY_TIMEOUT_MS,
-  },
+  rfmSnapshotDb,
   prestashopDb: {
     host: raw.PRESTASHOP_DB_HOST,
     port: raw.PRESTASHOP_DB_PORT,

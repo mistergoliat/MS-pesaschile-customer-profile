@@ -5,6 +5,7 @@ import type { GetCustomerCommercialSummary } from '../../application/customer-co
 import type { GetCustomerPurchaseBehavior } from '../../application/customer-purchase-behavior/get-customer-purchase-behavior.js';
 import type { GetCustomerPurchasedProducts } from '../../application/customer-purchased-products/get-customer-purchased-products.js';
 import type { GetCustomerRfm } from '../../application/customer-rfm/get-customer-rfm.js';
+import type { GetCustomerRfmByCustomerId } from '../../application/customer-rfm/get-customer-rfm-by-customer-id.js';
 import type { GetCustomerOrderStatus } from '../../application/customer-order-status/get-customer-order-status.js';
 import type { GetCustomerProfile } from '../../application/customer-profile/get-customer-profile.js';
 import { CUSTOMER_PROFILE_CONTRACT_VERSION, type CustomerIdentity } from '../../domain/customer-identity/index.js';
@@ -16,6 +17,7 @@ import type {
 import type { GetPurchasedProductsInput, GetPurchasedProductsResult } from '../../domain/customer-purchased-products/index.js';
 import {
   CUSTOMER_RFM_RUNTIME_CONTRACT_VERSION,
+  type GetCustomerRfmByCustomerIdResult,
   type GetCustomerRfmResult,
 } from '../../domain/customer-rfm/index.js';
 import type { GetCustomerOrderStatusResult } from '../../domain/customer-order-status/index.js';
@@ -54,6 +56,12 @@ export type RouteDependencies = {
   readonly getCustomerCommercialSummary: GetCustomerCommercialSummary;
   readonly getCustomerPurchasedProducts: GetCustomerPurchasedProducts;
   readonly getCustomerPurchaseBehavior: GetCustomerPurchaseBehavior;
+  // PRIMARY RFM identity: customerId = ps_customer.id_customer, CRM-independent. See
+  // docs/audits/CP-R1-RFM-data-ownership-crm-architecture-audit.md §18.
+  readonly getCustomerRfmByCustomerId: GetCustomerRfmByCustomerId;
+  // LEGACY/SECONDARY RFM identity: masterCustomerId = master_customer.id (CRM-space).
+  // Preserved, not removed — see the audit above §6/§18 for why it's kept as a distinct,
+  // non-ambiguous path instead of being merged into the primary one.
   readonly getCustomerRfm: GetCustomerRfm;
   readonly checkReadiness: ReadinessCheck;
 };
@@ -244,7 +252,51 @@ export function buildRoutes(deps: RouteDependencies): Router {
     }
   });
 
-  router.get('/v1/customers/:masterCustomerId/rfm', async (request: Request, response: Response) => {
+  // PRIMARY RFM path: customerId = ps_customer.id_customer, consistent with the other five
+  // endpoints above and CRM-independent (see CP-R1-RFM-data-ownership-crm-architecture-
+  // audit.md §18). Deliberately a different path shape than the legacy route below — both
+  // accept a same-shaped numeric id, so collapsing them onto one path would make the two
+  // identity spaces indistinguishable at the HTTP layer.
+  router.get('/v1/customers/:customerId/rfm', async (request: Request, response: Response) => {
+    const customerId = parseCustomerIdFromParams(request.params);
+    if (customerId === null) {
+      response.status(400).json({ error: 'invalid_customer_id' });
+      return;
+    }
+    if (Object.keys(request.query).length > 0) {
+      response.status(400).json({ error: 'unsupported_query_params' });
+      return;
+    }
+    if (request.body !== undefined) {
+      response.status(400).json({ error: 'unsupported_body' });
+      return;
+    }
+
+    const startedAt = Date.now();
+
+    try {
+      const result = await deps.getCustomerRfmByCustomerId({ customerId });
+
+      logCustomerRfmByCustomerIdLookup(customerId, result, Date.now() - startedAt);
+      response.status(statusForCustomerRfmByCustomerIdResult(result)).json(result);
+    } catch (error) {
+      console.error({
+        event: 'customer_rfm_by_customer_id_request_failed',
+        endpoint: 'rfm',
+        customerId,
+        contractVersion: CUSTOMER_RFM_RUNTIME_CONTRACT_VERSION,
+        durationMs: Date.now() - startedAt,
+        errorType: classifyErrorForLog(error),
+      });
+      response.status(500).json({ error: 'internal_error' });
+    }
+  });
+
+  // LEGACY/SECONDARY RFM path: masterCustomerId = master_customer.id (CRM-space identity).
+  // Moved from /v1/customers/:masterCustomerId/rfm to its own path prefix so it can never
+  // be confused with the customerId-keyed routes above by shape alone — both are
+  // format-indistinguishable positive numeric strings. See the audit referenced above.
+  router.get('/v1/master-customers/:masterCustomerId/rfm', async (request: Request, response: Response) => {
     const masterCustomerId = parseMasterCustomerIdFromParams(request.params);
     if (masterCustomerId === null) {
       response.status(400).json({ error: 'invalid_master_customer_id' });
@@ -408,6 +460,18 @@ function statusForPurchaseBehaviorResult(result: GetCustomerPurchaseBehaviorResu
 }
 
 function statusForCustomerRfmResult(result: GetCustomerRfmResult): number {
+  switch (result.status) {
+    case 'available':
+      return 200;
+    case 'customer_not_found':
+    case 'rfm_not_available':
+      return 404;
+    case 'degraded':
+      return 503;
+  }
+}
+
+function statusForCustomerRfmByCustomerIdResult(result: GetCustomerRfmByCustomerIdResult): number {
   switch (result.status) {
     case 'available':
       return 200;
@@ -652,6 +716,29 @@ function logCustomerRfmLookup(masterCustomerId: string, result: GetCustomerRfmRe
   console.info(
     {
       masterCustomerId,
+      endpoint: 'rfm',
+      contractVersion: CUSTOMER_RFM_RUNTIME_CONTRACT_VERSION,
+      status: result.status,
+      hasSegment:
+        result.status === 'available' ? result.segment.code !== null && result.segment.version !== null : null,
+      segmentCode: result.status === 'available' ? result.segment.code : null,
+      snapshotId: result.status === 'available' ? result.snapshot.snapshotId : null,
+      degradedReason: result.status === 'degraded' ? result.reason : null,
+      unavailableReason: result.status === 'rfm_not_available' ? result.reason : null,
+      durationMs,
+    },
+    'customer rfm lookup',
+  );
+}
+
+function logCustomerRfmByCustomerIdLookup(
+  customerId: number,
+  result: GetCustomerRfmByCustomerIdResult,
+  durationMs: number,
+): void {
+  console.info(
+    {
+      customerId,
       endpoint: 'rfm',
       contractVersion: CUSTOMER_RFM_RUNTIME_CONTRACT_VERSION,
       status: result.status,

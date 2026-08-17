@@ -4,6 +4,7 @@ import {
   type CurrentMasterCustomerRfmLookup,
   formatRfmDecimal,
   type CurrentMasterCustomerRfmRecord,
+  type CurrentPrestashopCustomerRfmLookup,
   type CurrentPrestashopCustomerRfmRecord,
   type CurrentRfmSnapshotMetadata,
   type IdentityResolutionStatus,
@@ -11,6 +12,7 @@ import {
   type RfmScore,
 } from '../../domain/customer-rfm/index.js';
 import type { QueryExecutor } from '../shared/query-executor.js';
+import { mapRfmReadError } from './rfm-read-error.js';
 
 interface CurrentSnapshotRow extends RowDataPacket {
   snapshot_id: string | number;
@@ -117,23 +119,41 @@ const SELECT_CURRENT_SNAPSHOT_MASTER_CUSTOMER_SQL = `
 export function createMysqlRfmSnapshotReader(executor: QueryExecutor): CurrentRfmSnapshotReader {
   return {
     async getCurrentSnapshot() {
-      const rows = await executor.execute(SELECT_CURRENT_SNAPSHOT_SQL, []);
+      let rows: RowDataPacket[];
+      try {
+        rows = await executor.execute(SELECT_CURRENT_SNAPSHOT_SQL, []);
+      } catch (error) {
+        throw mapRfmReadError(error);
+      }
       return toCurrentSnapshotMetadata(rows[0] as CurrentSnapshotRow | undefined);
     },
 
     async getCurrentPrestashopCustomerRfm(prestashopCustomerId) {
+      const lookup = await this.getCurrentPrestashopCustomerRfmLookup(prestashopCustomerId);
+      return lookup.record;
+    },
+
+    async getCurrentPrestashopCustomerRfmLookup(prestashopCustomerId) {
       const safeCustomerId = resolvePrestashopCustomerId(prestashopCustomerId);
       const currentSnapshot = await this.getCurrentSnapshot();
       if (currentSnapshot === null) {
-        return null;
+        return {
+          snapshot: null,
+          record: null,
+        } satisfies CurrentPrestashopCustomerRfmLookup;
       }
 
-      const rows = await executor.execute(SELECT_CURRENT_SNAPSHOT_CUSTOMER_SQL, [
-        currentSnapshot.snapshotId,
-        safeCustomerId,
-      ]);
+      let rows: RowDataPacket[];
+      try {
+        rows = await executor.execute(SELECT_CURRENT_SNAPSHOT_CUSTOMER_SQL, [currentSnapshot.snapshotId, safeCustomerId]);
+      } catch (error) {
+        throw mapRfmReadError(error);
+      }
 
-      return toCurrentPrestashopCustomerRfm(rows[0] as SnapshotCustomerRow | undefined, currentSnapshot);
+      return {
+        snapshot: currentSnapshot,
+        record: toCurrentPrestashopCustomerRfm(rows[0] as SnapshotCustomerRow | undefined, currentSnapshot),
+      } satisfies CurrentPrestashopCustomerRfmLookup;
     },
 
     async getCurrentMasterCustomerRfm(masterCustomerId) {
@@ -151,10 +171,15 @@ export function createMysqlRfmSnapshotReader(executor: QueryExecutor): CurrentRf
         } satisfies CurrentMasterCustomerRfmLookup;
       }
 
-      const rows = await executor.execute(SELECT_CURRENT_SNAPSHOT_MASTER_CUSTOMER_SQL, [
-        currentSnapshot.snapshotId,
-        safeMasterCustomerId,
-      ]);
+      let rows: RowDataPacket[];
+      try {
+        rows = await executor.execute(SELECT_CURRENT_SNAPSHOT_MASTER_CUSTOMER_SQL, [
+          currentSnapshot.snapshotId,
+          safeMasterCustomerId,
+        ]);
+      } catch (error) {
+        throw mapRfmReadError(error);
+      }
 
       return {
         snapshot: currentSnapshot,

@@ -16,14 +16,27 @@ import {
   type GetCustomerPurchaseBehavior,
 } from './application/customer-purchase-behavior/get-customer-purchase-behavior.js';
 import { createGetCustomerRfm, type GetCustomerRfm } from './application/customer-rfm/get-customer-rfm.js';
+import {
+  createGetCustomerRfmByCustomerId,
+  type GetCustomerRfmByCustomerId,
+} from './application/customer-rfm/get-customer-rfm-by-customer-id.js';
+import {
+  getCustomerRfmByCustomerIdNotConfigured,
+  getCustomerRfmNotConfigured,
+} from './application/customer-rfm/rfm-not-configured.js';
 import { createGetCustomerProfile, type GetCustomerProfile } from './application/customer-profile/get-customer-profile.js';
 import { config } from './config.js';
-import { createMysqlMasterCustomerReader, getCrmQueryExecutor } from './infrastructure/crm/index.js';
+import {
+  checkCrmReadiness,
+  closeCrmPool,
+  createMysqlMasterCustomerReader,
+  getCrmQueryExecutor,
+  type CrmReadinessResult,
+} from './infrastructure/crm/index.js';
 import {
   checkPrestashopReadiness,
   closePrestashopPool,
   getPrestashopQueryExecutor,
-  pingPrestashop,
 } from './infrastructure/prestashop/prestashop-pool.js';
 import { createMysqlPrestaShopCustomerIdentityRepository } from './infrastructure/prestashop/mysql-prestashop-customer-identity-repository.js';
 import { createMysqlPrestashopCustomerReader } from './infrastructure/prestashop/mysql-prestashop-customer-reader.js';
@@ -50,6 +63,7 @@ export type Bootstrap = {
   readonly getCustomerPurchasedProducts: GetCustomerPurchasedProducts;
   readonly getCustomerPurchaseBehavior: GetCustomerPurchaseBehavior;
   readonly getCustomerRfm: GetCustomerRfm;
+  readonly getCustomerRfmByCustomerId: GetCustomerRfmByCustomerId;
   readonly checkReadiness: ReadinessCheck;
   readonly shutdown: () => Promise<void>;
 };
@@ -94,7 +108,6 @@ export function bootstrap(): Bootstrap {
     config.prestashopDb.prefix,
   );
   const masterCustomerReader = createMysqlMasterCustomerReader(getCrmQueryExecutor());
-  const currentRfmSnapshotReader = createMysqlRfmSnapshotReader(getRfmSnapshotQueryExecutor());
 
   const getCustomerProfile = createGetCustomerProfile({
     resolveCustomerIdentity,
@@ -138,17 +151,27 @@ export function bootstrap(): Bootstrap {
     clock: systemClock,
   });
 
-  const getCustomerRfm = createGetCustomerRfm({
-    masterCustomerReader,
-    currentRfmSnapshotReader,
-  });
+  // RFM is an optional runtime capability: when RFM_SNAPSHOT_DB_* is absent, no pool is
+  // created and no connection is attempted — both RFM use cases fall back to a constant
+  // "rfm_not_configured" degraded response. See CP-R1-RFM-data-ownership-crm-architecture-
+  // audit.md §21 and config.ts.
+  let getCustomerRfm: GetCustomerRfm;
+  let getCustomerRfmByCustomerId: GetCustomerRfmByCustomerId;
+  if (config.rfmSnapshotDb) {
+    const currentRfmSnapshotReader = createMysqlRfmSnapshotReader(getRfmSnapshotQueryExecutor());
+    getCustomerRfm = createGetCustomerRfm({ masterCustomerReader, currentRfmSnapshotReader });
+    getCustomerRfmByCustomerId = createGetCustomerRfmByCustomerId({ resolveCustomerIdentity, currentRfmSnapshotReader });
+  } else {
+    getCustomerRfm = getCustomerRfmNotConfigured;
+    getCustomerRfmByCustomerId = getCustomerRfmByCustomerIdNotConfigured;
+  }
 
   const checkReadiness: ReadinessCheck = async () => {
-    const [prestashop, crm] = await Promise.all([
+    const [prestashop, crmResult] = await Promise.all([
       checkPrestashopReadiness(config.prestashopDb.prefix),
-      pingPrestashop().catch(() => false),
+      checkCrmReadiness().catch((): CrmReadinessResult => ({ status: 'not_ready', reason: 'crm_unavailable' })),
     ]);
-    return { prestashop, crm };
+    return { prestashop, crm: crmResult.status === 'ready' };
   };
 
   return {
@@ -159,9 +182,10 @@ export function bootstrap(): Bootstrap {
     getCustomerPurchasedProducts,
     getCustomerPurchaseBehavior,
     getCustomerRfm,
+    getCustomerRfmByCustomerId,
     checkReadiness,
     shutdown: async () => {
-      await Promise.all([closePrestashopPool(), closeRfmSnapshotPool()]);
+      await Promise.all([closePrestashopPool(), closeCrmPool(), closeRfmSnapshotPool()]);
     },
   };
 }

@@ -1,5 +1,6 @@
 import type {
   CurrentMasterCustomerRfmLookup,
+  CurrentPrestashopCustomerRfmLookup,
   CanonicalIdentityCoverageSummary,
   CanonicalIdentityResolution,
   CurrentRfmSnapshotMetadata,
@@ -10,6 +11,7 @@ import type {
 export interface CurrentRfmSnapshotReader {
   getCurrentSnapshot(): Promise<CurrentRfmSnapshotMetadata | null>;
   getCurrentPrestashopCustomerRfm(prestashopCustomerId: number): Promise<CurrentPrestashopCustomerRfmRecord | null>;
+  getCurrentPrestashopCustomerRfmLookup(prestashopCustomerId: number): Promise<CurrentPrestashopCustomerRfmLookup>;
   getCurrentMasterCustomerRfm(masterCustomerId: string): Promise<CurrentMasterCustomerRfmRecord | null>;
   getCurrentMasterCustomerRfmLookup(masterCustomerId: string): Promise<CurrentMasterCustomerRfmLookup>;
 }

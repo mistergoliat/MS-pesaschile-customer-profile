@@ -43,6 +43,7 @@ function readerReturning(lookup: CurrentMasterCustomerRfmLookup): CurrentRfmSnap
   return {
     getCurrentSnapshot: vi.fn(async () => lookup.snapshot),
     getCurrentPrestashopCustomerRfm: vi.fn(async () => null),
+    getCurrentPrestashopCustomerRfmLookup: vi.fn(async () => ({ snapshot: lookup.snapshot, record: null })),
     getCurrentMasterCustomerRfm: vi.fn(async () => lookup.record),
     getCurrentMasterCustomerRfmLookup: vi.fn(async () => lookup),
   };

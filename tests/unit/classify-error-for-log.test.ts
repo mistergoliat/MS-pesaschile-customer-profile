@@ -6,6 +6,9 @@ import {
   CustomerProfileBuildError,
   PrestashopTimeoutError,
   PrestashopUnavailableError,
+  RfmSchemaIncompatibleError,
+  RfmTimeoutError,
+  RfmUnavailableError,
 } from '../../src/application/customer-profile/errors.js';
 import { classifyErrorForLog } from '../../src/observability/classify-error-for-log.js';
 
@@ -16,6 +19,9 @@ describe('classifyErrorForLog', () => {
     [new CrmSchemaIncompatibleError('missing column'), 'crm_schema_incompatible'],
     [new PrestashopUnavailableError('ps down'), 'prestashop_unavailable'],
     [new PrestashopTimeoutError('ps timed out'), 'prestashop_timeout'],
+    [new RfmUnavailableError('rfm db down'), 'rfm_unavailable'],
+    [new RfmTimeoutError('rfm db timed out'), 'rfm_timeout'],
+    [new RfmSchemaIncompatibleError('missing rfm table'), 'rfm_schema_incompatible'],
     [new CustomerProfileBuildError('build failed'), 'profile_build_failed'],
     [new Error('some unrelated driver error'), 'unexpected_error'],
     ['not even an Error instance', 'unexpected_error'],

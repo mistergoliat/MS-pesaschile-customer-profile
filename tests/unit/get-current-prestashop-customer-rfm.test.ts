@@ -41,6 +41,7 @@ function readerReturning(result: CurrentPrestashopCustomerRfmRecord | null): Cur
   return {
     getCurrentSnapshot: vi.fn(async () => null),
     getCurrentPrestashopCustomerRfm: vi.fn(async () => result),
+    getCurrentPrestashopCustomerRfmLookup: vi.fn(async () => ({ snapshot: result?.snapshot ?? null, record: result })),
     getCurrentMasterCustomerRfm: vi.fn(async () => (result?.masterCustomerId ? ({ ...result, masterCustomerId: result.masterCustomerId } as CurrentMasterCustomerRfmRecord) : null)),
     getCurrentMasterCustomerRfmLookup: vi.fn(async () => ({
       snapshot: result?.snapshot ?? null,
@@ -88,6 +89,7 @@ describe('getCurrentMasterCustomerRfm', () => {
     const reader = {
       getCurrentSnapshot: vi.fn(async () => null),
       getCurrentPrestashopCustomerRfm: vi.fn(async () => null),
+      getCurrentPrestashopCustomerRfmLookup: vi.fn(async () => ({ snapshot: null, record: null })),
       getCurrentMasterCustomerRfm: vi.fn(async () => ({
         ...record,
         masterCustomerId: '9001',
@@ -114,6 +116,7 @@ describe('getCurrentMasterCustomerRfm', () => {
     const reader = {
       getCurrentSnapshot: vi.fn(async () => null),
       getCurrentPrestashopCustomerRfm: vi.fn(async () => null),
+      getCurrentPrestashopCustomerRfmLookup: vi.fn(async () => ({ snapshot: null, record: null })),
       getCurrentMasterCustomerRfm: vi.fn(async () => null),
       getCurrentMasterCustomerRfmLookup: vi.fn(async () => ({ snapshot: null, record: null })),
     } satisfies CurrentRfmSnapshotReader;
@@ -128,6 +131,7 @@ describe('getCurrentMasterCustomerRfm', () => {
     const reader = {
       getCurrentSnapshot: vi.fn(async () => null),
       getCurrentPrestashopCustomerRfm: vi.fn(async () => null),
+      getCurrentPrestashopCustomerRfmLookup: vi.fn(async () => ({ snapshot: null, record: null })),
       getCurrentMasterCustomerRfm: vi.fn(async () => null),
       getCurrentMasterCustomerRfmLookup: vi.fn(async () => ({ snapshot: null, record: null })),
     } satisfies CurrentRfmSnapshotReader;
