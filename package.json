@@ -20,7 +20,8 @@
     "snapshot:rfm": "tsx scripts/snapshots/rfm-snapshot.ts",
     "snapshot:rfm:scheduled": "tsx scripts/snapshots/rfm-snapshot-scheduled.ts",
     "snapshot:rfm:source-drift": "tsx scripts/snapshots/rfm-source-drift.ts",
-    "snapshot:rfm:compare-source": "tsx scripts/snapshots/rfm-compare-source-artifacts.ts"
+    "snapshot:rfm:compare-source": "tsx scripts/snapshots/rfm-compare-source-artifacts.ts",
+    "cluster:extract-features": "tsx scripts/clustering/feature-extraction.ts"
   },
   "keywords": [],
   "author": "",
