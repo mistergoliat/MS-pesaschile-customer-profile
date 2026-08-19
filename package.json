@@ -21,7 +21,11 @@
     "snapshot:rfm:scheduled": "tsx scripts/snapshots/rfm-snapshot-scheduled.ts",
     "snapshot:rfm:source-drift": "tsx scripts/snapshots/rfm-source-drift.ts",
     "snapshot:rfm:compare-source": "tsx scripts/snapshots/rfm-compare-source-artifacts.ts",
-    "cluster:extract-features": "tsx scripts/clustering/feature-extraction.ts"
+    "cluster:extract-features": "tsx scripts/clustering/feature-extraction.ts",
+    "cluster:register-model": "tsx scripts/clustering/register-model.ts",
+    "cluster:publish-snapshot": "tsx scripts/clustering/publish-snapshot.ts",
+    "cluster:profile-snapshot": "tsx scripts/clustering/generate-cluster-profile.ts",
+    "cluster:summary": "tsx scripts/clustering/print-cluster-summary.ts"
   },
   "keywords": [],
   "author": "",

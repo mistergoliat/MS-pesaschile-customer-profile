@@ -26,6 +26,25 @@ const envSchema = z.object({
   RFM_SNAPSHOT_DB_CONNECTION_LIMIT: z.coerce.number().int().positive().default(5),
   RFM_SNAPSHOT_DB_QUERY_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
 
+  // Behavioral clustering persistence (CP-R2-T02) — an independent credential family from
+  // RFM_SNAPSHOT_DB_*, deliberately not reused (task Section 32: "NO reutilizar credenciales
+  // PrestaShop para escribir" / own config for clustering). Optional, same all-or-nothing
+  // pattern as RFM: the HTTP server boots and every other endpoint keeps working with
+  // clustering absent — the cluster endpoint alone degrades to "not configured". In this
+  // environment CLUSTER_DB_NAME currently points at the same physical schema as
+  // RFM_SNAPSHOT_DB_NAME (`rfm_snapshot`) because that's the only schema the available local
+  // MariaDB credential can write to — see migrations/005_create_customer_cluster_tables.sql
+  // for the full infrastructure note. The tables are clearly namespaced
+  // (`customer_cluster_*`) so the two capabilities stay logically independent even while
+  // sharing a schema; pointing CLUSTER_DB_NAME at a dedicated schema later is a config change.
+  CLUSTER_DB_HOST: z.string().min(1).optional(),
+  CLUSTER_DB_PORT: z.coerce.number().int().positive().default(3306),
+  CLUSTER_DB_USER: z.string().min(1).optional(),
+  CLUSTER_DB_PASSWORD: z.string().min(1).optional(),
+  CLUSTER_DB_NAME: z.string().min(1).optional(),
+  CLUSTER_DB_CONNECTION_LIMIT: z.coerce.number().int().positive().default(5),
+  CLUSTER_DB_QUERY_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
+
   PRESTASHOP_DB_HOST: z.string().min(1),
   PRESTASHOP_DB_PORT: z.coerce.number().int().positive().default(3306),
   PRESTASHOP_DB_USER: z.string().min(1),
@@ -79,6 +98,25 @@ const envSchema = z.object({
       }
     }
   }
+
+  const clusterFields = {
+    CLUSTER_DB_HOST: data.CLUSTER_DB_HOST,
+    CLUSTER_DB_USER: data.CLUSTER_DB_USER,
+    CLUSTER_DB_PASSWORD: data.CLUSTER_DB_PASSWORD,
+    CLUSTER_DB_NAME: data.CLUSTER_DB_NAME,
+  } as const;
+  const clusterPresentCount = Object.values(clusterFields).filter((value) => value !== undefined).length;
+  if (clusterPresentCount !== 0 && clusterPresentCount !== Object.keys(clusterFields).length) {
+    for (const [field, value] of Object.entries(clusterFields)) {
+      if (value === undefined) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [field],
+          message: `${field} is required once any CLUSTER_DB_* variable is set (all-or-nothing)`,
+        });
+      }
+    }
+  }
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -115,6 +153,32 @@ const rfmSnapshotDb: RfmSnapshotDbConfig | null =
       }
     : null;
 
+export type ClusterDbConfig = {
+  readonly host: string;
+  readonly port: number;
+  readonly user: string;
+  readonly password: string;
+  readonly database: string;
+  readonly connectionLimit: number;
+  readonly queryTimeoutMs: number;
+};
+
+const clusterDb: ClusterDbConfig | null =
+  raw.CLUSTER_DB_HOST !== undefined &&
+  raw.CLUSTER_DB_USER !== undefined &&
+  raw.CLUSTER_DB_PASSWORD !== undefined &&
+  raw.CLUSTER_DB_NAME !== undefined
+    ? {
+        host: raw.CLUSTER_DB_HOST,
+        port: raw.CLUSTER_DB_PORT,
+        user: raw.CLUSTER_DB_USER,
+        password: raw.CLUSTER_DB_PASSWORD,
+        database: raw.CLUSTER_DB_NAME,
+        connectionLimit: raw.CLUSTER_DB_CONNECTION_LIMIT,
+        queryTimeoutMs: raw.CLUSTER_DB_QUERY_TIMEOUT_MS,
+      }
+    : null;
+
 export const config = {
   port: raw.PORT,
   crmDb: {
@@ -127,6 +191,7 @@ export const config = {
     queryTimeoutMs: raw.CRM_DB_QUERY_TIMEOUT_MS,
   },
   rfmSnapshotDb,
+  clusterDb,
   prestashopDb: {
     host: raw.PRESTASHOP_DB_HOST,
     port: raw.PRESTASHOP_DB_PORT,

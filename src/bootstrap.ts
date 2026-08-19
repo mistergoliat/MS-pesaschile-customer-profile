@@ -24,6 +24,18 @@ import {
   getCustomerRfmByCustomerIdNotConfigured,
   getCustomerRfmNotConfigured,
 } from './application/customer-rfm/rfm-not-configured.js';
+import { createGetCustomerCluster, type GetCustomerCluster } from './application/customer-clustering/get-customer-cluster.js';
+import { getCustomerClusterNotConfigured } from './application/customer-clustering/cluster-not-configured.js';
+import {
+  createGetClusterSnapshotSummary,
+  type GetClusterSnapshotSummary,
+} from './application/customer-clustering/get-cluster-snapshot-summary.js';
+import { createGetRfmClusterCrossTab, type GetRfmClusterCrossTab } from './application/customer-clustering/get-rfm-cluster-cross-tab.js';
+import {
+  getClusterSnapshotSummaryNotConfigured,
+  getRfmClusterCrossTabNotConfigured,
+  getRfmClusterCrossTabRfmNotConfigured,
+} from './application/customer-clustering/cluster-analytics-not-configured.js';
 import { createGetCustomerProfile, type GetCustomerProfile } from './application/customer-profile/get-customer-profile.js';
 import { config } from './config.js';
 import {
@@ -49,7 +61,12 @@ import { createMysqlCommercialProductsSummaryReader } from './infrastructure/pre
 import { createMysqlPurchasedProductsReader } from './infrastructure/prestashop/mysql-purchased-products-reader.js';
 import { createMysqlCustomerProductBehaviorReader } from './infrastructure/prestashop/mysql-customer-product-behavior-reader.js';
 import { createMysqlRfmSnapshotReader } from './infrastructure/rfm/mysql-rfm-snapshot-reader.js';
+import { createMysqlRfmSegmentBulkReader } from './infrastructure/rfm/mysql-rfm-segment-bulk-reader.js';
 import { closeRfmSnapshotPool, getRfmSnapshotQueryExecutor } from './infrastructure/rfm/rfm-snapshot-pool.js';
+import { createMysqlClusterSnapshotReader } from './infrastructure/clustering/mysql-cluster-snapshot-reader.js';
+import { createMysqlClusterAnalyticsReader } from './infrastructure/clustering/mysql-cluster-analytics-reader.js';
+import { createMysqlClusterSnapshotProfileRepository } from './infrastructure/clustering/mysql-cluster-snapshot-profile-repository.js';
+import { closeClusterPool, getClusterPool } from './infrastructure/clustering/cluster-db-pool.js';
 import { SystemClock } from './infrastructure/shared/system-clock.js';
 import type { ReadinessCheck } from './http/routes/index.js';
 
@@ -64,6 +81,9 @@ export type Bootstrap = {
   readonly getCustomerPurchaseBehavior: GetCustomerPurchaseBehavior;
   readonly getCustomerRfm: GetCustomerRfm;
   readonly getCustomerRfmByCustomerId: GetCustomerRfmByCustomerId;
+  readonly getCustomerCluster: GetCustomerCluster;
+  readonly getClusterSnapshotSummary: GetClusterSnapshotSummary;
+  readonly getRfmClusterCrossTab: GetRfmClusterCrossTab;
   readonly checkReadiness: ReadinessCheck;
   readonly shutdown: () => Promise<void>;
 };
@@ -166,6 +186,35 @@ export function bootstrap(): Bootstrap {
     getCustomerRfmByCustomerId = getCustomerRfmByCustomerIdNotConfigured;
   }
 
+  // Clustering is an optional runtime capability, same all-or-nothing pattern as RFM (task
+  // Section 32 / config.ts): when CLUSTER_DB_* is absent, no pool is created and no connection
+  // is attempted — the endpoint alone falls back to a constant "cluster_not_configured"
+  // degraded response, every other endpoint keeps working unaffected.
+  let getCustomerCluster: GetCustomerCluster;
+  let getClusterSnapshotSummary: GetClusterSnapshotSummary;
+  let getRfmClusterCrossTab: GetRfmClusterCrossTab;
+  if (config.clusterDb) {
+    const currentClusterSnapshotReader = createMysqlClusterSnapshotReader(getClusterPool());
+    getCustomerCluster = createGetCustomerCluster({ resolveCustomerIdentity, currentClusterSnapshotReader });
+
+    const clusterAnalyticsReader = createMysqlClusterAnalyticsReader(getClusterPool());
+    const clusterSnapshotProfileRepository = createMysqlClusterSnapshotProfileRepository(getClusterPool());
+    getClusterSnapshotSummary = createGetClusterSnapshotSummary({ clusterAnalyticsReader, clusterSnapshotProfileRepository });
+
+    // Cross-tab needs both clustering (already configured here) and RFM. RFM being absent only
+    // degrades this one endpoint (task Section 45) — the snapshot summary above is unaffected.
+    if (config.rfmSnapshotDb) {
+      const rfmSegmentBulkReader = createMysqlRfmSegmentBulkReader(getRfmSnapshotQueryExecutor());
+      getRfmClusterCrossTab = createGetRfmClusterCrossTab({ clusterAnalyticsReader, rfmSegmentBulkReader });
+    } else {
+      getRfmClusterCrossTab = getRfmClusterCrossTabRfmNotConfigured;
+    }
+  } else {
+    getCustomerCluster = getCustomerClusterNotConfigured;
+    getClusterSnapshotSummary = getClusterSnapshotSummaryNotConfigured;
+    getRfmClusterCrossTab = getRfmClusterCrossTabNotConfigured;
+  }
+
   const checkReadiness: ReadinessCheck = async () => {
     const [prestashop, crmResult] = await Promise.all([
       checkPrestashopReadiness(config.prestashopDb.prefix),
@@ -183,9 +232,12 @@ export function bootstrap(): Bootstrap {
     getCustomerPurchaseBehavior,
     getCustomerRfm,
     getCustomerRfmByCustomerId,
+    getCustomerCluster,
+    getClusterSnapshotSummary,
+    getRfmClusterCrossTab,
     checkReadiness,
     shutdown: async () => {
-      await Promise.all([closePrestashopPool(), closeCrmPool(), closeRfmSnapshotPool()]);
+      await Promise.all([closePrestashopPool(), closeCrmPool(), closeRfmSnapshotPool(), closeClusterPool()]);
     },
   };
 }

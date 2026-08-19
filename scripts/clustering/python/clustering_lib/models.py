@@ -71,12 +71,14 @@ class KMeansSeedRun:
     labels: np.ndarray
     quality: ClusterQualityMetrics | None
     sizes: ClusterSizeSummary
+    centroids: np.ndarray
 
 
 def run_kmeans(matrix: np.ndarray, k: int, seed: int) -> KMeansSeedRun:
     model = KMeans(n_clusters=k, random_state=seed, n_init=10)
     labels = model.fit_predict(matrix)
     return KMeansSeedRun(
+        centroids=model.cluster_centers_,
         k=k,
         seed=seed,
         inertia=float(model.inertia_),
