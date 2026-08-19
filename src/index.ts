@@ -11,6 +11,9 @@ const {
   getCustomerPurchaseBehavior,
   getCustomerRfm,
   getCustomerRfmByCustomerId,
+  getCustomerCluster,
+  getClusterSnapshotSummary,
+  getRfmClusterCrossTab,
   checkReadiness,
   shutdown,
 } = bootstrap();
@@ -22,6 +25,9 @@ const app = buildApp({
   getCustomerPurchaseBehavior,
   getCustomerRfm,
   getCustomerRfmByCustomerId,
+  getCustomerCluster,
+  getClusterSnapshotSummary,
+  getRfmClusterCrossTab,
   checkReadiness,
 });
 

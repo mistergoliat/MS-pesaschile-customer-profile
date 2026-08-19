@@ -5,6 +5,9 @@ import type { GetCustomerPurchaseBehavior } from '../../src/application/customer
 import type { GetCustomerPurchasedProducts } from '../../src/application/customer-purchased-products/get-customer-purchased-products.js';
 import type { GetCustomerRfm } from '../../src/application/customer-rfm/get-customer-rfm.js';
 import type { GetCustomerRfmByCustomerId } from '../../src/application/customer-rfm/get-customer-rfm-by-customer-id.js';
+import type { GetCustomerCluster } from '../../src/application/customer-clustering/get-customer-cluster.js';
+import type { GetClusterSnapshotSummary } from '../../src/application/customer-clustering/get-cluster-snapshot-summary.js';
+import type { GetRfmClusterCrossTab } from '../../src/application/customer-clustering/get-rfm-cluster-cross-tab.js';
 import type { GetCustomerOrderStatus } from '../../src/application/customer-order-status/get-customer-order-status.js';
 import type { GetCustomerProfile } from '../../src/application/customer-profile/get-customer-profile.js';
 import { buildApp } from '../../src/app.js';
@@ -31,6 +34,17 @@ const unreachableGetCustomerPurchaseBehavior: GetCustomerPurchaseBehavior = asyn
 const unreachableGetCustomerRfm: GetCustomerRfm = async () => {
   throw new Error('getCustomerRfm (legacy masterCustomerId path) must not be called from the primary RFM route tests');
 };
+const unreachableGetCustomerCluster: GetCustomerCluster = async () => {
+  throw new Error('getCustomerCluster must not be called from the customer RFM-by-customerId route tests');
+};
+
+const unreachableGetClusterSnapshotSummary: GetClusterSnapshotSummary = async () => {
+  throw new Error('getClusterSnapshotSummary must not be called from the customer RFM-by-customerId route tests');
+};
+
+const unreachableGetRfmClusterCrossTab: GetRfmClusterCrossTab = async () => {
+  throw new Error('getRfmClusterCrossTab must not be called from the customer RFM-by-customerId route tests');
+};
 
 async function startApp(
   getCustomerRfmByCustomerId: GetCustomerRfmByCustomerId,
@@ -44,6 +58,9 @@ async function startApp(
     getCustomerPurchaseBehavior: unreachableGetCustomerPurchaseBehavior,
     getCustomerRfm: unreachableGetCustomerRfm,
     getCustomerRfmByCustomerId,
+    getCustomerCluster: unreachableGetCustomerCluster,
+    getClusterSnapshotSummary: unreachableGetClusterSnapshotSummary,
+    getRfmClusterCrossTab: unreachableGetRfmClusterCrossTab,
     checkReadiness,
   });
   server = createServer(app);

@@ -6,6 +6,9 @@ import type { GetCustomerPurchaseBehavior } from '../../application/customer-pur
 import type { GetCustomerPurchasedProducts } from '../../application/customer-purchased-products/get-customer-purchased-products.js';
 import type { GetCustomerRfm } from '../../application/customer-rfm/get-customer-rfm.js';
 import type { GetCustomerRfmByCustomerId } from '../../application/customer-rfm/get-customer-rfm-by-customer-id.js';
+import type { GetCustomerCluster } from '../../application/customer-clustering/get-customer-cluster.js';
+import type { GetClusterSnapshotSummary } from '../../application/customer-clustering/get-cluster-snapshot-summary.js';
+import type { GetRfmClusterCrossTab } from '../../application/customer-clustering/get-rfm-cluster-cross-tab.js';
 import type { GetCustomerOrderStatus } from '../../application/customer-order-status/get-customer-order-status.js';
 import type { GetCustomerProfile } from '../../application/customer-profile/get-customer-profile.js';
 import { CUSTOMER_PROFILE_CONTRACT_VERSION, type CustomerIdentity } from '../../domain/customer-identity/index.js';
@@ -20,6 +23,13 @@ import {
   type GetCustomerRfmByCustomerIdResult,
   type GetCustomerRfmResult,
 } from '../../domain/customer-rfm/index.js';
+import {
+  CUSTOMER_CLUSTER_RUNTIME_CONTRACT_VERSION,
+  CLUSTER_ANALYTICS_CONTRACT_VERSION,
+  type GetCustomerClusterResult,
+  type GetClusterSnapshotSummaryResult,
+  type GetRfmClusterCrossTabResult,
+} from '../../domain/customer-clustering/index.js';
 import type { GetCustomerOrderStatusResult } from '../../domain/customer-order-status/index.js';
 import type { CustomerProfileLookupResult } from '../../domain/customer-profile/index.js';
 import type { PrestashopReadinessResult } from '../../infrastructure/prestashop/prestashop-pool.js';
@@ -33,6 +43,7 @@ const numericId = z
   .regex(/^[0-9]+$/, 'customerId must be a numeric id');
 
 const customerIdParams = z.object({ customerId: numericId });
+const snapshotIdParams = z.object({ snapshotId: numericId });
 
 const orderReference = z
   .string()
@@ -63,6 +74,15 @@ export type RouteDependencies = {
   // Preserved, not removed — see the audit above §6/§18 for why it's kept as a distinct,
   // non-ambiguous path instead of being merged into the primary one.
   readonly getCustomerRfm: GetCustomerRfm;
+  // Behavioral clustering (CP-R2-T02): same identity space as the RFM primary path
+  // (customerId = ps_customer.id_customer), latest-published-snapshot only. See
+  // docs/releases/CP-R2-T02-behavioral-clustering-productionization.md.
+  readonly getCustomerCluster: GetCustomerCluster;
+  // Clustering analytics/observability (CP-R2-T03): read-only assembly over already-published
+  // snapshots/profiles, local MariaDB only — never recomputes, never touches PrestaShop. See
+  // docs/releases/CP-R2-T03-clustering-analytics-observability.md.
+  readonly getClusterSnapshotSummary: GetClusterSnapshotSummary;
+  readonly getRfmClusterCrossTab: GetRfmClusterCrossTab;
   readonly checkReadiness: ReadinessCheck;
 };
 
@@ -331,6 +351,140 @@ export function buildRoutes(deps: RouteDependencies): Router {
     }
   });
 
+  // Behavioral clustering (CP-R2-T02): read-only serving from the latest published local
+  // snapshot only — never recomputes an assignment, never trains, never calls Python.
+  router.get('/v1/customers/:customerId/cluster', async (request: Request, response: Response) => {
+    const customerId = parseCustomerIdFromParams(request.params);
+    if (customerId === null) {
+      response.status(400).json({ error: 'invalid_customer_id' });
+      return;
+    }
+    if (Object.keys(request.query).length > 0) {
+      response.status(400).json({ error: 'unsupported_query_params' });
+      return;
+    }
+    if (request.body !== undefined) {
+      response.status(400).json({ error: 'unsupported_body' });
+      return;
+    }
+
+    const startedAt = Date.now();
+
+    try {
+      const result = await deps.getCustomerCluster({ customerId });
+
+      logCustomerClusterLookup(customerId, result, Date.now() - startedAt);
+      response.status(statusForCustomerClusterResult(result)).json(result);
+    } catch (error) {
+      console.error({
+        event: 'customer_cluster_request_failed',
+        endpoint: 'cluster',
+        customerId,
+        contractVersion: CUSTOMER_CLUSTER_RUNTIME_CONTRACT_VERSION,
+        durationMs: Date.now() - startedAt,
+        errorType: classifyErrorForLog(error),
+      });
+      response.status(500).json({ error: 'internal_error' });
+    }
+  });
+
+  // Clustering analytics/observability (CP-R2-T03) — latest published snapshot summary:
+  // population distribution, per-cluster feature/commercial/distance profiles, model
+  // provenance. Local reads only, never recomputes (task Section 19).
+  router.get('/v1/clustering/snapshots/latest/summary', async (request: Request, response: Response) => {
+    if (Object.keys(request.query).length > 0) {
+      response.status(400).json({ error: 'unsupported_query_params' });
+      return;
+    }
+    if (request.body !== undefined) {
+      response.status(400).json({ error: 'unsupported_body' });
+      return;
+    }
+
+    const startedAt = Date.now();
+    try {
+      const result = await deps.getClusterSnapshotSummary({ snapshotId: null });
+      logClusterSnapshotSummaryLookup('latest', result, Date.now() - startedAt);
+      response.status(statusForClusterSnapshotSummaryResult(result)).json(result);
+    } catch (error) {
+      console.error({
+        event: 'cluster_snapshot_summary_request_failed',
+        endpoint: 'clustering-snapshot-summary',
+        snapshotIdParam: 'latest',
+        contractVersion: CLUSTER_ANALYTICS_CONTRACT_VERSION,
+        durationMs: Date.now() - startedAt,
+        errorType: classifyErrorForLog(error),
+      });
+      response.status(500).json({ error: 'internal_error' });
+    }
+  });
+
+  // Cluster x RFM cross-tab (task Section 23/27) — kept inside clustering, not a general
+  // Customer Intelligence surface (task Section 27: that capability does not exist yet).
+  router.get('/v1/clustering/snapshots/latest/rfm-cross-tab', async (request: Request, response: Response) => {
+    if (Object.keys(request.query).length > 0) {
+      response.status(400).json({ error: 'unsupported_query_params' });
+      return;
+    }
+    if (request.body !== undefined) {
+      response.status(400).json({ error: 'unsupported_body' });
+      return;
+    }
+
+    const startedAt = Date.now();
+    try {
+      const result = await deps.getRfmClusterCrossTab({ snapshotId: null });
+      logRfmClusterCrossTabLookup('latest', result, Date.now() - startedAt);
+      response.status(statusForRfmClusterCrossTabResult(result)).json(result);
+    } catch (error) {
+      console.error({
+        event: 'rfm_cluster_cross_tab_request_failed',
+        endpoint: 'clustering-rfm-cross-tab',
+        snapshotIdParam: 'latest',
+        contractVersion: CLUSTER_ANALYTICS_CONTRACT_VERSION,
+        durationMs: Date.now() - startedAt,
+        errorType: classifyErrorForLog(error),
+      });
+      response.status(500).json({ error: 'internal_error' });
+    }
+  });
+
+  // Historical reproducibility (task Section 20) — registered after the literal /latest routes
+  // above so a request for "latest" is never captured by this :snapshotId param route.
+  router.get('/v1/clustering/snapshots/:snapshotId/summary', async (request: Request, response: Response) => {
+    const parsedParams = snapshotIdParams.safeParse(request.params);
+    if (!parsedParams.success || /^0+$/.test(parsedParams.data.snapshotId)) {
+      response.status(400).json({ error: 'invalid_snapshot_id' });
+      return;
+    }
+    if (Object.keys(request.query).length > 0) {
+      response.status(400).json({ error: 'unsupported_query_params' });
+      return;
+    }
+    if (request.body !== undefined) {
+      response.status(400).json({ error: 'unsupported_body' });
+      return;
+    }
+
+    const snapshotId = parsedParams.data.snapshotId;
+    const startedAt = Date.now();
+    try {
+      const result = await deps.getClusterSnapshotSummary({ snapshotId });
+      logClusterSnapshotSummaryLookup(snapshotId, result, Date.now() - startedAt);
+      response.status(statusForClusterSnapshotSummaryResult(result)).json(result);
+    } catch (error) {
+      console.error({
+        event: 'cluster_snapshot_summary_request_failed',
+        endpoint: 'clustering-snapshot-summary',
+        snapshotIdParam: snapshotId,
+        contractVersion: CLUSTER_ANALYTICS_CONTRACT_VERSION,
+        durationMs: Date.now() - startedAt,
+        errorType: classifyErrorForLog(error),
+      });
+      response.status(500).json({ error: 'internal_error' });
+    }
+  });
+
   router.get('/v1/customers/:customerId/orders/:reference/status', async (request: Request, response: Response) => {
     const parsedParams = orderStatusParams.safeParse(request.params);
     if (!parsedParams.success) {
@@ -481,6 +635,77 @@ function statusForCustomerRfmByCustomerIdResult(result: GetCustomerRfmByCustomer
     case 'degraded':
       return 503;
   }
+}
+
+function statusForCustomerClusterResult(result: GetCustomerClusterResult): number {
+  switch (result.status) {
+    case 'available':
+      return 200;
+    case 'customer_not_found':
+    case 'cluster_not_available':
+      return 404;
+    case 'degraded':
+      return 503;
+  }
+}
+
+function statusForClusterSnapshotSummaryResult(result: GetClusterSnapshotSummaryResult): number {
+  switch (result.status) {
+    case 'available':
+      return 200;
+    case 'no_published_cluster_snapshot':
+    case 'cluster_snapshot_not_found':
+      return 404;
+    case 'degraded':
+      return 503;
+  }
+}
+
+function statusForRfmClusterCrossTabResult(result: GetRfmClusterCrossTabResult): number {
+  switch (result.status) {
+    case 'available':
+      return 200;
+    case 'no_published_cluster_snapshot':
+    case 'cluster_snapshot_not_found':
+    // No RFM snapshot exists to cross-tab against — cluster analytics itself stays healthy
+    // (task Section 45), but this specific resource cannot be built, same "resource absent"
+    // shape as the two cases above.
+    case 'no_compatible_rfm_snapshot':
+      return 404;
+    case 'degraded':
+      return 503;
+  }
+}
+
+function logClusterSnapshotSummaryLookup(snapshotIdParam: string, result: GetClusterSnapshotSummaryResult, durationMs: number): void {
+  console.info(
+    {
+      endpoint: 'clustering-snapshot-summary',
+      contractVersion: CLUSTER_ANALYTICS_CONTRACT_VERSION,
+      snapshotIdParam,
+      status: result.status,
+      snapshotId: result.status === 'available' ? result.snapshot.snapshotId : null,
+      clusterCount: result.status === 'available' ? result.clusters.length : null,
+      degradedReason: result.status === 'degraded' ? result.reason : null,
+      durationMs,
+    },
+    'cluster snapshot summary lookup',
+  );
+}
+
+function logRfmClusterCrossTabLookup(snapshotIdParam: string, result: GetRfmClusterCrossTabResult, durationMs: number): void {
+  console.info(
+    {
+      endpoint: 'clustering-rfm-cross-tab',
+      contractVersion: CLUSTER_ANALYTICS_CONTRACT_VERSION,
+      snapshotIdParam,
+      status: result.status,
+      coveragePct: result.status === 'available' ? result.coverage.coveragePct : null,
+      degradedReason: result.status === 'degraded' ? result.reason : null,
+      durationMs,
+    },
+    'rfm cluster cross-tab lookup',
+  );
 }
 
 function logProfileLookup(
@@ -728,6 +953,24 @@ function logCustomerRfmLookup(masterCustomerId: string, result: GetCustomerRfmRe
       durationMs,
     },
     'customer rfm lookup',
+  );
+}
+
+function logCustomerClusterLookup(customerId: number, result: GetCustomerClusterResult, durationMs: number): void {
+  console.info(
+    {
+      customerId,
+      endpoint: 'cluster',
+      contractVersion: CUSTOMER_CLUSTER_RUNTIME_CONTRACT_VERSION,
+      status: result.status,
+      clusterId: result.status === 'available' ? result.cluster.clusterId : null,
+      hasLabel: result.status === 'available' ? result.cluster.label !== null : null,
+      snapshotId: result.status === 'available' ? result.snapshot.snapshotId : null,
+      notAvailableReason: result.status === 'cluster_not_available' ? result.reason : null,
+      degradedReason: result.status === 'degraded' ? result.reason : null,
+      durationMs,
+    },
+    'customer cluster lookup',
   );
 }
 

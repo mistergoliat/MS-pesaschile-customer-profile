@@ -91,3 +91,33 @@ export class RfmSchemaIncompatibleError extends Error {
     this.name = 'RfmSchemaIncompatibleError';
   }
 }
+
+// Thrown by the cluster snapshot reader for CLUSTER_DB read failures once it IS configured.
+// A missing row/snapshot is a valid null/degraded result, never one of these. Mirrors the
+// Rfm*Error split above exactly.
+export class ClusterUnavailableError extends Error {
+  readonly code = 'cluster_unavailable';
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'ClusterUnavailableError';
+  }
+}
+
+export class ClusterTimeoutError extends Error {
+  readonly code = 'cluster_timeout';
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'ClusterTimeoutError';
+  }
+}
+
+export class ClusterSchemaIncompatibleError extends Error {
+  readonly code = 'cluster_schema_incompatible';
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'ClusterSchemaIncompatibleError';
+  }
+}
