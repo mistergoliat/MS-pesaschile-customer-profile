@@ -74,3 +74,56 @@ describe('config — RFM_SNAPSHOT_DB_* is an optional, all-or-nothing capability
     await expect(import('../../src/config.js')).rejects.toThrow(/RFM_SNAPSHOT_DB_NAME/);
   });
 });
+
+// CP-R3-T01: ANALYTICS_DB_* is a third independent credential family, same optional
+// all-or-nothing shape as CLUSTER_DB_*/RFM_SNAPSHOT_DB_* — never silently falls back to
+// either (task Section 48).
+describe('config — ANALYTICS_DB_* is an optional, all-or-nothing capability', () => {
+  it('boots with analyticsDb: null when no ANALYTICS_DB_* variable is set', async () => {
+    const { config } = await import('../../src/config.js');
+
+    expect(config.analyticsDb).toBeNull();
+    expect(config.prestashopDb.host).toBe('ps-host');
+  });
+
+  it('boots with a fully-populated analyticsDb when every ANALYTICS_DB_* variable is set', async () => {
+    process.env.ANALYTICS_DB_HOST = 'analytics-host';
+    process.env.ANALYTICS_DB_USER = 'analytics-user';
+    process.env.ANALYTICS_DB_PASSWORD = 'analytics-password';
+    process.env.ANALYTICS_DB_NAME = 'rfm_snapshot';
+
+    const { config } = await import('../../src/config.js');
+
+    expect(config.analyticsDb).toEqual({
+      host: 'analytics-host',
+      port: 3306,
+      user: 'analytics-user',
+      password: 'analytics-password',
+      database: 'rfm_snapshot',
+      connectionLimit: 5,
+      queryTimeoutMs: 3000,
+    });
+  });
+
+  it.each(['ANALYTICS_DB_HOST', 'ANALYTICS_DB_USER', 'ANALYTICS_DB_PASSWORD', 'ANALYTICS_DB_NAME'])(
+    'fails fast when only %s is set (partial family)',
+    async (onlySetVar) => {
+      process.env[onlySetVar] = 'partial-value';
+
+      await expect(import('../../src/config.js')).rejects.toThrow(/Invalid environment variables/);
+    },
+  );
+
+  it('does not confuse ANALYTICS_DB_* with CLUSTER_DB_*/RFM_SNAPSHOT_DB_* — setting one family leaves the others null', async () => {
+    process.env.ANALYTICS_DB_HOST = 'analytics-host';
+    process.env.ANALYTICS_DB_USER = 'analytics-user';
+    process.env.ANALYTICS_DB_PASSWORD = 'analytics-password';
+    process.env.ANALYTICS_DB_NAME = 'rfm_snapshot';
+
+    const { config } = await import('../../src/config.js');
+
+    expect(config.analyticsDb).not.toBeNull();
+    expect(config.clusterDb).toBeNull();
+    expect(config.rfmSnapshotDb).toBeNull();
+  });
+});

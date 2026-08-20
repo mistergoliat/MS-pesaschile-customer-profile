@@ -1,31 +1,17 @@
 import type { Pool, RowDataPacket } from 'mysql2/promise';
-import {
-  addBehaviorDecimals,
-  compareDecimalDesc,
-  divideDecimalToBehaviorDecimal,
-  divideIntegerToBehaviorDecimal,
-  effectiveDiversityFromHhi,
-  squareBehaviorShare,
-  sumBehaviorShares,
-} from '../../application/customer-purchase-behavior/behavior-decimal.js';
 import { excludedOperationalAccountPrestashopCustomerIds } from '../../domain/customer-rfm/operational-account-exclusion-policy.js';
-import type { RawClusterFeatureVector } from '../../domain/customer-clustering/index.js';
+import type { CustomerFeatureProductAggregate, CustomerFeatureSourceRow } from '../../domain/customer-analytics/index.js';
 import { assertSafePrestashopTablePrefix, coerceNonNegativeSafeInteger, mapPrestashopReadError } from './commercial-summary-reader-utils.js';
 
-// Production port of scripts/clustering/lib/population-reader.ts + lib/feature-builder.ts
-// (CP-R2-T01). Deliberately a separate, independent implementation rather than an import from
-// scripts/ — the same precedent as RFM's audit script (scripts/audits/rfm-population) staying
-// independent from its production reader (mysql-rfm-population-reader.ts). The T01 script stays
-// frozen for experiment reproducibility; this is the maintained production path. Both share the
-// same eligibility policy (imported, not re-derived) and produce the same feature semantics
-// (verified by shared domain-level transform/assignment tests).
-export type ClusterPopulationRow = {
-  readonly prestashopCustomerId: number;
-  readonly features: RawClusterFeatureVector;
-};
-
-export type ClusterPopulationReader = {
-  readPopulation(): Promise<readonly ClusterPopulationRow[]>;
+// CP-R3-T01 production reader — Population B (>=1 valid order lifetime), deliberately
+// broader than mysql-cluster-population-reader.ts's Population B' (>=2 valid orders, task
+// Section 12). Shares the exact same "valid order" eligibility (task Section 17: never a new
+// definition) and the same operational-account exclusion policy, but is a separate,
+// independent implementation — same precedent as clustering staying independent from RFM's
+// reader (both documented in mysql-cluster-population-reader.ts's own header comment) rather
+// than one capability importing another's SQL and risking silent coupling.
+export type CustomerFeatureReader = {
+  readPopulation(): Promise<readonly CustomerFeatureSourceRow[]>;
 };
 
 type OrderAggregateRow = {
@@ -52,27 +38,34 @@ type TenureRow = {
 
 type ProductAggregateRow = {
   customerId: number;
+  productId: number;
   productOrderCount: number;
   totalQuantity: number;
   totalSpentTaxIncl: string;
 };
 
-export function createMysqlClusterPopulationReader(
+export function createMysqlCustomerFeatureReader(
   pool: Pool,
   tablePrefix: string,
   referenceTimeMysql: string,
   window365StartMysql: string,
-): ClusterPopulationReader {
+): CustomerFeatureReader {
   assertSafePrestashopTablePrefix(tablePrefix);
   const excludedAccountIds = [...excludedOperationalAccountPrestashopCustomerIds];
   if (excludedAccountIds.length === 0) {
-    throw new Error('Cluster population reader requires at least one excluded operational account id');
+    throw new Error('Customer feature reader requires at least one excluded operational account id');
   }
   const excludedPlaceholders = excludedAccountIds.map(() => '?').join(', ');
   const orders = `${tablePrefix}orders`;
   const customer = `${tablePrefix}customer`;
   const orderDetail = `${tablePrefix}order_detail`;
 
+  // Same eligibility policy as mysql-cluster-population-reader.ts's eligible_orders CTE
+  // (task Section 17): valid=1, total_paid_tax_incl>0, id_customer>0 and not an excluded
+  // operational account, date_add strictly before referenceTime. No seller-service
+  // subtraction here — that is RFM's Monetary-specific policy (order-detail-level product
+  // exclusion for confirmed seller-service SKUs), not part of the general "valid order"
+  // definition every other capability shares.
   const eligibleOrdersCte = `
     eligible_orders AS (
       SELECT
@@ -114,7 +107,7 @@ export function createMysqlClusterPopulationReader(
         const seen = new Set<number>();
         return orderAggregates.map((orderAggregate) => {
           if (seen.has(orderAggregate.customerId)) {
-            throw new Error(`Duplicate customerId in cluster population: ${orderAggregate.customerId}`);
+            throw new Error(`Duplicate customerId in customer feature population: ${orderAggregate.customerId}`);
           }
           seen.add(orderAggregate.customerId);
 
@@ -122,145 +115,39 @@ export function createMysqlClusterPopulationReader(
           const tenure = tenureByCustomer.get(orderAggregate.customerId);
           const products = productsByCustomer.get(orderAggregate.customerId) ?? [];
           if (!state) throw new Error(`Missing order-state aggregate for customer ${orderAggregate.customerId}`);
-          if (!tenure) throw new Error(`Missing ps_customer.date_add for customer ${orderAggregate.customerId}`);
+          if (!tenure) throw new Error(`Missing ${tablePrefix}customer.date_add for customer ${orderAggregate.customerId}`);
           if (products.length === 0) throw new Error(`Missing product rows for customer ${orderAggregate.customerId}`);
 
-          return {
+          const sourceRow: CustomerFeatureSourceRow = {
             prestashopCustomerId: orderAggregate.customerId,
-            features: buildFeatureVector(referenceTimeMysql, orderAggregate, state, tenure, products),
+            validOrders: orderAggregate.validOrders,
+            firstOrderAt: orderAggregate.firstValidOrderAt,
+            lastOrderAt: orderAggregate.lastValidOrderAt,
+            orders365d: orderAggregate.orders365d,
+            totalSpentTaxIncl: orderAggregate.totalSpentTaxIncl,
+            totalDiscountsTaxIncl: orderAggregate.totalDiscountsTaxIncl,
+            totalShippingTaxIncl: orderAggregate.totalShippingTaxIncl,
+            totalOrdersAllStates: state.totalOrdersAllStates,
+            cancelledOrders: state.cancelledOrders,
+            customerCreatedAt: tenure.customerCreatedAt,
+            products: products
+              .map(
+                (row): CustomerFeatureProductAggregate => ({
+                  productId: row.productId,
+                  productOrderCount: row.productOrderCount,
+                  totalQuantity: row.totalQuantity,
+                  totalSpentTaxIncl: row.totalSpentTaxIncl,
+                }),
+              )
+              .sort((a, b) => a.productId - b.productId),
           };
+          return sourceRow;
         });
       } catch (error) {
         throw mapPrestashopReadError(error);
       }
     },
   };
-}
-
-// Exported (additive, non-breaking) so CP-R3-T01's clustering-parity test can call the exact
-// same production formula on a shared fixture rather than re-deriving an equivalent copy that
-// could silently drift (task Section 53) — no other behavior change.
-export function buildFeatureVector(
-  referenceTimeMysql: string,
-  orderAggregate: OrderAggregateRow,
-  state: OrderStateAggregateRow,
-  tenure: TenureRow,
-  products: readonly ProductAggregateRow[],
-): RawClusterFeatureVector {
-  if (orderAggregate.validOrders < 2) {
-    throw new Error(`Customer ${orderAggregate.customerId} has fewer than 2 valid orders (population B' violation)`);
-  }
-  const totalSpent = addBehaviorDecimals(products.map((row) => row.totalSpentTaxIncl));
-  const totalQuantity = products.reduce((sum, row) => sum + row.totalQuantity, 0);
-  const repeatedCount = products.filter((row) => row.productOrderCount >= 2).length;
-  const sorted = [...products].sort((a, b) => compareDecimalDesc(a.totalSpentTaxIncl, b.totalSpentTaxIncl));
-  const shares = sorted.map((row) => divideDecimalToBehaviorDecimal(row.totalSpentTaxIncl, totalSpent));
-  const hhi = sumBehaviorShares(shares.map(squareBehaviorShare));
-
-  const referenceMs = mysqlDateTimeToMs(referenceTimeMysql);
-  const firstMs = mysqlDateTimeToMs(orderAggregate.firstValidOrderAt);
-  const lastMs = mysqlDateTimeToMs(orderAggregate.lastValidOrderAt);
-  const createdMs = mysqlDateTimeToMs(tenure.customerCreatedAt);
-  const DAY_MS = 86_400_000;
-
-  // Raw (unwinsorized) ratios — the trained model's persisted p99 cap is applied later by
-  // applyFeatureTransform, never recomputed here (task Section 16).
-  const totalSpentTaxIncl = Number(orderAggregate.totalSpentTaxIncl);
-  const totalDiscountsTaxIncl = Number(orderAggregate.totalDiscountsTaxIncl);
-  const totalShippingTaxIncl = Number(orderAggregate.totalShippingTaxIncl);
-
-  return {
-    distinctProducts: products.length,
-    effectiveDiversity: Number(effectiveDiversityFromHhi(hhi)),
-    averageUnitsPerOrder: totalQuantity / orderAggregate.validOrders,
-    purchaseFrequencyDays: (lastMs - firstMs) / DAY_MS / (orderAggregate.validOrders - 1),
-    orders365d: orderAggregate.orders365d,
-    customerTenureDays: Math.floor((referenceMs - createdMs) / DAY_MS),
-    repeatProductRate: Number(divideIntegerToBehaviorDecimal(repeatedCount, products.length)),
-    top1Share: Number(shares[0] ?? '0.000000'),
-    top3Share: Number(sumBehaviorShares(shares.slice(0, 3))),
-    cancelledOrderRatio: state.cancelledOrders / state.totalOrdersAllStates,
-    discountShare: totalDiscountsTaxIncl / totalSpentTaxIncl,
-    shippingShare: totalShippingTaxIncl / totalSpentTaxIncl,
-  };
-}
-
-// CP-R2-T03 analytics addition: post-hoc commercial metrics (task Section 14) — never a
-// training input, never used by readPopulation()/buildFeatureVector() above. Reuses
-// readOrderAggregates() as-is (same eligible_orders CTE, same operational-account exclusion,
-// same >=2-valid-orders population) rather than writing a second query, so this can never
-// silently drift from the model's own population definition.
-export type ClusterCommercialAggregateRow = {
-  readonly prestashopCustomerId: number;
-  readonly totalSpentTaxIncl: number;
-  readonly averageOrderValueTaxIncl: number;
-  readonly validOrders: number;
-  readonly daysSinceLastOrder: number;
-};
-
-export type ClusterCommercialAggregateReader = {
-  readCommercialAggregates(): Promise<readonly ClusterCommercialAggregateRow[]>;
-};
-
-export function createMysqlClusterCommercialAggregateReader(
-  pool: Pool,
-  tablePrefix: string,
-  referenceTimeMysql: string,
-): ClusterCommercialAggregateReader {
-  assertSafePrestashopTablePrefix(tablePrefix);
-  const excludedAccountIds = [...excludedOperationalAccountPrestashopCustomerIds];
-  if (excludedAccountIds.length === 0) {
-    throw new Error('Cluster commercial aggregate reader requires at least one excluded operational account id');
-  }
-  const orders = `${tablePrefix}orders`;
-  const customer = `${tablePrefix}customer`;
-  const excludedPlaceholders = excludedAccountIds.map(() => '?').join(', ');
-  const eligibleOrdersCte = `
-    eligible_orders AS (
-      SELECT
-        o.id_order,
-        o.id_customer,
-        o.date_add,
-        o.total_paid_tax_incl,
-        o.total_discounts_tax_incl,
-        o.total_shipping_tax_incl
-      FROM ${orders} o
-      INNER JOIN ${customer} c ON c.id_customer = o.id_customer
-      WHERE o.valid = 1
-        AND o.total_paid_tax_incl > 0
-        AND o.id_customer > 0
-        AND o.id_customer NOT IN (${excludedPlaceholders})
-        AND o.date_add < ?
-    )
-  `;
-  const referenceMs = mysqlDateTimeToMs(referenceTimeMysql);
-
-  return {
-    async readCommercialAggregates() {
-      try {
-        // window365Start is irrelevant to commercial aggregates (orders365d is a features-only
-        // concept) — passing referenceTimeMysql again just makes that CASE WHEN branch a no-op.
-        const orderAggregates = await readOrderAggregates(pool, eligibleOrdersCte, excludedAccountIds, referenceTimeMysql, referenceTimeMysql);
-        return orderAggregates.map((row) => ({
-          prestashopCustomerId: row.customerId,
-          totalSpentTaxIncl: Number(row.totalSpentTaxIncl),
-          averageOrderValueTaxIncl: Number(row.totalSpentTaxIncl) / row.validOrders,
-          validOrders: row.validOrders,
-          daysSinceLastOrder: Math.floor((referenceMs - mysqlDateTimeToMs(row.lastValidOrderAt)) / 86_400_000),
-        }));
-      } catch (error) {
-        throw mapPrestashopReadError(error);
-      }
-    },
-  };
-}
-
-function mysqlDateTimeToMs(value: string): number {
-  const parsed = new Date(`${value.replace(' ', 'T')}Z`);
-  if (Number.isNaN(parsed.getTime())) {
-    throw new Error(`Invalid MySQL datetime: ${value}`);
-  }
-  return parsed.getTime();
 }
 
 async function readOrderAggregates(
@@ -270,6 +157,9 @@ async function readOrderAggregates(
   referenceTimeMysql: string,
   window365StartMysql: string,
 ): Promise<OrderAggregateRow[]> {
+  // No HAVING COUNT(...) >= 2 here — Population B (this reader) includes single-order
+  // customers; population B' (clustering-only) is the narrower one. Every eligible customer
+  // with >=1 valid order is in scope.
   const sql = `
     WITH ${eligibleOrdersCte}
     SELECT
@@ -283,7 +173,6 @@ async function readOrderAggregates(
       COALESCE(SUM(eo.total_shipping_tax_incl), 0) AS totalShippingTaxIncl
     FROM eligible_orders eo
     GROUP BY eo.id_customer
-    HAVING COUNT(DISTINCT eo.id_order) >= 2
     ORDER BY eo.id_customer ASC
   `;
   const [rows] = await pool.execute<RowDataPacket[]>(sql, [
@@ -354,6 +243,7 @@ async function readProductAggregates(
   const [rows] = await pool.execute<RowDataPacket[]>(sql, [...excludedAccountIds, referenceTimeMysql]);
   return rows.map((row) => ({
     customerId: coerceNonNegativeSafeInteger(row.customerId, 'customerId'),
+    productId: coerceNonNegativeSafeInteger(row.productId, 'productId'),
     productOrderCount: coerceNonNegativeSafeInteger(row.productOrderCount, 'productOrderCount'),
     totalQuantity: coerceNonNegativeSafeInteger(row.totalQuantity, 'totalQuantity'),
     totalSpentTaxIncl: String(row.totalSpentTaxIncl),
