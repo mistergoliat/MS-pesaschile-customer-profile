@@ -43,6 +43,10 @@ scripts/snapshots/rfm/canonical-order-outputs/*
 !scripts/snapshots/rfm/canonical-order-outputs/.gitkeep
 scripts/snapshots/rfm/historical-specific-price-outputs/*
 !scripts/snapshots/rfm/historical-specific-price-outputs/.gitkeep
+scripts/snapshots/rfm/window-comparison-outputs/*
+!scripts/snapshots/rfm/window-comparison-outputs/.gitkeep
+scripts/snapshots/rfm/year-over-year-outputs/*
+!scripts/snapshots/rfm/year-over-year-outputs/.gitkeep
 
 # CP-R2-T01 clustering experiment: local, reproducible, PII-free outputs derived from a live
 # DB run — never committed. See docs/experiments/CP-R2-T01-*.md.

@@ -1,0 +1,6 @@
+{
+  "planVersion": "customer-intelligence-query-plan-v1",
+  "dimensions": ["cluster.clusterId", "cluster.label"],
+  "metrics": [{ "aggregation": "count", "alias": "customers" }],
+  "orderBy": [{ "field": "customers", "direction": "desc" }]
+}

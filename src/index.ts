@@ -14,6 +14,8 @@ const {
   getCustomerCluster,
   getClusterSnapshotSummary,
   getRfmClusterCrossTab,
+  answerCustomerIntelligenceQuestion,
+  customerIntelligenceCopilotSessionService,
   checkReadiness,
   shutdown,
 } = bootstrap();
@@ -28,6 +30,9 @@ const app = buildApp({
   getCustomerCluster,
   getClusterSnapshotSummary,
   getRfmClusterCrossTab,
+  answerCustomerIntelligenceQuestion,
+  customerIntelligenceCopilotSessionService,
+  marketingCopilot: config.marketingCopilot,
   checkReadiness,
 });
 
