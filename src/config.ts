@@ -45,6 +45,23 @@ const envSchema = z.object({
   CLUSTER_DB_CONNECTION_LIMIT: z.coerce.number().int().positive().default(5),
   CLUSTER_DB_QUERY_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
 
+  // Customer Analytics Data Layer persistence (CP-R3-T01) — a third independent credential
+  // family, deliberately not reusing CLUSTER_DB_* or RFM_SNAPSHOT_DB_* even though, in this
+  // environment, it currently points at the same physical local MariaDB instance/schema those
+  // two already use (no CREATE DATABASE privilege has been provisioned yet — see
+  // migrations/008_create_customer_feature_snapshot_tables.sql for the full infrastructure
+  // note, same constraint T02 documented for CLUSTER_DB_*). Same optional, all-or-nothing
+  // pattern: leave every ANALYTICS_DB_* variable unset and the HTTP server still boots with
+  // every existing capability unaffected — only the Data Layer itself is unavailable. Fails
+  // closed (task Section 48), never silently falls back to CLUSTER_DB_*/RFM_SNAPSHOT_DB_*.
+  ANALYTICS_DB_HOST: z.string().min(1).optional(),
+  ANALYTICS_DB_PORT: z.coerce.number().int().positive().default(3306),
+  ANALYTICS_DB_USER: z.string().min(1).optional(),
+  ANALYTICS_DB_PASSWORD: z.string().min(1).optional(),
+  ANALYTICS_DB_NAME: z.string().min(1).optional(),
+  ANALYTICS_DB_CONNECTION_LIMIT: z.coerce.number().int().positive().default(5),
+  ANALYTICS_DB_QUERY_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
+
   PRESTASHOP_DB_HOST: z.string().min(1),
   PRESTASHOP_DB_PORT: z.coerce.number().int().positive().default(3306),
   PRESTASHOP_DB_USER: z.string().min(1),
@@ -117,6 +134,25 @@ const envSchema = z.object({
       }
     }
   }
+
+  const analyticsFields = {
+    ANALYTICS_DB_HOST: data.ANALYTICS_DB_HOST,
+    ANALYTICS_DB_USER: data.ANALYTICS_DB_USER,
+    ANALYTICS_DB_PASSWORD: data.ANALYTICS_DB_PASSWORD,
+    ANALYTICS_DB_NAME: data.ANALYTICS_DB_NAME,
+  } as const;
+  const analyticsPresentCount = Object.values(analyticsFields).filter((value) => value !== undefined).length;
+  if (analyticsPresentCount !== 0 && analyticsPresentCount !== Object.keys(analyticsFields).length) {
+    for (const [field, value] of Object.entries(analyticsFields)) {
+      if (value === undefined) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [field],
+          message: `${field} is required once any ANALYTICS_DB_* variable is set (all-or-nothing)`,
+        });
+      }
+    }
+  }
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -179,6 +215,32 @@ const clusterDb: ClusterDbConfig | null =
       }
     : null;
 
+export type AnalyticsDbConfig = {
+  readonly host: string;
+  readonly port: number;
+  readonly user: string;
+  readonly password: string;
+  readonly database: string;
+  readonly connectionLimit: number;
+  readonly queryTimeoutMs: number;
+};
+
+const analyticsDb: AnalyticsDbConfig | null =
+  raw.ANALYTICS_DB_HOST !== undefined &&
+  raw.ANALYTICS_DB_USER !== undefined &&
+  raw.ANALYTICS_DB_PASSWORD !== undefined &&
+  raw.ANALYTICS_DB_NAME !== undefined
+    ? {
+        host: raw.ANALYTICS_DB_HOST,
+        port: raw.ANALYTICS_DB_PORT,
+        user: raw.ANALYTICS_DB_USER,
+        password: raw.ANALYTICS_DB_PASSWORD,
+        database: raw.ANALYTICS_DB_NAME,
+        connectionLimit: raw.ANALYTICS_DB_CONNECTION_LIMIT,
+        queryTimeoutMs: raw.ANALYTICS_DB_QUERY_TIMEOUT_MS,
+      }
+    : null;
+
 export const config = {
   port: raw.PORT,
   crmDb: {
@@ -192,6 +254,7 @@ export const config = {
   },
   rfmSnapshotDb,
   clusterDb,
+  analyticsDb,
   prestashopDb: {
     host: raw.PRESTASHOP_DB_HOST,
     port: raw.PRESTASHOP_DB_PORT,

@@ -121,3 +121,33 @@ export class ClusterSchemaIncompatibleError extends Error {
     this.name = 'ClusterSchemaIncompatibleError';
   }
 }
+
+// Thrown by the customer-analytics readers/repositories for ANALYTICS_DB read/write failures
+// once it IS configured. A missing row/snapshot is a valid null/degraded result, never one of
+// these. Mirrors the Cluster*Error split above exactly (CP-R3-T01).
+export class AnalyticsUnavailableError extends Error {
+  readonly code = 'analytics_unavailable';
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'AnalyticsUnavailableError';
+  }
+}
+
+export class AnalyticsTimeoutError extends Error {
+  readonly code = 'analytics_timeout';
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'AnalyticsTimeoutError';
+  }
+}
+
+export class AnalyticsSchemaIncompatibleError extends Error {
+  readonly code = 'analytics_schema_incompatible';
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'AnalyticsSchemaIncompatibleError';
+  }
+}
