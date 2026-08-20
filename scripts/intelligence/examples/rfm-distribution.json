@@ -1,0 +1,6 @@
+{
+  "planVersion": "customer-intelligence-query-plan-v1",
+  "dimensions": ["rfm.segmentCode"],
+  "metrics": [{ "aggregation": "count", "alias": "customers" }],
+  "orderBy": [{ "field": "customers", "direction": "desc" }]
+}

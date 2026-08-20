@@ -1,0 +1,9 @@
+{
+  "planVersion": "customer-intelligence-query-plan-v1",
+  "dimensions": ["cluster.clusterId", "cluster.label"],
+  "metrics": [
+    { "aggregation": "avg", "field": "commercial.averageOrderValueTaxIncl", "alias": "avgAov" },
+    { "aggregation": "count", "alias": "customers" }
+  ],
+  "orderBy": [{ "field": "avgAov", "direction": "desc" }]
+}

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import type { GetCustomerCommercialSummary } from '../../application/customer-commercial-summary/get-customer-commercial-summary.js';
@@ -32,6 +32,11 @@ import {
 } from '../../domain/customer-clustering/index.js';
 import type { GetCustomerOrderStatusResult } from '../../domain/customer-order-status/index.js';
 import type { CustomerProfileLookupResult } from '../../domain/customer-profile/index.js';
+import type {
+  AnswerCustomerIntelligenceQuestion,
+} from '../../application/customer-intelligence-copilot/index.js';
+import type { CustomerIntelligenceCopilotSessionService } from '../../application/customer-intelligence-copilot-session/index.js';
+import type { CustomerIntelligenceCopilotResponse } from '../../domain/customer-intelligence-copilot/index.js';
 import type { PrestashopReadinessResult } from '../../infrastructure/prestashop/prestashop-pool.js';
 import { classifyErrorForLog } from '../../observability/classify-error-for-log.js';
 
@@ -53,6 +58,29 @@ const orderReference = z
   .regex(/^[A-Za-z0-9]+$/, 'reference must be alphanumeric');
 
 const orderStatusParams = z.object({ customerId: numericId, reference: orderReference });
+const copilotRequestBody = z
+  .object({
+    question: z.string().trim().min(1).max(4000),
+    featureSnapshotId: numericId.optional(),
+  })
+  .strict();
+const copilotSessionParams = z.object({ sessionId: z.string().uuid() });
+const copilotCreateSessionBody = z
+  .object({
+    featureSnapshotId: numericId.optional(),
+  })
+  .strict();
+const copilotSessionMessageBody = z
+  .object({
+    question: z.string().trim().min(1).max(4000),
+  })
+  .strict();
+const copilotExportBody = z
+  .object({
+    queryId: z.string().trim().min(1).max(128).regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/),
+    format: z.literal('xlsx'),
+  })
+  .strict();
 
 export type ReadinessResult = {
   readonly crm: boolean;
@@ -83,6 +111,12 @@ export type RouteDependencies = {
   // docs/releases/CP-R2-T03-clustering-analytics-observability.md.
   readonly getClusterSnapshotSummary: GetClusterSnapshotSummary;
   readonly getRfmClusterCrossTab: GetRfmClusterCrossTab;
+  readonly answerCustomerIntelligenceQuestion?: AnswerCustomerIntelligenceQuestion;
+  readonly customerIntelligenceCopilotSessionService?: CustomerIntelligenceCopilotSessionService;
+  readonly marketingCopilot?: {
+    readonly enabled: boolean;
+    readonly internalToken: string | null;
+  };
   readonly checkReadiness: ReadinessCheck;
 };
 
@@ -121,6 +155,199 @@ export function buildRoutes(deps: RouteDependencies): Router {
       identityStatus: 'DIRECT_SOURCE',
       contractVersion: CUSTOMER_PROFILE_CONTRACT_VERSION,
     });
+  });
+
+  router.post('/v1/customer-intelligence/copilot', async (request: Request, response: Response) => {
+    if (!deps.marketingCopilot?.enabled) {
+      response.status(404).json({ error: 'marketing_copilot_disabled' });
+      return;
+    }
+    if (!deps.marketingCopilot.internalToken) {
+      response.status(503).json({ error: 'marketing_copilot_auth_not_configured' });
+      return;
+    }
+    if (!isAuthorizedCopilotRequest(request, deps.marketingCopilot.internalToken)) {
+      response.status(401).json({ error: 'unauthorized' });
+      return;
+    }
+    if (!deps.answerCustomerIntelligenceQuestion) {
+      response.status(503).json({ error: 'marketing_copilot_not_configured' });
+      return;
+    }
+    if (Object.keys(request.query).length > 0) {
+      response.status(400).json({ error: 'unsupported_query_params' });
+      return;
+    }
+
+    const parsedBody = copilotRequestBody.safeParse(request.body);
+    if (!parsedBody.success) {
+      response.status(400).json({ error: 'invalid_copilot_request' });
+      return;
+    }
+
+    const requestId = randomUUID();
+    const startedAt = Date.now();
+    try {
+      const result = await deps.answerCustomerIntelligenceQuestion({
+        question: parsedBody.data.question,
+        featureSnapshotId: parsedBody.data.featureSnapshotId ?? null,
+      });
+      logCopilotRequest(requestId, result, Date.now() - startedAt);
+      response.status(statusForCopilotResult(result)).json(result);
+    } catch (error) {
+      console.error({
+        event: 'customer_intelligence_copilot_request_failed',
+        requestId,
+        endpoint: 'customer-intelligence-copilot',
+        durationMs: Date.now() - startedAt,
+        errorType: classifyErrorForLog(error),
+      });
+      response.status(500).json({ error: 'internal_error' });
+    }
+  });
+
+  router.post('/v1/customer-intelligence/copilot/sessions', async (request: Request, response: Response) => {
+    if (!ensureCopilotRouteAvailable(request, response, deps)) return;
+    if (!deps.customerIntelligenceCopilotSessionService) {
+      response.status(503).json({ error: 'marketing_copilot_not_configured' });
+      return;
+    }
+    if (Object.keys(request.query).length > 0) {
+      response.status(400).json({ error: 'unsupported_query_params' });
+      return;
+    }
+    const parsedBody = copilotCreateSessionBody.safeParse(request.body ?? {});
+    if (!parsedBody.success) {
+      response.status(400).json({ error: 'invalid_copilot_session_request' });
+      return;
+    }
+    const result = await deps.customerIntelligenceCopilotSessionService.createSession({
+      featureSnapshotId: parsedBody.data.featureSnapshotId ?? null,
+    });
+    response.status(result.status === 'created' ? 201 : 503).json(result);
+  });
+
+  router.post('/v1/customer-intelligence/copilot/sessions/:sessionId/messages', async (request: Request, response: Response) => {
+    if (!ensureCopilotRouteAvailable(request, response, deps)) return;
+    if (!deps.customerIntelligenceCopilotSessionService) {
+      response.status(503).json({ error: 'marketing_copilot_not_configured' });
+      return;
+    }
+    const parsedParams = copilotSessionParams.safeParse(request.params);
+    if (!parsedParams.success) {
+      response.status(400).json({ error: 'invalid_session_id' });
+      return;
+    }
+    if (Object.keys(request.query).length > 0) {
+      response.status(400).json({ error: 'unsupported_query_params' });
+      return;
+    }
+    const parsedBody = copilotSessionMessageBody.safeParse(request.body);
+    if (!parsedBody.success) {
+      response.status(400).json({ error: 'invalid_copilot_session_message' });
+      return;
+    }
+    const result = await deps.customerIntelligenceCopilotSessionService.processSessionTurn({
+      sessionId: parsedParams.data.sessionId,
+      question: parsedBody.data.question,
+    });
+    if (result.status !== 'ok') {
+      response.status(result.status === 'session_expired' ? 410 : 404).json({ error: result.status });
+      return;
+    }
+    response.status(statusForCopilotResult(result.response)).json(result.response);
+  });
+
+  router.post('/v1/customer-intelligence/copilot/sessions/:sessionId/refresh', async (request: Request, response: Response) => {
+    if (!ensureCopilotRouteAvailable(request, response, deps)) return;
+    if (!deps.customerIntelligenceCopilotSessionService) {
+      response.status(503).json({ error: 'marketing_copilot_not_configured' });
+      return;
+    }
+    const parsedParams = copilotSessionParams.safeParse(request.params);
+    if (!parsedParams.success) {
+      response.status(400).json({ error: 'invalid_session_id' });
+      return;
+    }
+    if (Object.keys(request.query).length > 0) {
+      response.status(400).json({ error: 'unsupported_query_params' });
+      return;
+    }
+    if (request.body !== undefined && Object.keys(request.body as Record<string, unknown>).length > 0) {
+      response.status(400).json({ error: 'unsupported_body' });
+      return;
+    }
+    const result = await deps.customerIntelligenceCopilotSessionService.refreshSessionContext(parsedParams.data.sessionId);
+    response.status(statusForSessionLifecycleResult(result.status)).json(result);
+  });
+
+  router.post('/v1/customer-intelligence/copilot/sessions/:sessionId/reset', async (request: Request, response: Response) => {
+    if (!ensureCopilotRouteAvailable(request, response, deps)) return;
+    if (!deps.customerIntelligenceCopilotSessionService) {
+      response.status(503).json({ error: 'marketing_copilot_not_configured' });
+      return;
+    }
+    const parsedParams = copilotSessionParams.safeParse(request.params);
+    if (!parsedParams.success) {
+      response.status(400).json({ error: 'invalid_session_id' });
+      return;
+    }
+    const result = await deps.customerIntelligenceCopilotSessionService.resetSession(parsedParams.data.sessionId);
+    response.status(statusForSessionLifecycleResult(result.status)).json(result);
+  });
+
+  router.delete('/v1/customer-intelligence/copilot/sessions/:sessionId', async (request: Request, response: Response) => {
+    if (!ensureCopilotRouteAvailable(request, response, deps)) return;
+    if (!deps.customerIntelligenceCopilotSessionService) {
+      response.status(503).json({ error: 'marketing_copilot_not_configured' });
+      return;
+    }
+    const parsedParams = copilotSessionParams.safeParse(request.params);
+    if (!parsedParams.success) {
+      response.status(400).json({ error: 'invalid_session_id' });
+      return;
+    }
+    const result = await deps.customerIntelligenceCopilotSessionService.deleteSession(parsedParams.data.sessionId);
+    response.status(statusForSessionLifecycleResult(result.status)).json(result);
+  });
+
+  router.post('/v1/customer-intelligence/copilot/sessions/:sessionId/export', async (request: Request, response: Response) => {
+    if (!ensureCopilotRouteAvailable(request, response, deps)) return;
+    if (!deps.customerIntelligenceCopilotSessionService) {
+      response.status(503).json({ error: 'marketing_copilot_not_configured' });
+      return;
+    }
+    const parsedParams = copilotSessionParams.safeParse(request.params);
+    if (!parsedParams.success) {
+      response.status(400).json({ error: 'invalid_session_id' });
+      return;
+    }
+    const parsedBody = copilotExportBody.safeParse(request.body);
+    if (!parsedBody.success) {
+      response.status(400).json({ error: 'invalid_copilot_export_request' });
+      return;
+    }
+    const startedAt = Date.now();
+    const result = await deps.customerIntelligenceCopilotSessionService.exportSessionQuery({
+      sessionId: parsedParams.data.sessionId,
+      queryId: parsedBody.data.queryId,
+      format: parsedBody.data.format,
+    });
+    if (result.status !== 'ok') {
+      response.status(statusForExportResult(result.status)).json({ error: result.status, message: result.message });
+      return;
+    }
+    console.info({
+      event: 'customer_intelligence_copilot_export',
+      sessionId: result.metadata.sessionId,
+      queryId: result.metadata.queryId,
+      queryPlanHash: result.metadata.queryPlanHash,
+      rowCount: result.metadata.rowCount,
+      durationMs: Date.now() - startedAt,
+    });
+    response.setHeader('content-type', result.contentType);
+    response.setHeader('content-disposition', `attachment; filename="${result.filename}"`);
+    response.status(200).send(result.buffer);
   });
 
   router.get('/v1/customers/:customerId/profile', async (request: Request, response: Response) => {
@@ -545,6 +772,30 @@ function parseCustomerId(value: string): number | null {
   return parsed;
 }
 
+function isAuthorizedCopilotRequest(request: Request, expectedToken: string): boolean {
+  const actual = request.header('x-internal-copilot-token');
+  if (!actual) return false;
+  const expectedBuffer = Buffer.from(expectedToken);
+  const actualBuffer = Buffer.from(actual);
+  return expectedBuffer.length === actualBuffer.length && timingSafeEqual(expectedBuffer, actualBuffer);
+}
+
+function ensureCopilotRouteAvailable(request: Request, response: Response, deps: RouteDependencies): boolean {
+  if (!deps.marketingCopilot?.enabled) {
+    response.status(404).json({ error: 'marketing_copilot_disabled' });
+    return false;
+  }
+  if (!deps.marketingCopilot.internalToken) {
+    response.status(503).json({ error: 'marketing_copilot_auth_not_configured' });
+    return false;
+  }
+  if (!isAuthorizedCopilotRequest(request, deps.marketingCopilot.internalToken)) {
+    response.status(401).json({ error: 'unauthorized' });
+    return false;
+  }
+  return true;
+}
+
 function parseMasterCustomerIdFromParams(params: Record<string, unknown>): string | null {
   const parsed = z
     .object({
@@ -675,6 +926,71 @@ function statusForRfmClusterCrossTabResult(result: GetRfmClusterCrossTabResult):
     case 'degraded':
       return 503;
   }
+}
+
+function statusForCopilotResult(result: CustomerIntelligenceCopilotResponse): number {
+  switch (result.status) {
+    case 'answered':
+    case 'answered_from_context':
+    case 'clarification_required':
+      return 200;
+    case 'unsupported_data':
+    case 'unsupported_operation':
+      return 422;
+    case 'planner_invalid':
+    case 'answer_generation_failed':
+      return 502;
+    case 'analytics_unavailable':
+      return 503;
+    case 'analytics_timeout':
+      return 504;
+  }
+}
+
+function statusForSessionLifecycleResult(status: string): number {
+  switch (status) {
+    case 'refreshed':
+    case 'reset':
+    case 'deleted':
+      return 200;
+    case 'session_expired':
+      return 410;
+    case 'analytics_unavailable':
+      return 503;
+    default:
+      return 404;
+  }
+}
+
+function statusForExportResult(status: string): number {
+  switch (status) {
+    case 'session_expired':
+      return 410;
+    case 'query_not_found':
+      return 404;
+    case 'invalid_query':
+      return 422;
+    case 'analytics_timeout':
+      return 504;
+    case 'analytics_unavailable':
+      return 503;
+    default:
+      return 404;
+  }
+}
+
+function logCopilotRequest(requestId: string, result: CustomerIntelligenceCopilotResponse, durationMs: number): void {
+  console.info(
+    {
+      requestId,
+      endpoint: 'customer-intelligence-copilot',
+      status: result.status,
+      queryCount: result.status === 'answered' ? result.analysis.queryCount : 0,
+      queryPlanHashes: result.status === 'answered' ? result.analysis.queryPlanHashes : [],
+      durationMs,
+    },
+    'customer intelligence copilot lookup',
+  );
 }
 
 function logClusterSnapshotSummaryLookup(snapshotIdParam: string, result: GetClusterSnapshotSummaryResult, durationMs: number): void {

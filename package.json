@@ -29,7 +29,10 @@
     "analytics:snapshot": "tsx scripts/analytics/snapshot-features.ts",
     "analytics:snapshot:summary": "tsx scripts/analytics/print-snapshot-summary.ts",
     "intelligence:summary": "tsx scripts/intelligence/print-summary.ts",
-    "intelligence:sample": "tsx scripts/intelligence/print-sample.ts"
+    "intelligence:sample": "tsx scripts/intelligence/print-sample.ts",
+    "intelligence:query": "tsx scripts/intelligence/query.ts",
+    "intelligence:copilot:schema": "tsx scripts/intelligence/copilot-schema.ts",
+    "intelligence:copilot": "tsx scripts/intelligence/copilot.ts"
   },
   "keywords": [],
   "author": "",
@@ -38,6 +41,7 @@
   "type": "module",
   "dependencies": {
     "dotenv": "^17.4.2",
+    "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "mysql2": "^3.23.2",
     "zod": "^4.4.3"

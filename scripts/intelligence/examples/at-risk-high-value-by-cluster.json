@@ -1,0 +1,7 @@
+{
+  "planVersion": "customer-intelligence-query-plan-v1",
+  "filters": [{ "field": "rfm.segmentCode", "operator": "eq", "value": "AT_RISK_HIGH_VALUE" }],
+  "dimensions": ["cluster.clusterId", "cluster.label"],
+  "metrics": [{ "aggregation": "count", "alias": "customers" }],
+  "orderBy": [{ "field": "customers", "direction": "desc" }]
+}

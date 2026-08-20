@@ -37,6 +37,21 @@ import {
   getRfmClusterCrossTabRfmNotConfigured,
 } from './application/customer-clustering/cluster-analytics-not-configured.js';
 import { createGetCustomerProfile, type GetCustomerProfile } from './application/customer-profile/get-customer-profile.js';
+import {
+  createAnswerCustomerIntelligenceQuestion,
+  type AnswerCustomerIntelligenceQuestion,
+} from './application/customer-intelligence-copilot/index.js';
+import {
+  createExecuteAnalyticalQueryForExport,
+  createExecuteAnalyticalQueryWithResolvedContext,
+  getAnalyticalSchema,
+} from './application/customer-intelligence-query/index.js';
+import {
+  createCustomerIntelligenceCopilotSessionService,
+  createInMemoryCopilotSessionStore,
+  type CustomerIntelligenceCopilotSessionService,
+} from './application/customer-intelligence-copilot-session/index.js';
+import { createCustomerIntelligenceContextResolvers } from './application/customer-intelligence/resolve-customer-intelligence-context.js';
 import { config } from './config.js';
 import {
   checkCrmReadiness,
@@ -67,8 +82,15 @@ import { createMysqlClusterSnapshotReader } from './infrastructure/clustering/my
 import { createMysqlClusterAnalyticsReader } from './infrastructure/clustering/mysql-cluster-analytics-reader.js';
 import { createMysqlClusterSnapshotProfileRepository } from './infrastructure/clustering/mysql-cluster-snapshot-profile-repository.js';
 import { closeClusterPool, getClusterPool } from './infrastructure/clustering/cluster-db-pool.js';
+import { closeAnalyticsPool, getAnalyticsPool, getAnalyticsQueryExecutor } from './infrastructure/customer-analytics/analytics-db-pool.js';
+import { createMysqlCustomerFeatureSnapshotReader } from './infrastructure/customer-analytics/mysql-customer-feature-snapshot-reader.js';
+import { createMysqlSnapshotHeaderReader } from './infrastructure/customer-intelligence/mysql-snapshot-header-reader.js';
+import { createMysqlCustomerIntelligenceReader } from './infrastructure/customer-intelligence/mysql-customer-intelligence-reader.js';
+import { createMysqlAnalyticalQueryExecutor } from './infrastructure/customer-intelligence-query/mysql-analytical-query-executor.js';
+import { createConfiguredCustomerIntelligenceCopilotModel } from './infrastructure/customer-intelligence-copilot/index.js';
 import { SystemClock } from './infrastructure/shared/system-clock.js';
 import type { ReadinessCheck } from './http/routes/index.js';
+import { CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION } from './domain/customer-intelligence-copilot/index.js';
 
 const systemClock = new SystemClock();
 
@@ -84,6 +106,8 @@ export type Bootstrap = {
   readonly getCustomerCluster: GetCustomerCluster;
   readonly getClusterSnapshotSummary: GetClusterSnapshotSummary;
   readonly getRfmClusterCrossTab: GetRfmClusterCrossTab;
+  readonly answerCustomerIntelligenceQuestion: AnswerCustomerIntelligenceQuestion;
+  readonly customerIntelligenceCopilotSessionService?: CustomerIntelligenceCopilotSessionService;
   readonly checkReadiness: ReadinessCheck;
   readonly shutdown: () => Promise<void>;
 };
@@ -215,6 +239,47 @@ export function bootstrap(): Bootstrap {
     getRfmClusterCrossTab = getRfmClusterCrossTabNotConfigured;
   }
 
+  let answerCustomerIntelligenceQuestion: AnswerCustomerIntelligenceQuestion = async () => ({
+    status: 'analytics_unavailable',
+    message: 'marketing_copilot_not_configured',
+    contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION,
+  });
+  let customerIntelligenceCopilotSessionService: CustomerIntelligenceCopilotSessionService | undefined;
+  const copilotModel = createConfiguredCustomerIntelligenceCopilotModel();
+  if (config.analyticsDb && copilotModel.status === 'configured') {
+    const analyticsPool = getAnalyticsPool();
+    const intelligenceReader = createMysqlCustomerIntelligenceReader(analyticsPool);
+    const resolvers = createCustomerIntelligenceContextResolvers({
+      featureSnapshotReader: createMysqlCustomerFeatureSnapshotReader(analyticsPool),
+      snapshotHeaderReader: createMysqlSnapshotHeaderReader(analyticsPool),
+      intelligenceReader,
+    });
+    const analyticalQueryExecutor = createMysqlAnalyticalQueryExecutor(getAnalyticsQueryExecutor());
+    const executeAnalyticalQuery = createExecuteAnalyticalQueryWithResolvedContext({
+      queryExecutor: analyticalQueryExecutor,
+    });
+    answerCustomerIntelligenceQuestion = createAnswerCustomerIntelligenceQuestion({
+      getAnalyticalSchema,
+      resolveCurrent: resolvers.resolveCurrent,
+      resolveForFeatureSnapshot: resolvers.resolveForFeatureSnapshot,
+      executeAnalyticalQuery,
+      model: copilotModel.model,
+    });
+    customerIntelligenceCopilotSessionService = createCustomerIntelligenceCopilotSessionService({
+      getAnalyticalSchema,
+      resolveCurrent: resolvers.resolveCurrent,
+      resolveForFeatureSnapshot: resolvers.resolveForFeatureSnapshot,
+      executeAnalyticalQuery,
+      executeAnalyticalQueryForExport: createExecuteAnalyticalQueryForExport({
+        queryExecutor: analyticalQueryExecutor,
+      }),
+      model: copilotModel.model,
+      store: createInMemoryCopilotSessionStore(config.marketingCopilot.session),
+      clock: systemClock,
+      limits: config.marketingCopilot.session,
+    });
+  }
+
   const checkReadiness: ReadinessCheck = async () => {
     const [prestashop, crmResult] = await Promise.all([
       checkPrestashopReadiness(config.prestashopDb.prefix),
@@ -235,9 +300,11 @@ export function bootstrap(): Bootstrap {
     getCustomerCluster,
     getClusterSnapshotSummary,
     getRfmClusterCrossTab,
+    answerCustomerIntelligenceQuestion,
+    customerIntelligenceCopilotSessionService,
     checkReadiness,
     shutdown: async () => {
-      await Promise.all([closePrestashopPool(), closeCrmPool(), closeRfmSnapshotPool(), closeClusterPool()]);
+      await Promise.all([closePrestashopPool(), closeCrmPool(), closeRfmSnapshotPool(), closeClusterPool(), closeAnalyticsPool()]);
     },
   };
 }

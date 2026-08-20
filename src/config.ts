@@ -62,6 +62,22 @@ const envSchema = z.object({
   ANALYTICS_DB_CONNECTION_LIMIT: z.coerce.number().int().positive().default(5),
   ANALYTICS_DB_QUERY_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
 
+  MARKETING_COPILOT_ENABLED: z
+    .enum(['true', 'false', '1', '0'])
+    .default('false')
+    .transform((value) => value === 'true' || value === '1'),
+  MARKETING_COPILOT_INTERNAL_TOKEN: z.string().min(16).optional(),
+  CUSTOMER_INTELLIGENCE_COPILOT_SESSION_TTL_MINUTES: z.coerce.number().int().positive().default(60),
+  CUSTOMER_INTELLIGENCE_COPILOT_MAX_ACTIVE_SESSIONS: z.coerce.number().int().positive().default(100),
+  CUSTOMER_INTELLIGENCE_COPILOT_MAX_TURNS: z.coerce.number().int().positive().default(20),
+  CUSTOMER_INTELLIGENCE_COPILOT_CONTEXT_RECENT_TURNS: z.coerce.number().int().positive().default(6),
+  CUSTOMER_INTELLIGENCE_COPILOT_MAX_STORED_RESULTS: z.coerce.number().int().positive().default(12),
+  CUSTOMER_INTELLIGENCE_COPILOT_MAX_RESULT_ROWS_RETAINED: z.coerce.number().int().positive().max(1000).default(50),
+  CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUESTION_CHARS: z.coerce.number().int().positive().max(4000).default(4000),
+  CUSTOMER_INTELLIGENCE_COPILOT_MAX_ANSWER_CHARS: z.coerce.number().int().positive().default(8000),
+  CUSTOMER_INTELLIGENCE_COPILOT_EXPORT_MAX_ROWS: z.coerce.number().int().positive().default(50000),
+  CUSTOMER_INTELLIGENCE_COPILOT_EXPORT_BATCH_SIZE: z.coerce.number().int().positive().default(1000),
+
   PRESTASHOP_DB_HOST: z.string().min(1),
   PRESTASHOP_DB_PORT: z.coerce.number().int().positive().default(3306),
   PRESTASHOP_DB_USER: z.string().min(1),
@@ -272,5 +288,21 @@ export const config = {
   customerOrderStatus: {
     carrierLanguageId: raw.PRESTASHOP_CARRIER_LANG_ID,
     carrierShopId: raw.PRESTASHOP_CARRIER_SHOP_ID,
+  },
+  marketingCopilot: {
+    enabled: raw.MARKETING_COPILOT_ENABLED,
+    internalToken: raw.MARKETING_COPILOT_INTERNAL_TOKEN ?? null,
+    session: {
+      ttlMinutes: raw.CUSTOMER_INTELLIGENCE_COPILOT_SESSION_TTL_MINUTES,
+      maxActiveSessions: raw.CUSTOMER_INTELLIGENCE_COPILOT_MAX_ACTIVE_SESSIONS,
+      maxTurns: raw.CUSTOMER_INTELLIGENCE_COPILOT_MAX_TURNS,
+      contextRecentTurns: raw.CUSTOMER_INTELLIGENCE_COPILOT_CONTEXT_RECENT_TURNS,
+      maxStoredResults: raw.CUSTOMER_INTELLIGENCE_COPILOT_MAX_STORED_RESULTS,
+      maxResultRowsRetained: raw.CUSTOMER_INTELLIGENCE_COPILOT_MAX_RESULT_ROWS_RETAINED,
+      maxQuestionChars: raw.CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUESTION_CHARS,
+      maxAnswerChars: raw.CUSTOMER_INTELLIGENCE_COPILOT_MAX_ANSWER_CHARS,
+      exportMaxRows: raw.CUSTOMER_INTELLIGENCE_COPILOT_EXPORT_MAX_ROWS,
+      exportBatchSize: raw.CUSTOMER_INTELLIGENCE_COPILOT_EXPORT_BATCH_SIZE,
+    },
   },
 } as const;
