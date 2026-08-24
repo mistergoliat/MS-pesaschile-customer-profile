@@ -13,7 +13,10 @@ import type { ExecuteAnalyticalQueryForExport, ExecuteAnalyticalQueryWithResolve
 import type { ResolveCustomerIntelligenceContextResult } from '../../src/application/customer-intelligence/resolve-customer-intelligence-context.js';
 import type { Clock } from '../../src/application/customer-profile/ports.js';
 import type { AnalyticalQueryResult, AnalyticalSchema } from '../../src/domain/customer-intelligence-query/index.js';
-import { CUSTOMER_INTELLIGENCE_COPILOT_ANALYSIS_PLAN_VERSION } from '../../src/domain/customer-intelligence-copilot/index.js';
+import {
+  CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
+  CUSTOMER_INTELLIGENCE_COPILOT_ANALYSIS_PLAN_VERSION,
+} from '../../src/domain/customer-intelligence-copilot/index.js';
 
 const SCHEMA: AnalyticalSchema = {
   schemaVersion: 'customer-intelligence-query-schema-v1',
@@ -63,6 +66,7 @@ const LIMITS: CopilotSessionLimits = {
   maxAnswerChars: 8000,
   exportMaxRows: 50000,
   exportBatchSize: 1000,
+  summaryAfterTurns: 12,
 };
 
 class FakeClock implements Clock {
@@ -81,6 +85,10 @@ function queryPlan(queries: readonly { id: string; plan: unknown }[]) {
 
 function answerFromContext(sourceQueryIds: readonly string[]) {
   return { planVersion: CUSTOMER_INTELLIGENCE_COPILOT_ANALYSIS_PLAN_VERSION, status: 'answer_from_context', sourceQueryIds };
+}
+
+function runAnalytics(analyticalQuestion = 'Run analytics') {
+  return { decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION, action: 'run_analytics', analyticalQuestion };
 }
 
 const bestClusterPlan = {
@@ -114,6 +122,8 @@ function result(rows: readonly Record<string, unknown>[], hash = 'a'.repeat(64),
 }
 
 function harness(opts: {
+  decisions?: unknown[];
+  repairDecision?: unknown;
   plans?: unknown[];
   repairPlan?: unknown;
   executionResults?: AnalyticalQueryResult[];
@@ -123,11 +133,14 @@ function harness(opts: {
 } = {}) {
   const clock = new FakeClock();
   const limits = { ...LIMITS, ...opts.limits };
+  const decisions = [...(opts.decisions ?? [runAnalytics()])];
   const plans = [...(opts.plans ?? [queryPlan([{ id: 'q1', plan: bestClusterPlan }])])];
+  const generateConversationDecision = vi.fn(async () => ({ decision: decisions.shift() ?? runAnalytics(), metadata: { provider: 'fake', model: 'orchestrator' } }));
+  const repairConversationDecision = vi.fn(async () => ({ decision: opts.repairDecision ?? runAnalytics(), metadata: { provider: 'fake', model: 'orchestrator' } }));
   const generateAnalysisPlan = vi.fn(async (_input: GenerateAnalysisPlanInput) => ({ plan: plans.shift() ?? queryPlan([{ id: 'q1', plan: bestClusterPlan }]), metadata: { provider: 'fake', model: 'planner' } }));
   const repairAnalysisPlan = vi.fn(async () => ({ plan: opts.repairPlan ?? queryPlan([{ id: 'repaired', plan: bestClusterPlan }]), metadata: { provider: 'fake', model: 'planner' } }));
   const generateAnswer = vi.fn(async () => ({ answer: 'Respuesta grounded.', metadata: { provider: 'fake', model: 'answerer' } }));
-  const model: CustomerIntelligenceCopilotModel = { generateAnalysisPlan, repairAnalysisPlan, generateAnswer };
+  const model: CustomerIntelligenceCopilotModel = { generateConversationDecision, repairConversationDecision, generateAnalysisPlan, repairAnalysisPlan, generateAnswer };
   const context = opts.context ?? BASE_CONTEXT;
   const resolveCurrent = vi.fn(async () => context);
   const resolveForFeatureSnapshot = vi.fn(async () => context);
@@ -146,7 +159,7 @@ function harness(opts: {
     clock,
     limits,
   });
-  return { service, clock, generateAnalysisPlan, generateAnswer, resolveCurrent, executeAnalyticalQuery, executeAnalyticalQueryForExport, store };
+  return { service, clock, generateConversationDecision, repairConversationDecision, generateAnalysisPlan, generateAnswer, resolveCurrent, executeAnalyticalQuery, executeAnalyticalQueryForExport, store };
 }
 
 async function createSession(h: ReturnType<typeof harness>) {
@@ -186,6 +199,67 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
     expect(h.executeAnalyticalQuery).toHaveBeenCalledTimes(2);
   });
 
+  it('asks for clarification without invoking the analytical planner for ambiguous criteria', async () => {
+    const h = harness({
+      decisions: [
+        {
+          decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
+          action: 'clarification_required',
+          message: 'Quieres priorizarlos por gasto total, ticket promedio, frecuencia o recencia?',
+        },
+      ],
+    });
+    const sessionId = await createSession(h);
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Cuales son nuestros mejores clientes?' });
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') expect(response.response.status).toBe('clarification_required');
+    expect(h.generateAnalysisPlan).not.toHaveBeenCalled();
+    expect(h.executeAnalyticalQuery).not.toHaveBeenCalled();
+  });
+
+  it('resolves a prior clarification answer through the orchestrator and then runs analytics', async () => {
+    const h = harness({
+      decisions: [
+        {
+          decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
+          action: 'clarification_required',
+          message: 'Quieres priorizarlos por gasto total, ticket promedio, frecuencia o recencia?',
+        },
+        runAnalytics('List top customers by total spent.'),
+      ],
+      plans: [queryPlan([{ id: 'top_by_spend', plan: rowPlan }])],
+      executionResults: [result([{ customerId: 101, totalSpentTaxIncl: '900.000000' }], 'd'.repeat(64), ['customerId', 'totalSpentTaxIncl'])],
+    });
+    const sessionId = await createSession(h);
+    await h.service.processSessionTurn({ sessionId, question: 'Cuales son nuestros mejores clientes?' });
+    const second = await h.service.processSessionTurn({ sessionId, question: 'Por gasto total' });
+    expect(second.status).toBe('ok');
+    if (second.status === 'ok') expect(second.response.status).toBe('answered');
+    expect(h.generateAnalysisPlan).toHaveBeenCalledWith(expect.objectContaining({ question: 'List top customers by total spent.' }));
+    expect(h.executeAnalyticalQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('responds directly to safe domain explanations without planner or analytics', async () => {
+    const h = harness({
+      decisions: [
+        {
+          decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
+          action: 'respond_directly',
+          message: 'RFM clasifica clientes por recencia, frecuencia y valor monetario.',
+        },
+      ],
+    });
+    const sessionId = await createSession(h);
+    const response = await h.service.processSessionTurn({ sessionId, question: 'What is RFM?' });
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') {
+      expect(response.response.status).toBe('responded_directly');
+      expect(response.response.queryIds).toEqual([]);
+    }
+    expect(h.generateAnalysisPlan).not.toHaveBeenCalled();
+    expect(h.executeAnalyticalQuery).not.toHaveBeenCalled();
+  });
+
   it('answers from retained context without a new T03 execution when the planner cites sourceQueryIds', async () => {
     const h = harness({ plans: [queryPlan([{ id: 'q1', plan: bestClusterPlan }]), answerFromContext(['q1'])] });
     const sessionId = await createSession(h);
@@ -208,7 +282,7 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
     const refreshed = await h.service.refreshSessionContext(sessionId);
     expect(refreshed.status).toBe('refreshed');
     if (refreshed.status === 'refreshed') {
-      expect(refreshed.session.turnCount).toBe(0);
+      expect(refreshed.session.turnCount).toBe(3);
       expect(refreshed.session.resultCount).toBe(0);
     }
     expect(h.resolveCurrent).toHaveBeenCalledTimes(2);

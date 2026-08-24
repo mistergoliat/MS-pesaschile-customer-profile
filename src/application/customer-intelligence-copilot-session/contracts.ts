@@ -18,6 +18,7 @@ export type CopilotSessionLimits = {
   readonly maxAnswerChars: number;
   readonly exportMaxRows: number;
   readonly exportBatchSize: number;
+  readonly summaryAfterTurns: number;
 };
 
 export type CopilotSessionTurn = {
@@ -43,6 +44,10 @@ export type CopilotSession = {
   readonly createdAt: string;
   readonly lastActivityAt: string;
   readonly expiresAt: string;
+  readonly status?: 'active' | 'archived' | 'deleted';
+  readonly title?: string | null;
+  readonly summary?: string | null;
+  readonly summaryVersion?: string | null;
   readonly pinnedContext: CustomerIntelligenceSnapshotContext;
   readonly resolvedIds: ResolvedCustomerIntelligenceSnapshotIds;
   readonly turns: readonly CopilotSessionTurn[];
@@ -53,8 +58,16 @@ export type CopilotSession = {
 };
 
 export type CopilotSessionSummary = Pick<CopilotSession, 'sessionId' | 'sessionVersion' | 'createdAt' | 'lastActivityAt' | 'expiresAt' | 'pinnedContext'> & {
+  readonly status?: 'active' | 'archived' | 'deleted';
+  readonly title?: string | null;
+  readonly summary?: string | null;
   readonly turnCount: number;
   readonly resultCount: number;
+};
+
+export type CopilotSessionDetail = CopilotSessionSummary & {
+  readonly turns: readonly CopilotSessionTurn[];
+  readonly analyticalReferences: readonly CopilotAnalyticalReference[];
 };
 
 export type CreateCopilotSessionRequest = {
@@ -64,6 +77,15 @@ export type CreateCopilotSessionRequest = {
 export type CreateCopilotSessionResult =
   | { readonly status: 'created'; readonly session: CopilotSessionSummary }
   | { readonly status: 'analytics_unavailable'; readonly message: string };
+
+export type ListCopilotSessionsResult = {
+  readonly status: 'ok';
+  readonly sessions: readonly CopilotSessionSummary[];
+};
+
+export type GetCopilotSessionResult =
+  | { readonly status: 'ok'; readonly session: CopilotSessionDetail }
+  | { readonly status: 'session_not_found' | 'session_expired' };
 
 export type ProcessCopilotSessionTurnRequest = {
   readonly sessionId: string;
@@ -120,9 +142,10 @@ export type CopilotSessionStoreGetResult =
   | { readonly status: 'session_not_found' | 'session_expired' };
 
 export type CopilotSessionStore = {
-  create(session: CopilotSession, now: Date): void;
-  get(sessionId: string, now: Date): CopilotSessionStoreGetResult;
-  save(session: CopilotSession, now: Date): void;
-  delete(sessionId: string, now: Date): DeleteCopilotSessionResult;
-  activeCount(now: Date): number;
+  create(session: CopilotSession, now: Date): Promise<void>;
+  get(sessionId: string, now: Date): Promise<CopilotSessionStoreGetResult>;
+  save(session: CopilotSession, now: Date): Promise<void>;
+  delete(sessionId: string, now: Date): Promise<DeleteCopilotSessionResult>;
+  list(now: Date, limit: number): Promise<readonly CopilotSession[]>;
+  activeCount(now: Date): Promise<number>;
 };

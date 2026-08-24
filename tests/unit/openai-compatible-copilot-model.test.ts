@@ -186,7 +186,7 @@ describe('openai_compatible Customer Intelligence Copilot model adapter', () => 
     const model = createOpenAiCompatibleCopilotModel(config);
 
     const promise = model.generateAnswer(answerInput());
-    const expectation = expect(promise).rejects.toThrow(/aborted/);
+    const expectation = expect(promise).rejects.toMatchObject({ category: 'provider_timeout' });
     await vi.advanceTimersByTimeAsync(config.timeoutMs);
 
     await expectation;

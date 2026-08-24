@@ -48,7 +48,6 @@ import {
 } from './application/customer-intelligence-query/index.js';
 import {
   createCustomerIntelligenceCopilotSessionService,
-  createInMemoryCopilotSessionStore,
   type CustomerIntelligenceCopilotSessionService,
 } from './application/customer-intelligence-copilot-session/index.js';
 import { createCustomerIntelligenceContextResolvers } from './application/customer-intelligence/resolve-customer-intelligence-context.js';
@@ -88,6 +87,7 @@ import { createMysqlSnapshotHeaderReader } from './infrastructure/customer-intel
 import { createMysqlCustomerIntelligenceReader } from './infrastructure/customer-intelligence/mysql-customer-intelligence-reader.js';
 import { createMysqlAnalyticalQueryExecutor } from './infrastructure/customer-intelligence-query/mysql-analytical-query-executor.js';
 import { createConfiguredCustomerIntelligenceCopilotModel } from './infrastructure/customer-intelligence-copilot/index.js';
+import { createMysqlCopilotSessionStore } from './infrastructure/customer-intelligence-copilot/mysql-copilot-session-store.js';
 import { SystemClock } from './infrastructure/shared/system-clock.js';
 import type { ReadinessCheck } from './http/routes/index.js';
 import { CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION } from './domain/customer-intelligence-copilot/index.js';
@@ -274,7 +274,7 @@ export function bootstrap(): Bootstrap {
         queryExecutor: analyticalQueryExecutor,
       }),
       model: copilotModel.model,
-      store: createInMemoryCopilotSessionStore(config.marketingCopilot.session),
+      store: createMysqlCopilotSessionStore(analyticsPool),
       clock: systemClock,
       limits: config.marketingCopilot.session,
     });

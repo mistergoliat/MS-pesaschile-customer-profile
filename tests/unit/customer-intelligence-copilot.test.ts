@@ -5,6 +5,7 @@ import type { ExecuteAnalyticalQueryWithResolvedContext } from '../../src/applic
 import type { ResolveCustomerIntelligenceContextResult } from '../../src/application/customer-intelligence/resolve-customer-intelligence-context.js';
 import type { AnalyticalQueryResult, AnalyticalSchema } from '../../src/domain/customer-intelligence-query/index.js';
 import {
+  CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
   CUSTOMER_INTELLIGENCE_COPILOT_ANALYSIS_PLAN_VERSION,
   CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION,
 } from '../../src/domain/customer-intelligence-copilot/index.js';
@@ -124,12 +125,28 @@ function harness(opts: {
 } = {}) {
   const generateAnalysisPlan = vi.fn(async () => ({ plan: opts.plan ?? analysisPlan([{ id: 'count_all', plan: countPlan }]), metadata: { provider: 'fake', model: 'planner' } }));
   const repairAnalysisPlan = vi.fn(async () => ({ plan: opts.repairPlan ?? analysisPlan([{ id: 'count_all', plan: countPlan }]), metadata: { provider: 'fake', model: 'planner' } }));
+  const generateConversationDecision = vi.fn(async () => ({
+    decision: {
+      decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
+      action: 'run_analytics',
+      analyticalQuestion: 'Run analytics',
+    },
+    metadata: { provider: 'fake', model: 'orchestrator' },
+  }));
+  const repairConversationDecision = vi.fn(async () => ({
+    decision: {
+      decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
+      action: 'run_analytics',
+      analyticalQuestion: 'Run analytics',
+    },
+    metadata: { provider: 'fake', model: 'orchestrator' },
+  }));
   let lastAnswerInput: GenerateAnswerInput | null = null;
   const generateAnswer = vi.fn(async (input: GenerateAnswerInput) => {
     lastAnswerInput = input;
     return { answer: opts.answer ?? 'Hay 10 clientes.', metadata: { provider: 'fake', model: 'answerer' } };
   });
-  const model: CustomerIntelligenceCopilotModel = { generateAnalysisPlan, repairAnalysisPlan, generateAnswer };
+  const model: CustomerIntelligenceCopilotModel = { generateConversationDecision, repairConversationDecision, generateAnalysisPlan, repairAnalysisPlan, generateAnswer };
   const resolveCurrent = vi.fn(async () => opts.context ?? CONTEXT);
   const resolveForFeatureSnapshot = vi.fn(async () => opts.context ?? CONTEXT);
   const executeMock = vi.fn(async () => {

@@ -18,12 +18,12 @@ export function createInMemoryCopilotSessionStore(limits: Pick<CopilotSessionLim
   }
 
   return {
-    create(session, now) {
+    async create(session, now) {
       purgeExpired(now);
       sessions.set(session.sessionId, session);
       enforceMaxActiveSessions();
     },
-    get(sessionId, now): CopilotSessionStoreGetResult {
+    async get(sessionId, now): Promise<CopilotSessionStoreGetResult> {
       const session = sessions.get(sessionId);
       if (!session) return { status: 'session_not_found' };
       if (isExpired(session, now)) {
@@ -33,18 +33,24 @@ export function createInMemoryCopilotSessionStore(limits: Pick<CopilotSessionLim
       purgeExpired(now);
       return { status: 'found', session };
     },
-    save(session, now) {
+    async save(session, now) {
       purgeExpired(now);
       sessions.set(session.sessionId, session);
       enforceMaxActiveSessions();
     },
-    delete(sessionId, now): DeleteCopilotSessionResult {
-      const current = this.get(sessionId, now);
+    async delete(sessionId, now): Promise<DeleteCopilotSessionResult> {
+      const current = await this.get(sessionId, now);
       if (current.status !== 'found') return { status: current.status };
       sessions.delete(sessionId);
       return { status: 'deleted' };
     },
-    activeCount(now) {
+    async list(now, limit) {
+      purgeExpired(now);
+      return [...sessions.values()]
+        .sort((left, right) => right.lastActivityAt.localeCompare(left.lastActivityAt))
+        .slice(0, limit);
+    },
+    async activeCount(now) {
       purgeExpired(now);
       return sessions.size;
     },

@@ -65,6 +65,11 @@ const copilotRequestBody = z
   })
   .strict();
 const copilotSessionParams = z.object({ sessionId: z.string().uuid() });
+const copilotSessionListQuery = z
+  .object({
+    limit: z.coerce.number().int().positive().max(100).optional(),
+  })
+  .strict();
 const copilotCreateSessionBody = z
   .object({
     featureSnapshotId: numericId.optional(),
@@ -206,6 +211,21 @@ export function buildRoutes(deps: RouteDependencies): Router {
     }
   });
 
+  router.get('/v1/customer-intelligence/copilot/sessions', async (request: Request, response: Response) => {
+    if (!ensureCopilotRouteAvailable(request, response, deps)) return;
+    if (!deps.customerIntelligenceCopilotSessionService) {
+      response.status(503).json({ error: 'marketing_copilot_not_configured' });
+      return;
+    }
+    const parsedQuery = copilotSessionListQuery.safeParse(request.query);
+    if (!parsedQuery.success) {
+      response.status(400).json({ error: 'invalid_copilot_session_list_request' });
+      return;
+    }
+    const result = await deps.customerIntelligenceCopilotSessionService.listSessions(parsedQuery.data.limit);
+    response.status(200).json(result);
+  });
+
   router.post('/v1/customer-intelligence/copilot/sessions', async (request: Request, response: Response) => {
     if (!ensureCopilotRouteAvailable(request, response, deps)) return;
     if (!deps.customerIntelligenceCopilotSessionService) {
@@ -225,6 +245,25 @@ export function buildRoutes(deps: RouteDependencies): Router {
       featureSnapshotId: parsedBody.data.featureSnapshotId ?? null,
     });
     response.status(result.status === 'created' ? 201 : 503).json(result);
+  });
+
+  router.get('/v1/customer-intelligence/copilot/sessions/:sessionId', async (request: Request, response: Response) => {
+    if (!ensureCopilotRouteAvailable(request, response, deps)) return;
+    if (!deps.customerIntelligenceCopilotSessionService) {
+      response.status(503).json({ error: 'marketing_copilot_not_configured' });
+      return;
+    }
+    const parsedParams = copilotSessionParams.safeParse(request.params);
+    if (!parsedParams.success) {
+      response.status(400).json({ error: 'invalid_session_id' });
+      return;
+    }
+    if (Object.keys(request.query).length > 0) {
+      response.status(400).json({ error: 'unsupported_query_params' });
+      return;
+    }
+    const result = await deps.customerIntelligenceCopilotSessionService.getSession(parsedParams.data.sessionId);
+    response.status(result.status === 'ok' ? 200 : result.status === 'session_expired' ? 410 : 404).json(result);
   });
 
   router.post('/v1/customer-intelligence/copilot/sessions/:sessionId/messages', async (request: Request, response: Response) => {
@@ -932,14 +971,23 @@ function statusForCopilotResult(result: CustomerIntelligenceCopilotResponse): nu
   switch (result.status) {
     case 'answered':
     case 'answered_from_context':
+    case 'responded_directly':
     case 'clarification_required':
       return 200;
     case 'unsupported_data':
     case 'unsupported_operation':
       return 422;
     case 'planner_invalid':
+    case 'orchestrator_invalid':
     case 'answer_generation_failed':
+    case 'provider_authentication_error':
+    case 'provider_billing_error':
+    case 'provider_rate_limited':
+    case 'provider_network_error':
+    case 'provider_invalid_response':
       return 502;
+    case 'provider_timeout':
+      return 504;
     case 'analytics_unavailable':
       return 503;
     case 'analytics_timeout':
