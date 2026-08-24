@@ -1,6 +1,11 @@
 import type { AnalyticalQueryPlan, AnalyticalQueryResult, AnalyticalSchema } from '../../domain/customer-intelligence-query/index.js';
 import type { CustomerIntelligenceSnapshotContext } from '../../domain/customer-intelligence/index.js';
-import type { CompactAnalyticalSchema, CopilotAnalysisPlan, CopilotSessionContext } from '../../domain/customer-intelligence-copilot/index.js';
+import type {
+  CompactAnalyticalSchema,
+  CopilotAnalysisPlan,
+  CopilotConversationDecision,
+  CopilotSessionContext,
+} from '../../domain/customer-intelligence-copilot/index.js';
 
 export type CopilotModelMetadata = {
   readonly provider: string;
@@ -25,6 +30,22 @@ export type GenerateAnalysisPlanOutput = {
   readonly metadata: CopilotModelMetadata | null;
 };
 
+export type GenerateConversationDecisionInput = {
+  readonly question: string;
+  readonly orchestratorPromptVersion: string;
+  readonly sessionContext: CopilotSessionContext;
+};
+
+export type RepairConversationDecisionInput = GenerateConversationDecisionInput & {
+  readonly previousDecision: unknown;
+  readonly validationErrors: readonly string[];
+};
+
+export type GenerateConversationDecisionOutput = {
+  readonly decision: unknown;
+  readonly metadata: CopilotModelMetadata | null;
+};
+
 export type GenerateAnswerInput = {
   readonly question: string;
   readonly answerPromptVersion: string;
@@ -43,6 +64,8 @@ export type GenerateAnswerOutput = {
 };
 
 export type CustomerIntelligenceCopilotModel = {
+  generateConversationDecision(input: GenerateConversationDecisionInput): Promise<GenerateConversationDecisionOutput>;
+  repairConversationDecision(input: RepairConversationDecisionInput): Promise<GenerateConversationDecisionOutput>;
   generateAnalysisPlan(input: GenerateAnalysisPlanInput): Promise<GenerateAnalysisPlanOutput>;
   repairAnalysisPlan(input: RepairAnalysisPlanInput): Promise<GenerateAnalysisPlanOutput>;
   generateAnswer(input: GenerateAnswerInput): Promise<GenerateAnswerOutput>;
@@ -51,3 +74,4 @@ export type CustomerIntelligenceCopilotModel = {
 export type AnalyticalSchemaProvider = () => AnalyticalSchema;
 
 export type CopilotPlanForExecution = Extract<CopilotAnalysisPlan, { status: 'query_plan' }>;
+export type CopilotDecisionForAnalytics = Extract<CopilotConversationDecision, { action: 'run_analytics' }>;

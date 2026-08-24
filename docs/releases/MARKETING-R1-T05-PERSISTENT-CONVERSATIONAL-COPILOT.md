@@ -1,0 +1,204 @@
+# MARKETING-R1-T05 - Persistent Conversational Copilot
+
+Status: implemented locally; EC2 live validation not run.
+
+## Previous Architecture
+
+The previous session flow treated every user turn as an analytical request:
+
+user question -> CopilotAnalysisPlan planner -> bounded AnalyticalQueryPlan runtime -> answerer.
+
+Sessions were held in an in-memory store. A process restart lost session history, retained query
+plans, result references and export context.
+
+## New Architecture
+
+The session API now routes each turn through a persistent conversational orchestrator:
+
+user message -> durable conversation -> conversational decision -> one of:
+
+- `respond_directly`
+- `clarification_required`
+- `answer_from_context`
+- `run_analytics`
+- `unsupported`
+
+Only `run_analytics` invokes the existing strict analytical planner. The planner and T03
+AnalyticalQueryPlan runtime remain internal tools behind the orchestrator.
+
+The legacy single-turn `POST /v1/customer-intelligence/copilot` remains planner-driven for
+compatibility. The conversational behavior is implemented on the session routes used by CRM.
+
+## Persistence Model
+
+Migration:
+
+- `migrations/010_create_customer_intelligence_copilot_conversations.sql`
+
+Tables:
+
+- `customer_intelligence_copilot_conversation`
+- `customer_intelligence_copilot_message`
+- `customer_intelligence_copilot_query_execution`
+- `customer_intelligence_copilot_reference`
+
+The durable source of truth is the Analytics DB MariaDB connection. PrestaShop is not modified.
+
+Persisted state includes pinned snapshot context, resolved snapshot ids, bounded turn history,
+conversation summary checkpoints, validated analytical plans, query plan hashes, provenance, row
+counts, truncation flags, execution metadata, bounded retained samples and semantic references.
+Full export-sized result sets are not persisted as conversation memory.
+
+## Orchestrator Contract
+
+Version:
+
+`customer-intelligence-conversation-decision-v1`
+
+The deterministic validator accepts only:
+
+- `respond_directly` with `message`
+- `clarification_required` with `message`
+- `answer_from_context` with `sourceQueryIds` and `instruction`
+- `run_analytics` with `analyticalQuestion`
+- `unsupported` with `message`
+
+The validator rejects SQL, executable code, shell commands, table/column names, credentials,
+unknown actions and invalid decision versions. One bounded repair attempt is allowed.
+
+## Analytics Boundary
+
+For `run_analytics`, the service passes the orchestrator's precise `analyticalQuestion` into the
+existing CopilotAnalysisPlan planner. The existing validator and AnalyticalQueryPlan runtime still
+own all analytical execution:
+
+- no raw SQL from the LLM
+- deterministic SELECT-only compiler
+- bound parameters
+- max 3 analytical queries
+- snapshot-pinned execution
+- exact `queryPlanHash` provenance
+
+The planner validator was not relaxed.
+
+## Planner Contract Fix
+
+Planner instructions now explicitly require:
+
+- `planVersion` exactly `customer-intelligence-copilot-analysis-plan-v1`
+- `status` exactly one of `query_plan`, `answer_from_context`, `unsupported_data`,
+  `unsupported_operation`, `clarification_required`
+- required conditional properties for each status
+- repair must regenerate the complete valid envelope using validator errors
+
+Invalid envelopes such as `{ "planVersion": 1, "status": "valid" }` remain rejected.
+
+## Context Strategy
+
+The model context is bounded and combines:
+
+- summary checkpoint when the conversation exceeds `CUSTOMER_INTELLIGENCE_COPILOT_SUMMARY_AFTER_TURNS`
+- recent turns capped by `CUSTOMER_INTELLIGENCE_COPILOT_CONTEXT_RECENT_TURNS`
+- pinned snapshot context
+- structured analytical references
+- bounded recent result samples
+
+The durable DB retains the original message rows and query execution metadata.
+
+## Snapshot Pinning
+
+A conversation is created against a resolved Customer Intelligence snapshot context and keeps that
+context for subsequent analytical turns. Refresh remains explicit. Refresh updates the pinned
+context, clears context-dependent analytical results/references, preserves conversation messages,
+and records a system refresh turn.
+
+## API Compatibility
+
+Preserved:
+
+- `POST /v1/customer-intelligence/copilot/sessions`
+- `POST /v1/customer-intelligence/copilot/sessions/:sessionId/messages`
+- `POST /v1/customer-intelligence/copilot/sessions/:sessionId/refresh`
+- `POST /v1/customer-intelligence/copilot/sessions/:sessionId/reset`
+- `DELETE /v1/customer-intelligence/copilot/sessions/:sessionId`
+- `POST /v1/customer-intelligence/copilot/sessions/:sessionId/export`
+
+Added:
+
+- `GET /v1/customer-intelligence/copilot/sessions`
+- `GET /v1/customer-intelligence/copilot/sessions/:sessionId`
+
+`sessionId` remains the external identifier and maps 1:1 to durable `conversation_id`.
+
+## Error Taxonomy
+
+The OpenAI-compatible adapter classifies safe provider errors:
+
+- `provider_authentication_error`
+- `provider_billing_error`
+- `provider_rate_limited`
+- `provider_timeout`
+- `provider_network_error`
+- `provider_invalid_response`
+
+The session service also returns:
+
+- `orchestrator_invalid`
+- `planner_invalid`
+- `analytics_timeout`
+- `analytics_unavailable`
+- `answer_generation_failed`
+
+No API keys or provider payloads are exposed in client responses.
+
+## Security Invariants
+
+- The orchestrator cannot invoke arbitrary tools.
+- The planner cannot emit SQL into MariaDB.
+- Unknown decision actions fail closed.
+- Unknown plan statuses fail closed.
+- Analytical execution remains behind the validated AnalyticalQueryPlan compiler/runtime.
+- XLSX export re-executes the stored validated plan against pinned context.
+- List endpoints expose metadata only, not PII.
+
+## Test Evidence
+
+Focused local validation:
+
+`npm test -- tests/unit/customer-intelligence-copilot-contracts.test.ts tests/unit/customer-intelligence-copilot.test.ts tests/unit/customer-intelligence-copilot-session.test.ts tests/unit/http-json-copilot-model.test.ts tests/unit/openai-compatible-copilot-model.test.ts tests/integration/customer-intelligence-copilot-session-routes.test.ts tests/integration/customer-intelligence-copilot-route.test.ts`
+
+Result: PASS, 7 files, 67 tests.
+
+Full validation should run before deployment:
+
+- `npm run build`
+- `npm test`
+- `npm run lint`
+
+## Controlled EC2 Validation
+
+Do not use real secrets in fixtures. Against a configured EC2 environment:
+
+1. Apply migration `010_create_customer_intelligence_copilot_conversations.sql`.
+2. Start customer-profile with Analytics DB and Copilot provider configured.
+3. Create a session.
+4. Send `¿Cuántos clientes hay?`.
+5. Send `¿Cuántos hay en cada cluster?`.
+6. Send `¿Cuál tiene mayor ticket promedio?`.
+7. Send `¿Por qué?`.
+8. Send `¿Cuál es el mejor grupo?` and expect clarification.
+9. Send `Por gasto total` and expect continuation.
+10. Restart customer-profile.
+11. Reopen the same session with `GET /sessions/:sessionId`.
+12. Send `Compara ese grupo con el cluster 1`.
+13. Export a referenced analytical result as XLSX.
+
+Live validation: NOT_RUN.
+
+## Known Limitations
+
+- Summary checkpointing is deterministic/extractive in this slice; it does not call a separate
+  summarizer model.
+- Durable persistence is wired for production MariaDB; no live MariaDB restart smoke was run in
+  this local validation.
+- The legacy single-turn endpoint remains planner-first for backward compatibility.

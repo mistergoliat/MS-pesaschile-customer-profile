@@ -6,8 +6,10 @@ export const CUSTOMER_INTELLIGENCE_COPILOT_ANALYSIS_PLAN_VERSION = 'customer-int
 export const CUSTOMER_INTELLIGENCE_COPILOT_SESSION_VERSION = 'customer-intelligence-copilot-session-v1';
 export const CUSTOMER_INTELLIGENCE_COPILOT_SESSION_CONTEXT_VERSION = 'customer-intelligence-copilot-session-context-v1';
 export const CUSTOMER_INTELLIGENCE_COPILOT_XLSX_EXPORT_VERSION = 'customer-intelligence-xlsx-export-v1';
+export const CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION = 'customer-intelligence-conversation-decision-v1';
 export const CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES = 3;
 export const CUSTOMER_INTELLIGENCE_COPILOT_PLAN_REPAIR_ATTEMPTS = 1;
+export const CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_REPAIR_ATTEMPTS = 1;
 
 export type CopilotPlanStatus = 'query_plan' | 'answer_from_context' | 'unsupported_data' | 'unsupported_operation' | 'clarification_required';
 
@@ -30,6 +32,41 @@ export type CopilotAnalysisPlan =
   | {
       readonly planVersion: typeof CUSTOMER_INTELLIGENCE_COPILOT_ANALYSIS_PLAN_VERSION;
       readonly status: Exclude<CopilotPlanStatus, 'query_plan' | 'answer_from_context'>;
+      readonly message: string;
+    };
+
+export type CopilotConversationDecisionAction =
+  | 'respond_directly'
+  | 'clarification_required'
+  | 'answer_from_context'
+  | 'run_analytics'
+  | 'unsupported';
+
+export type CopilotConversationDecision =
+  | {
+      readonly decisionVersion: typeof CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION;
+      readonly action: 'respond_directly';
+      readonly message: string;
+    }
+  | {
+      readonly decisionVersion: typeof CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION;
+      readonly action: 'clarification_required';
+      readonly message: string;
+    }
+  | {
+      readonly decisionVersion: typeof CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION;
+      readonly action: 'answer_from_context';
+      readonly sourceQueryIds: readonly string[];
+      readonly instruction: string;
+    }
+  | {
+      readonly decisionVersion: typeof CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION;
+      readonly action: 'run_analytics';
+      readonly analyticalQuestion: string;
+    }
+  | {
+      readonly decisionVersion: typeof CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION;
+      readonly action: 'unsupported';
       readonly message: string;
     };
 
@@ -63,6 +100,7 @@ export type CopilotAnalyticalReference = {
 export type CopilotSessionContext = {
   readonly contextVersion: typeof CUSTOMER_INTELLIGENCE_COPILOT_SESSION_CONTEXT_VERSION;
   readonly pinnedContext: CustomerIntelligenceSnapshotContext;
+  readonly conversationSummary?: string | null;
   readonly recentTurns: readonly {
     readonly turnId: string;
     readonly userQuestion: string;
@@ -110,6 +148,17 @@ export type CustomerIntelligenceCopilotResponse =
       readonly provenance: CustomerIntelligenceSnapshotContext;
     }
   | {
+      readonly status: 'responded_directly';
+      readonly answer: string;
+      readonly analysis: {
+        readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION;
+        readonly decisionVersion: typeof CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION;
+        readonly decisionAction: 'respond_directly';
+        readonly orchestratorModel: string | null;
+      };
+      readonly provenance: CustomerIntelligenceSnapshotContext;
+    }
+  | {
       readonly status: 'clarification_required' | 'unsupported_data' | 'unsupported_operation';
       readonly message: string;
       readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION;
@@ -120,7 +169,21 @@ export type CustomerIntelligenceCopilotResponse =
       readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION;
     }
   | {
-      readonly status: 'analytics_unavailable' | 'analytics_timeout' | 'answer_generation_failed';
+      readonly status: 'orchestrator_invalid';
+      readonly errors: readonly string[];
+      readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION;
+    }
+  | {
+      readonly status:
+        | 'analytics_unavailable'
+        | 'analytics_timeout'
+        | 'answer_generation_failed'
+        | 'provider_authentication_error'
+        | 'provider_billing_error'
+        | 'provider_rate_limited'
+        | 'provider_timeout'
+        | 'provider_network_error'
+        | 'provider_invalid_response';
       readonly message: string;
       readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION;
     };

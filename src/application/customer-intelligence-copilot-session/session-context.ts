@@ -10,6 +10,7 @@ export function buildCopilotSessionContext(session: CopilotSession, limits: Copi
   return {
     contextVersion: CUSTOMER_INTELLIGENCE_COPILOT_SESSION_CONTEXT_VERSION,
     pinnedContext: session.pinnedContext,
+    conversationSummary: session.summary ?? null,
     recentTurns: session.turns.slice(-limits.contextRecentTurns).map((turn) => ({
       turnId: turn.turnId,
       userQuestion: turn.userQuestion,

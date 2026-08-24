@@ -63,6 +63,54 @@ function fakeService(overrides: Partial<CustomerIntelligenceCopilotSessionServic
         resultCount: 0,
       },
     })),
+    listSessions: vi.fn(async () => ({
+      status: 'ok',
+      sessions: [
+        {
+          sessionId: '00000000-0000-4000-8000-000000000001',
+          sessionVersion: 'customer-intelligence-copilot-session-v1',
+          createdAt: '2026-08-20T12:00:00.000Z',
+          lastActivityAt: '2026-08-20T12:00:00.000Z',
+          expiresAt: '2026-08-20T13:00:00.000Z',
+          status: 'active',
+          title: null,
+          summary: null,
+          pinnedContext: {
+            featureSnapshot: { snapshotId: '17', referenceTime: '2026-08-19T00:00:00.000Z', featureVersion: 'customer-analytics-features-v1', populationPolicyVersion: 'customer-analytics-population-b-v1' },
+            rfmSnapshot: null,
+            clusterSnapshot: null,
+            population: { featurePopulation: 10, rfmMatched: 0, clusterMatched: 0, bothMatched: 0, neitherMatched: 10, rfmCoveragePct: 0, clusterCoveragePct: 0 },
+            contractVersion: 'customer-intelligence-read-model-v1',
+          },
+          turnCount: 0,
+          resultCount: 0,
+        },
+      ],
+    })),
+    getSession: vi.fn(async () => ({
+      status: 'ok',
+      session: {
+        sessionId: '00000000-0000-4000-8000-000000000001',
+        sessionVersion: 'customer-intelligence-copilot-session-v1',
+        createdAt: '2026-08-20T12:00:00.000Z',
+        lastActivityAt: '2026-08-20T12:00:00.000Z',
+        expiresAt: '2026-08-20T13:00:00.000Z',
+        status: 'active',
+        title: null,
+        summary: null,
+        pinnedContext: {
+          featureSnapshot: { snapshotId: '17', referenceTime: '2026-08-19T00:00:00.000Z', featureVersion: 'customer-analytics-features-v1', populationPolicyVersion: 'customer-analytics-population-b-v1' },
+          rfmSnapshot: null,
+          clusterSnapshot: null,
+          population: { featurePopulation: 10, rfmMatched: 0, clusterMatched: 0, bothMatched: 0, neitherMatched: 10, rfmCoveragePct: 0, clusterCoveragePct: 0 },
+          contractVersion: 'customer-intelligence-read-model-v1',
+        },
+        turnCount: 0,
+        resultCount: 0,
+        turns: [],
+        analyticalReferences: [],
+      },
+    })),
     processSessionTurn: vi.fn(async () => ({
       status: 'ok',
       sessionContext: {
@@ -161,6 +209,24 @@ describe('Customer Intelligence Copilot session HTTP routes', () => {
       sessionId: '00000000-0000-4000-8000-000000000001',
       question: 'Cuantos clientes hay?',
     });
+  });
+
+  it('lists and fetches durable session metadata behind the same internal gate', async () => {
+    const service = fakeService();
+    const baseUrl = await startApp({ customerIntelligenceCopilotSessionService: service });
+    const listed = await fetch(`${baseUrl}/v1/customer-intelligence/copilot/sessions?limit=10`, {
+      headers: authHeaders(),
+    });
+    expect(listed.status).toBe(200);
+    expect((await listed.json()).sessions[0].sessionId).toBe('00000000-0000-4000-8000-000000000001');
+
+    const fetched = await fetch(`${baseUrl}/v1/customer-intelligence/copilot/sessions/00000000-0000-4000-8000-000000000001`, {
+      headers: authHeaders(),
+    });
+    expect(fetched.status).toBe(200);
+    expect((await fetched.json()).session.turns).toEqual([]);
+    expect(service.listSessions).toHaveBeenCalledWith(10);
+    expect(service.getSession).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000001');
   });
 
   it('returns XLSX attachment headers for session-owned exports', async () => {

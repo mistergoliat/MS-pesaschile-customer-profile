@@ -1,10 +1,12 @@
 import type {
   CustomerIntelligenceCopilotModel,
+  GenerateConversationDecisionOutput,
   GenerateAnalysisPlanOutput,
   GenerateAnswerOutput,
 } from '../../application/customer-intelligence-copilot/index.js';
 import {
   CUSTOMER_INTELLIGENCE_COPILOT_ANSWER_INSTRUCTIONS,
+  CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_INSTRUCTIONS,
   CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_INSTRUCTIONS,
 } from '../../domain/customer-intelligence-copilot/index.js';
 
@@ -17,6 +19,26 @@ export type HttpJsonCopilotModelConfig = {
 
 export function createHttpJsonCopilotModel(config: HttpJsonCopilotModelConfig): CustomerIntelligenceCopilotModel {
   return {
+    async generateConversationDecision(input) {
+      const response = await postJson(config, {
+        task: 'generate_conversation_decision',
+        model: config.model,
+        instructions: CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_INSTRUCTIONS,
+        input,
+      });
+      return decisionOutput(response, config.model);
+    },
+
+    async repairConversationDecision(input) {
+      const response = await postJson(config, {
+        task: 'repair_conversation_decision',
+        model: config.model,
+        instructions: CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_INSTRUCTIONS,
+        input,
+      });
+      return decisionOutput(response, config.model);
+    },
+
     async generateAnalysisPlan(input) {
       const response = await postJson(config, {
         task: 'generate_analysis_plan',
@@ -68,6 +90,14 @@ async function postJson(config: HttpJsonCopilotModelConfig, body: unknown): Prom
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function decisionOutput(raw: unknown, fallbackModel: string): GenerateConversationDecisionOutput {
+  const obj = expectObject(raw);
+  return {
+    decision: obj.decision ?? obj.output ?? obj,
+    metadata: { provider: String(obj.provider ?? 'http_json'), model: String(obj.model ?? fallbackModel) },
+  };
 }
 
 function planOutput(raw: unknown, fallbackModel: string): GenerateAnalysisPlanOutput {

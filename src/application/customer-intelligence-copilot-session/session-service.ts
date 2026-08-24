@@ -4,12 +4,17 @@ import {
   CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION,
   CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES,
   CUSTOMER_INTELLIGENCE_COPILOT_PLAN_REPAIR_ATTEMPTS,
+  CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_REPAIR_ATTEMPTS,
+  CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
   CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_PROMPT_VERSION,
+  CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_PROMPT_VERSION,
   CUSTOMER_INTELLIGENCE_COPILOT_ANSWER_PROMPT_VERSION,
   CUSTOMER_INTELLIGENCE_COPILOT_SESSION_VERSION,
   serializeAnalyticalSchemaForCopilot,
   validateCopilotAnalysisPlan,
+  validateCopilotConversationDecision,
   type CopilotAnalysisPlan,
+  type CopilotConversationDecision,
   type CustomerIntelligenceCopilotResponse,
 } from '../../domain/customer-intelligence-copilot/index.js';
 import { validateAnalyticalQueryPlan, type AnalyticalQueryPlan, type AnalyticalQueryResult } from '../../domain/customer-intelligence-query/index.js';
@@ -34,11 +39,15 @@ import type {
   CopilotSessionQueryResult,
   CopilotSessionStore,
   CopilotSessionSummary,
+  CopilotSessionDetail,
+  CopilotSessionTurn,
   CreateCopilotSessionRequest,
   CreateCopilotSessionResult,
   DeleteCopilotSessionResult,
   ExportCopilotSessionQueryRequest,
   ExportCopilotSessionQueryResult,
+  GetCopilotSessionResult,
+  ListCopilotSessionsResult,
   ProcessCopilotSessionTurnRequest,
   ProcessCopilotSessionTurnResult,
   RefreshCopilotSessionContextResult,
@@ -47,6 +56,8 @@ import type {
 
 export type CustomerIntelligenceCopilotSessionService = {
   createSession(request?: CreateCopilotSessionRequest): Promise<CreateCopilotSessionResult>;
+  listSessions(limit?: number): Promise<ListCopilotSessionsResult>;
+  getSession(sessionId: string): Promise<GetCopilotSessionResult>;
   processSessionTurn(request: ProcessCopilotSessionTurnRequest): Promise<ProcessCopilotSessionTurnResult>;
   refreshSessionContext(sessionId: string): Promise<RefreshCopilotSessionContextResult>;
   resetSession(sessionId: string): Promise<ResetCopilotSessionResult>;
@@ -58,6 +69,10 @@ type ValidatedStep = {
   readonly id: string;
   readonly plan: AnalyticalQueryPlan;
 };
+
+type ValidatedConversationDecision =
+  | { readonly status: 'decision'; readonly decision: CopilotConversationDecision; readonly metadata: CopilotModelMetadata | null }
+  | { readonly status: 'terminal'; readonly response: CustomerIntelligenceCopilotResponse };
 
 type AnalyticsUnavailableResponse = {
   readonly status: 'analytics_unavailable';
@@ -105,17 +120,32 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
         createdAt: now.toISOString(),
         lastActivityAt: now.toISOString(),
         expiresAt: addMinutes(now, deps.limits.ttlMinutes).toISOString(),
+        status: 'active',
+        title: null,
+        summary: null,
+        summaryVersion: null,
         pinnedContext: pinned.context,
         resolvedIds: pinned.resolvedIds,
         turns: [],
         analyticalState: { references: [], results: [] },
       };
-      deps.store.create(session, now);
+      await deps.store.create(session, now);
       return { status: 'created', session: summarize(session) };
     },
 
+    async listSessions(limit = deps.limits.maxActiveSessions) {
+      const sessions = await deps.store.list(deps.clock.now(), limit);
+      return { status: 'ok', sessions: sessions.map(summarize) };
+    },
+
+    async getSession(sessionId) {
+      const found = await deps.store.get(sessionId, deps.clock.now());
+      if (found.status !== 'found') return { status: found.status };
+      return { status: 'ok', session: detail(found.session) };
+    },
+
     async processSessionTurn(request) {
-      const found = deps.store.get(request.sessionId, deps.clock.now());
+      const found = await deps.store.get(request.sessionId, deps.clock.now());
       if (found.status !== 'found') return { status: found.status };
       const session = found.session;
       const question = trimBounded(request.question, deps.limits.maxQuestionChars);
@@ -125,13 +155,73 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
       if (question.trim().length === 0) {
         const response = withSession({ sessionId: session.sessionId, turnId }, terminal('clarification_required', 'Necesito una pregunta analitica concreta para consultar Customer Intelligence.'));
         const updated = appendTurn(session, response, question, [], [], deps.clock.now(), deps.limits);
-        deps.store.save(updated, deps.clock.now());
+        await deps.store.save(updated, deps.clock.now());
         return { status: 'ok', response, sessionContext };
       }
 
-      const schema = serializeAnalyticalSchemaForCopilot(deps.getAnalyticalSchema());
-      const plannerOutput = await deps.model.generateAnalysisPlan({
+      const decisionResult = await decideConversation({
         question,
+        sessionContext,
+        model: deps.model,
+      });
+      if (decisionResult.status === 'terminal') {
+        const response = withSession({ sessionId: session.sessionId, turnId }, decisionResult.response);
+        await deps.store.save(appendTurn(session, response, question, [], [], deps.clock.now(), deps.limits), deps.clock.now());
+        return { status: 'ok', response, sessionContext };
+      }
+
+      if (decisionResult.decision.action === 'respond_directly') {
+        const response = withSession(
+          { sessionId: session.sessionId, turnId },
+          {
+            status: 'responded_directly',
+            answer: decisionResult.decision.message,
+            analysis: {
+              contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION,
+              decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
+              decisionAction: 'respond_directly',
+              orchestratorModel: modelName(decisionResult.metadata),
+            },
+            provenance: session.pinnedContext,
+          },
+        );
+        await deps.store.save(appendTurn(session, response, question, [], [], deps.clock.now(), deps.limits), deps.clock.now());
+        return { status: 'ok', response, sessionContext };
+      }
+
+      if (decisionResult.decision.action === 'clarification_required') {
+        const response = withSession({ sessionId: session.sessionId, turnId }, terminal('clarification_required', decisionResult.decision.message));
+        await deps.store.save(appendTurn(session, response, question, [], [], deps.clock.now(), deps.limits), deps.clock.now());
+        return { status: 'ok', response, sessionContext };
+      }
+
+      if (decisionResult.decision.action === 'unsupported') {
+        const response = withSession({ sessionId: session.sessionId, turnId }, terminal('unsupported_operation', decisionResult.decision.message));
+        await deps.store.save(appendTurn(session, response, question, [], [], deps.clock.now(), deps.limits), deps.clock.now());
+        return { status: 'ok', response, sessionContext };
+      }
+
+      if (decisionResult.decision.action === 'answer_from_context') {
+        const response = await answerFromSessionContext({
+          session,
+          turnId,
+          question,
+          sourceQueryIds: decisionResult.decision.sourceQueryIds,
+          instruction: decisionResult.decision.instruction,
+          plannerMetadata: decisionResult.metadata,
+          sessionContext,
+          model: deps.model,
+          now: deps.clock.now(),
+          limits: deps.limits,
+        });
+        await deps.store.save(response.session, deps.clock.now());
+        return { status: 'ok', response: response.response, sessionContext };
+      }
+
+      const schema = serializeAnalyticalSchemaForCopilot(deps.getAnalyticalSchema());
+      const analyticalQuestion = decisionResult.decision.analyticalQuestion;
+      const plannerOutput = await deps.model.generateAnalysisPlan({
+        question: analyticalQuestion,
         schema,
         plannerPromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_PROMPT_VERSION,
         maxQueries: CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES,
@@ -140,7 +230,7 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
       const planning = await validateOrRepairPlan({
         rawPlan: plannerOutput.plan,
         plannerMetadata: plannerOutput.metadata,
-        question,
+        question: analyticalQuestion,
         schema,
         sessionContext,
         model: deps.model,
@@ -148,48 +238,25 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
 
       if (planning.status === 'terminal') {
         const response = withSession({ sessionId: session.sessionId, turnId }, planning.response);
-        deps.store.save(appendTurn(session, response, question, [], [], deps.clock.now(), deps.limits), deps.clock.now());
+        await deps.store.save(appendTurn(session, response, question, [], [], deps.clock.now(), deps.limits), deps.clock.now());
         return { status: 'ok', response, sessionContext };
       }
 
       if (planning.status === 'answer_from_context') {
-        const sources = planning.sourceQueryIds.map((queryId) => session.analyticalState.results.find((entry) => entry.queryId === queryId)).filter((entry): entry is CopilotSessionQueryResult => entry !== undefined);
-        if (sources.length !== planning.sourceQueryIds.length) {
-          const response = withSession({ sessionId: session.sessionId, turnId }, plannerInvalid(['answer_from_context referenced an unknown session query']));
-          deps.store.save(appendTurn(session, response, question, [], planning.sourceQueryIds, deps.clock.now(), deps.limits), deps.clock.now());
-          return { status: 'ok', response, sessionContext };
-        }
-        try {
-          const answerOutput = await deps.model.generateAnswer({
-            question,
-            answerPromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_ANSWER_PROMPT_VERSION,
-            context: session.pinnedContext,
-            sessionContext,
-            executions: sources.map((source) => ({ id: source.queryId, plan: source.plan, result: source.result })),
-          });
-          const response = withSession(
-            { sessionId: session.sessionId, turnId, queryIds: [], sourceQueryIds: planning.sourceQueryIds },
-            {
-              status: 'answered_from_context',
-              answer: answerOutput.answer,
-              analysis: {
-                contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION,
-                analysisPlanVersion: CUSTOMER_INTELLIGENCE_COPILOT_ANALYSIS_PLAN_VERSION,
-                sourceQueryIds: planning.sourceQueryIds,
-                resultRowCount: sources.reduce((sum, source) => sum + source.result.rowCount, 0),
-                plannerModel: modelName(planning.plannerMetadata),
-                answerModel: modelName(answerOutput.metadata),
-              },
-              provenance: session.pinnedContext,
-            },
-          );
-          deps.store.save(appendTurn(session, response, question, [], planning.sourceQueryIds, deps.clock.now(), deps.limits), deps.clock.now());
-          return { status: 'ok', response, sessionContext };
-        } catch (error) {
-          const response = withSession({ sessionId: session.sessionId, turnId, queryIds: [], sourceQueryIds: planning.sourceQueryIds }, answerGenerationFailed(error));
-          deps.store.save(appendTurn(session, response, question, [], planning.sourceQueryIds, deps.clock.now(), deps.limits), deps.clock.now());
-          return { status: 'ok', response, sessionContext };
-        }
+        const answeredContext = await answerFromSessionContext({
+          session,
+          turnId,
+          question,
+          sourceQueryIds: planning.sourceQueryIds,
+          instruction: question,
+          plannerMetadata: planning.plannerMetadata,
+          sessionContext,
+          model: deps.model,
+          now: deps.clock.now(),
+          limits: deps.limits,
+        });
+        await deps.store.save(answeredContext.session, deps.clock.now());
+        return { status: 'ok', response: answeredContext.response, sessionContext };
       }
 
       const executions: { id: string; plan: AnalyticalQueryPlan; result: AnalyticalQueryResult }[] = [];
@@ -202,14 +269,14 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
           });
           if (execution.status === 'invalid_plan') {
             const response = withSession({ sessionId: session.sessionId, turnId }, plannerInvalid(execution.errors));
-            deps.store.save(appendTurn(session, response, question, [], [], deps.clock.now(), deps.limits), deps.clock.now());
+            await deps.store.save(appendTurn(session, response, question, [], [], deps.clock.now(), deps.limits), deps.clock.now());
             return { status: 'ok', response, sessionContext };
           }
           executions.push({ id: step.id, plan: step.plan, result: execution.result });
         }
       } catch (error) {
         const response = withSession({ sessionId: session.sessionId, turnId }, mapAnalyticsError(error));
-        deps.store.save(appendTurn(session, response, question, [], [], deps.clock.now(), deps.limits), deps.clock.now());
+        await deps.store.save(appendTurn(session, response, question, [], [], deps.clock.now(), deps.limits), deps.clock.now());
         return { status: 'ok', response, sessionContext };
       }
 
@@ -237,17 +304,17 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
           answered(executions, answerOutput.answer, planning.plannerMetadata, answerOutput.metadata, session.pinnedContext),
         );
         const updated = appendResults(appendTurn(session, response, question, queryResults.map((entry) => entry.queryId), [], deps.clock.now(), deps.limits), queryResults, deps.limits);
-        deps.store.save(updated, deps.clock.now());
+        await deps.store.save(updated, deps.clock.now());
         return { status: 'ok', response, sessionContext };
       } catch (error) {
         const response = withSession({ sessionId: session.sessionId, turnId }, answerGenerationFailed(error));
-        deps.store.save(appendTurn(session, response, question, [], [], deps.clock.now(), deps.limits), deps.clock.now());
+        await deps.store.save(appendTurn(session, response, question, [], [], deps.clock.now(), deps.limits), deps.clock.now());
         return { status: 'ok', response, sessionContext };
       }
     },
 
     async refreshSessionContext(sessionId) {
-      const found = deps.store.get(sessionId, deps.clock.now());
+      const found = await deps.store.get(sessionId, deps.clock.now());
       if (found.status !== 'found') return { status: found.status };
       const pinned = await resolvePinnedContext(null);
       if ('status' in pinned && pinned.status !== 'available') {
@@ -260,16 +327,16 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
         expiresAt: addMinutes(now, deps.limits.ttlMinutes).toISOString(),
         pinnedContext: pinned.context,
         resolvedIds: pinned.resolvedIds,
-        turns: [],
+        turns: appendSystemEvent(found.session.turns, now, 'refresh', deps.limits),
         analyticalState: { references: [], results: [] },
       };
-      deps.store.save(refreshed, now);
+      await deps.store.save(refreshed, now);
       return { status: 'refreshed', session: summarize(refreshed) };
     },
 
     async resetSession(sessionId) {
       const now = deps.clock.now();
-      const found = deps.store.get(sessionId, now);
+      const found = await deps.store.get(sessionId, now);
       if (found.status !== 'found') return { status: found.status };
       const reset: CopilotSession = {
         ...found.session,
@@ -278,7 +345,7 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
         turns: [],
         analyticalState: { references: [], results: [] },
       };
-      deps.store.save(reset, now);
+      await deps.store.save(reset, now);
       return { status: 'reset', session: summarize(reset) };
     },
 
@@ -288,7 +355,7 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
 
     async exportSessionQuery(request) {
       const startedAt = deps.clock.now().getTime();
-      const found = deps.store.get(request.sessionId, deps.clock.now());
+      const found = await deps.store.get(request.sessionId, deps.clock.now());
       if (found.status !== 'found') return { status: found.status };
       const source = found.session.analyticalState.results.find((entry) => entry.queryId === request.queryId);
       if (!source) return { status: 'query_not_found', message: 'queryId does not belong to this session' };
@@ -365,6 +432,96 @@ async function validateOrRepairPlan(args: {
   return { status: 'terminal', response: plannerInvalid(first.errors) };
 }
 
+async function decideConversation(args: {
+  readonly question: string;
+  readonly sessionContext: ReturnType<typeof buildCopilotSessionContext>;
+  readonly model: CustomerIntelligenceCopilotModel;
+}): Promise<ValidatedConversationDecision> {
+  try {
+    const output = await args.model.generateConversationDecision({
+      question: args.question,
+      orchestratorPromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_PROMPT_VERSION,
+      sessionContext: args.sessionContext,
+    });
+    const first = validateCopilotConversationDecision(output.decision);
+    if (first.ok) return { status: 'decision', decision: first.decision, metadata: output.metadata };
+
+    for (let attempt = 0; attempt < CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_REPAIR_ATTEMPTS; attempt += 1) {
+      const repair = await args.model.repairConversationDecision({
+        question: args.question,
+        orchestratorPromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_PROMPT_VERSION,
+        sessionContext: args.sessionContext,
+        previousDecision: output.decision,
+        validationErrors: first.errors,
+      });
+      const repaired = validateCopilotConversationDecision(repair.decision);
+      if (repaired.ok) return { status: 'decision', decision: repaired.decision, metadata: repair.metadata };
+      return { status: 'terminal', response: orchestratorInvalid([...first.errors, ...repaired.errors]) };
+    }
+    return { status: 'terminal', response: orchestratorInvalid(first.errors) };
+  } catch (error) {
+    return { status: 'terminal', response: mapProviderError(error) ?? answerGenerationFailed(error) };
+  }
+}
+
+async function answerFromSessionContext(args: {
+  readonly session: CopilotSession;
+  readonly turnId: string;
+  readonly question: string;
+  readonly sourceQueryIds: readonly string[];
+  readonly instruction: string;
+  readonly plannerMetadata: CopilotModelMetadata | null;
+  readonly sessionContext: ReturnType<typeof buildCopilotSessionContext>;
+  readonly model: CustomerIntelligenceCopilotModel;
+  readonly now: Date;
+  readonly limits: CopilotSessionLimits;
+}): Promise<{ readonly session: CopilotSession; readonly response: { readonly sessionId: string; readonly turnId: string; readonly queryIds: readonly string[]; readonly sourceQueryIds: readonly string[] } & CustomerIntelligenceCopilotResponse }> {
+  const sources = args.sourceQueryIds.map((queryId) => args.session.analyticalState.results.find((entry) => entry.queryId === queryId)).filter((entry): entry is CopilotSessionQueryResult => entry !== undefined);
+  if (sources.length !== args.sourceQueryIds.length) {
+    const response = withSession({ sessionId: args.session.sessionId, turnId: args.turnId, queryIds: [], sourceQueryIds: args.sourceQueryIds }, orchestratorInvalid(['answer_from_context referenced an unknown session query']));
+    return {
+      response,
+      session: appendTurn(args.session, response, args.question, [], args.sourceQueryIds, args.now, args.limits),
+    };
+  }
+  try {
+    const answerOutput = await args.model.generateAnswer({
+      question: `${args.question}\n\nContext instruction: ${args.instruction}`,
+      answerPromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_ANSWER_PROMPT_VERSION,
+      context: args.session.pinnedContext,
+      sessionContext: args.sessionContext,
+      executions: sources.map((source) => ({ id: source.queryId, plan: source.plan, result: source.result })),
+    });
+    const response = withSession(
+      { sessionId: args.session.sessionId, turnId: args.turnId, queryIds: [], sourceQueryIds: args.sourceQueryIds },
+      {
+        status: 'answered_from_context',
+        answer: answerOutput.answer,
+        analysis: {
+          contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION,
+          analysisPlanVersion: CUSTOMER_INTELLIGENCE_COPILOT_ANALYSIS_PLAN_VERSION,
+          sourceQueryIds: args.sourceQueryIds,
+          resultRowCount: sources.reduce((sum, source) => sum + source.result.rowCount, 0),
+          plannerModel: modelName(args.plannerMetadata),
+          answerModel: modelName(answerOutput.metadata),
+        },
+        provenance: args.session.pinnedContext,
+      },
+    );
+    return {
+      response,
+      session: appendTurn(args.session, response, args.question, [], args.sourceQueryIds, args.now, args.limits),
+    };
+  } catch (error) {
+    const mapped = mapProviderError(error) ?? answerGenerationFailed(error);
+    const response = withSession({ sessionId: args.session.sessionId, turnId: args.turnId, queryIds: [], sourceQueryIds: args.sourceQueryIds }, mapped);
+    return {
+      response,
+      session: appendTurn(args.session, response, args.question, [], args.sourceQueryIds, args.now, args.limits),
+    };
+  }
+}
+
 function validatePlanEnvelopeAndQueries(rawPlan: unknown):
   | { readonly ok: true; readonly plan: CopilotAnalysisPlan; readonly steps: readonly ValidatedStep[] }
   | { readonly ok: false; readonly errors: readonly string[] } {
@@ -414,7 +571,12 @@ function appendTurn(
   now: Date,
   limits: CopilotSessionLimits,
 ): CopilotSession {
-  const assistantAnswer = 'answer' in response ? trimBounded(response.answer, limits.maxAnswerChars) : null;
+  const assistantAnswer =
+    'answer' in response
+      ? trimBounded(response.answer, limits.maxAnswerChars)
+      : 'message' in response
+        ? trimBounded(response.message, limits.maxAnswerChars)
+        : null;
   const turn = {
     turnId: response.turnId,
     createdAt: now.toISOString(),
@@ -424,11 +586,14 @@ function appendTurn(
     queryIds,
     sourceQueryIds,
   };
+  const turns = [...session.turns, turn];
   return {
     ...session,
     lastActivityAt: now.toISOString(),
     expiresAt: addMinutes(now, limits.ttlMinutes).toISOString(),
-    turns: [...session.turns, turn].slice(-limits.maxTurns),
+    summary: summarizeConversation(turns, limits),
+    summaryVersion: turns.length >= limits.summaryAfterTurns ? 'customer-intelligence-conversation-summary-v1' : session.summaryVersion ?? null,
+    turns: turns.slice(-limits.maxTurns),
   };
 }
 
@@ -457,16 +622,42 @@ function terminal(status: 'clarification_required' | 'unsupported_data' | 'unsup
   return { status, message, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
 }
 
+function orchestratorInvalid(errors: readonly string[]): CustomerIntelligenceCopilotResponse {
+  return { status: 'orchestrator_invalid', errors, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
+}
+
 function plannerInvalid(errors: readonly string[]): CustomerIntelligenceCopilotResponse {
   return { status: 'planner_invalid', errors, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
 }
 
 function answerGenerationFailed(error: unknown): CustomerIntelligenceCopilotResponse {
+  const provider = mapProviderError(error);
+  if (provider) return provider;
   return {
     status: 'answer_generation_failed',
     message: error instanceof Error ? error.message : 'Answer generation failed',
     contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION,
   };
+}
+
+function mapProviderError(error: unknown): CustomerIntelligenceCopilotResponse | null {
+  if (!error || typeof error !== 'object') return null;
+  const category = (error as { readonly category?: unknown }).category;
+  if (
+    category === 'provider_authentication_error' ||
+    category === 'provider_billing_error' ||
+    category === 'provider_rate_limited' ||
+    category === 'provider_timeout' ||
+    category === 'provider_network_error' ||
+    category === 'provider_invalid_response'
+  ) {
+    return {
+      status: category,
+      message: error instanceof Error ? error.message : category,
+      contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION,
+    };
+  }
+  return null;
 }
 
 function mapContextFailure(reason: string): AnalyticsUnavailableResponse {
@@ -493,10 +684,49 @@ function summarize(session: CopilotSession): CopilotSessionSummary {
     createdAt: session.createdAt,
     lastActivityAt: session.lastActivityAt,
     expiresAt: session.expiresAt,
+    status: session.status ?? 'active',
+    title: session.title ?? null,
+    summary: session.summary ?? null,
     pinnedContext: session.pinnedContext,
     turnCount: session.turns.length,
     resultCount: session.analyticalState.results.length,
   };
+}
+
+function detail(session: CopilotSession): CopilotSessionDetail {
+  return {
+    ...summarize(session),
+    turns: session.turns,
+    analyticalReferences: session.analyticalState.references,
+  };
+}
+
+function appendSystemEvent(turns: readonly CopilotSessionTurn[], now: Date, event: 'refresh', limits: CopilotSessionLimits): readonly CopilotSessionTurn[] {
+  return [
+    ...turns,
+    {
+      turnId: `system_${event}_${now.getTime()}`,
+      createdAt: now.toISOString(),
+      userQuestion: '',
+      assistantStatus: `system_${event}`,
+      assistantAnswer: event === 'refresh' ? 'Snapshot context refreshed explicitly.' : null,
+      queryIds: [],
+      sourceQueryIds: [],
+    },
+  ].slice(-limits.maxTurns);
+}
+
+function summarizeConversation(turns: readonly CopilotSessionTurn[], limits: CopilotSessionLimits): string | null {
+  if (turns.length < limits.summaryAfterTurns) return null;
+  return turns
+    .slice(-limits.summaryAfterTurns)
+    .map((turn) => {
+      const answer = turn.assistantAnswer ? ` -> ${turn.assistantAnswer}` : ` -> ${turn.assistantStatus}`;
+      return `${turn.userQuestion}${answer}`.trim();
+    })
+    .filter((line) => line.length > 0)
+    .join('\n')
+    .slice(0, 4000);
 }
 
 function addMinutes(date: Date, minutes: number): Date {
