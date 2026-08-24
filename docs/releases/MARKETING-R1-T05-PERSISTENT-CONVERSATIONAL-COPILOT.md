@@ -202,3 +202,35 @@ Live validation: NOT_RUN.
 - Durable persistence is wired for production MariaDB; no live MariaDB restart smoke was run in
   this local validation.
 - The legacy single-turn endpoint remains planner-first for backward compatibility.
+
+## T05.1 MySQL JSON Deserialization Hardening
+
+EC2 symptom: session creation persisted correctly, but `GET /v1/customer-intelligence/copilot/sessions/:sessionId`
+and message turns failed with `500 internal_error` before provider execution.
+
+Root cause: mysql2/MariaDB may return JSON columns as already-materialized JavaScript objects or
+arrays, while the session store assumed every JSON-backed field was a string and called
+`JSON.parse()` unconditionally. On EC2 this produced `"[object Object]" is not valid JSON` for
+conversation JSON fields.
+
+Fix: `mysql-copilot-session-store.ts` now treats JSON-backed columns as `MysqlJsonValue` and uses a
+strict parser that accepts valid JSON strings, materialized objects and materialized arrays. It
+rejects malformed strings, `null`, `undefined`, numbers and booleans for required JSON fields.
+
+Fields hardened:
+
+- `pinned_context_json`
+- `resolved_ids_json`
+- `query_ids_json`
+- `source_query_ids_json`
+- `plan_json`
+- `snapshot_provenance_json`
+- `result_metadata_json`
+- `result_sample_json`
+- `references_json`
+
+Test evidence:
+
+- `npm test -- tests/unit/mysql-copilot-session-store.test.ts` - PASS, 1 file, 15 tests
+
+Live validation status remains pending until redeployed and re-tested on EC2.
