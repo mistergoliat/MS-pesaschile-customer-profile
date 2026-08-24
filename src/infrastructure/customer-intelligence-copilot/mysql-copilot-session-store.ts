@@ -14,6 +14,8 @@ import type {
   DeleteCopilotSessionResult,
 } from '../../application/customer-intelligence-copilot-session/index.js';
 
+type MysqlJsonValue = string | { readonly [key: string]: unknown } | readonly unknown[];
+
 type ConversationRow = RowDataPacket & {
   conversation_id: string;
   title: string | null;
@@ -22,8 +24,8 @@ type ConversationRow = RowDataPacket & {
   updated_at: Date | string;
   last_activity_at: Date | string;
   expires_at: Date | string | null;
-  pinned_context_json: string;
-  resolved_ids_json: string;
+  pinned_context_json: MysqlJsonValue;
+  resolved_ids_json: MysqlJsonValue;
   summary_version: string | null;
   summary_text: string | null;
 };
@@ -33,8 +35,8 @@ type MessageRow = RowDataPacket & {
   role: 'user' | 'assistant' | 'system';
   content: string;
   status: string;
-  query_ids_json: string;
-  source_query_ids_json: string;
+  query_ids_json: MysqlJsonValue;
+  source_query_ids_json: MysqlJsonValue;
   created_at: Date | string;
 };
 
@@ -42,11 +44,11 @@ type QueryRow = RowDataPacket & {
   query_id: string;
   turn_id: string;
   query_plan_hash: string;
-  plan_json: string;
-  snapshot_provenance_json: string;
+  plan_json: MysqlJsonValue;
+  snapshot_provenance_json: MysqlJsonValue;
   row_count: number;
-  result_metadata_json: string;
-  result_sample_json: string;
+  result_metadata_json: MysqlJsonValue;
+  result_sample_json: MysqlJsonValue;
   created_at: Date | string;
 };
 
@@ -297,15 +299,27 @@ async function loadQueries(pool: Pool, sessionId: string): Promise<readonly Copi
 }
 
 async function loadReferences(pool: Pool, sessionId: string): Promise<readonly CopilotAnalyticalReference[]> {
-  const [rows] = await pool.execute<(RowDataPacket & { references_json: string })[]>(
+  const [rows] = await pool.execute<(RowDataPacket & { references_json: MysqlJsonValue })[]>(
     'SELECT references_json FROM customer_intelligence_copilot_reference WHERE conversation_id = ? LIMIT 1',
     [sessionId],
   );
   return rows[0] ? parseJson<readonly CopilotAnalyticalReference[]>(rows[0].references_json) : [];
 }
 
-function parseJson<T>(value: string): T {
-  return JSON.parse(value) as T;
+function parseJson<T>(value: unknown): T {
+  if (typeof value === 'string') {
+    const parsed = JSON.parse(value) as unknown;
+    if (isJsonObjectOrArray(parsed)) return parsed as T;
+    throw new TypeError(`Expected JSON string containing object or array, received ${parsed === null ? 'null' : typeof parsed}`);
+  }
+
+  if (isJsonObjectOrArray(value)) return value as T;
+
+  throw new TypeError(`Expected JSON string or object, received ${value === null ? 'null' : typeof value}`);
+}
+
+function isJsonObjectOrArray(value: unknown): value is { readonly [key: string]: unknown } | readonly unknown[] {
+  return value !== null && typeof value === 'object';
 }
 
 function toMysqlDate(value: string | Date): string {
