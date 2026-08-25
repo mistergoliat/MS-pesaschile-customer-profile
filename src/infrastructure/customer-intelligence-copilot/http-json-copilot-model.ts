@@ -17,6 +17,32 @@ export type HttpJsonCopilotModelConfig = {
   readonly timeoutMs: number;
 };
 
+type HttpJsonProviderErrorCategory =
+  | 'provider_authentication_error'
+  | 'provider_billing_error'
+  | 'provider_rate_limited'
+  | 'provider_timeout'
+  | 'provider_network_error'
+  | 'provider_invalid_response';
+
+type HttpJsonProviderCallStage =
+  | 'orchestrator'
+  | 'orchestrator_repair'
+  | 'planner'
+  | 'planner_repair'
+  | 'answerer';
+
+class HttpJsonCopilotProviderError extends Error {
+  constructor(
+    readonly category: HttpJsonProviderErrorCategory,
+    message: string,
+    readonly metadata: { readonly provider: string; readonly model: string; readonly stage: HttpJsonProviderCallStage; readonly httpStatus?: number | null },
+  ) {
+    super(message);
+    this.name = 'HttpJsonCopilotProviderError';
+  }
+}
+
 export function createHttpJsonCopilotModel(config: HttpJsonCopilotModelConfig): CustomerIntelligenceCopilotModel {
   return {
     async generateConversationDecision(input) {
@@ -25,8 +51,8 @@ export function createHttpJsonCopilotModel(config: HttpJsonCopilotModelConfig): 
         model: config.model,
         instructions: CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_INSTRUCTIONS,
         input,
-      });
-      return decisionOutput(response, config.model);
+      }, 'orchestrator');
+      return decisionOutput(response, config.model, 'orchestrator');
     },
 
     async repairConversationDecision(input) {
@@ -35,8 +61,8 @@ export function createHttpJsonCopilotModel(config: HttpJsonCopilotModelConfig): 
         model: config.model,
         instructions: CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_INSTRUCTIONS,
         input,
-      });
-      return decisionOutput(response, config.model);
+      }, 'orchestrator_repair');
+      return decisionOutput(response, config.model, 'orchestrator_repair');
     },
 
     async generateAnalysisPlan(input) {
@@ -45,8 +71,8 @@ export function createHttpJsonCopilotModel(config: HttpJsonCopilotModelConfig): 
         model: config.model,
         instructions: CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_INSTRUCTIONS,
         input,
-      });
-      return planOutput(response, config.model);
+      }, 'planner');
+      return planOutput(response, config.model, 'planner');
     },
 
     async repairAnalysisPlan(input) {
@@ -55,8 +81,8 @@ export function createHttpJsonCopilotModel(config: HttpJsonCopilotModelConfig): 
         model: config.model,
         instructions: CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_INSTRUCTIONS,
         input,
-      });
-      return planOutput(response, config.model);
+      }, 'planner_repair');
+      return planOutput(response, config.model, 'planner_repair');
     },
 
     async generateAnswer(input) {
@@ -65,13 +91,13 @@ export function createHttpJsonCopilotModel(config: HttpJsonCopilotModelConfig): 
         model: config.model,
         instructions: CUSTOMER_INTELLIGENCE_COPILOT_ANSWER_INSTRUCTIONS,
         input,
-      });
-      return answerOutput(response, config.model);
+      }, 'answerer');
+      return answerOutput(response, config.model, 'answerer');
     },
   };
 }
 
-async function postJson(config: HttpJsonCopilotModelConfig, body: unknown): Promise<unknown> {
+async function postJson(config: HttpJsonCopilotModelConfig, body: unknown, stage: HttpJsonProviderCallStage): Promise<unknown> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
   try {
@@ -82,37 +108,46 @@ async function postJson(config: HttpJsonCopilotModelConfig, body: unknown): Prom
       headers,
       body: JSON.stringify(body),
       signal: controller.signal,
+    }).catch((error: unknown) => {
+      if (isAbortError(error)) {
+        throw providerError(config, stage, 'provider_timeout', 'Copilot model provider timed out', null);
+      }
+      throw providerError(config, stage, 'provider_network_error', 'Copilot model provider network error', null);
     });
     if (!response.ok) {
-      throw new Error(`Copilot model provider returned HTTP ${response.status}`);
+      throw providerError(config, stage, categoryForHttpStatus(response.status), `Copilot model provider returned HTTP ${response.status}`, response.status);
     }
-    return response.json();
+    try {
+      return await response.json();
+    } catch {
+      throw providerError(config, stage, 'provider_invalid_response', 'Copilot model provider returned malformed JSON', response.status);
+    }
   } finally {
     clearTimeout(timeout);
   }
 }
 
-function decisionOutput(raw: unknown, fallbackModel: string): GenerateConversationDecisionOutput {
-  const obj = expectObject(raw);
+function decisionOutput(raw: unknown, fallbackModel: string, stage: Extract<HttpJsonProviderCallStage, 'orchestrator' | 'orchestrator_repair'>): GenerateConversationDecisionOutput {
+  const obj = expectObject(raw, fallbackModel, stage);
   return {
     decision: obj.decision ?? obj.output ?? obj,
     metadata: { provider: String(obj.provider ?? 'http_json'), model: String(obj.model ?? fallbackModel) },
   };
 }
 
-function planOutput(raw: unknown, fallbackModel: string): GenerateAnalysisPlanOutput {
-  const obj = expectObject(raw);
+function planOutput(raw: unknown, fallbackModel: string, stage: Extract<HttpJsonProviderCallStage, 'planner' | 'planner_repair'>): GenerateAnalysisPlanOutput {
+  const obj = expectObject(raw, fallbackModel, stage);
   return {
     plan: obj.plan ?? obj.output ?? obj,
     metadata: { provider: String(obj.provider ?? 'http_json'), model: String(obj.model ?? fallbackModel) },
   };
 }
 
-function answerOutput(raw: unknown, fallbackModel: string): GenerateAnswerOutput {
-  const obj = expectObject(raw);
+function answerOutput(raw: unknown, fallbackModel: string, stage: Extract<HttpJsonProviderCallStage, 'answerer'>): GenerateAnswerOutput {
+  const obj = expectObject(raw, fallbackModel, stage);
   const answer = obj.answer ?? obj.output;
   if (typeof answer !== 'string' || answer.trim().length === 0) {
-    throw new Error('Copilot model provider did not return a non-empty answer');
+    throw providerError({ model: String(obj.model ?? fallbackModel) }, stage, 'provider_invalid_response', 'Copilot model provider did not return a non-empty answer', null, String(obj.provider ?? 'http_json'));
   }
   return {
     answer,
@@ -120,9 +155,36 @@ function answerOutput(raw: unknown, fallbackModel: string): GenerateAnswerOutput
   };
 }
 
-function expectObject(value: unknown): Record<string, unknown> {
+function expectObject(value: unknown, fallbackModel: string, stage: HttpJsonProviderCallStage): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('Copilot model provider returned a non-object response');
+    throw providerError({ model: fallbackModel }, stage, 'provider_invalid_response', 'Copilot model provider returned a non-object response', null);
   }
   return value as Record<string, unknown>;
+}
+
+function categoryForHttpStatus(status: number): HttpJsonProviderErrorCategory {
+  if (status === 401 || status === 403) return 'provider_authentication_error';
+  if (status === 402) return 'provider_billing_error';
+  if (status === 429) return 'provider_rate_limited';
+  return 'provider_invalid_response';
+}
+
+function providerError(
+  config: Pick<HttpJsonCopilotModelConfig, 'model'>,
+  stage: HttpJsonProviderCallStage,
+  category: HttpJsonProviderErrorCategory,
+  message: string,
+  httpStatus: number | null,
+  provider = 'http_json',
+): HttpJsonCopilotProviderError {
+  return new HttpJsonCopilotProviderError(category, message, {
+    provider,
+    model: config.model,
+    stage,
+    httpStatus,
+  });
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && (error.name === 'AbortError' || /aborted/i.test(error.message));
 }

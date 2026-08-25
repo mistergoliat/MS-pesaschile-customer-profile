@@ -284,6 +284,85 @@ Result: PASS, 4 files, 46 tests.
 
 Live validation: NOT_RUN.
 
+## T05.5 Answer Generation Reliability and Latency Observability
+
+Live symptom: in a fresh T05.4 session, `Cual cluster tiene mayor ticket promedio?` completed
+successfully and identified Cluster 3. The follow-up `Por que?` also passed semantic routing:
+orchestrator selected `run_analytics`, preserved `activeSemanticEntityId = 3`, and planner produced
+a valid multi-query `query_plan`. The client timed out at 60s, and the persisted assistant turn later
+showed `provider_invalid_response` with `Copilot model provider returned malformed JSON`.
+
+Provider call-chain audit:
+
+- Orchestrator generation: OpenAI-compatible chat completion uses `response_format: json_object` and
+  parses the model message content as `CopilotConversationDecision` JSON.
+- Orchestrator repair: same JSON contract as orchestrator generation.
+- Planner generation: OpenAI-compatible chat completion uses `response_format: json_object` and
+  parses the model message content as `CopilotAnalysisPlan` JSON.
+- Planner repair: same JSON contract as planner generation.
+- Answerer generation: OpenAI-compatible chat completion does not send JSON response format and
+  returns model message content as free-form text. It must not parse that text as JSON.
+- The `http_json` adapter keeps its existing structured transport envelope. Its answer endpoint
+  expects provider JSON containing `answer` or `output`, but the returned answer string remains
+  free-form text.
+
+Root cause classification: because orchestrator and planner had already succeeded in the live trace,
+the exact `malformed JSON` message maps to the answerer provider call failing while parsing the
+provider transport envelope (`response.json()`), not to a planner/orchestrator model-content parse
+and not to `JSON.parse()` of answer text.
+
+Fix:
+
+- Provider errors now carry safe stage metadata: `orchestrator`, `orchestrator_repair`, `planner`,
+  `planner_repair`, or `answerer`.
+- Session diagnostics translate ambiguous provider invalid responses into internal stage-specific
+  failure statuses such as `orchestrator_provider_invalid_response`,
+  `planner_provider_invalid_response`, and `answerer_provider_invalid_response`.
+- The public response status remains compatible as `provider_invalid_response`.
+- Planner provider failures are now mapped to a persisted copilot response instead of escaping the
+  session turn as an unclassified runtime failure.
+- Answerer OpenAI-compatible output remains plain text. JSON-looking answer text is returned as text
+  and no `response_format` is requested for answer generation.
+
+Latency observability:
+
+- A new safe event `customer_intelligence_copilot_stage_latency` is emitted for model stages,
+  aggregate analytical execution, and the total turn.
+- Fields are limited to `stage`, `provider`, `model`, `durationMs`, `success`, `failureStatus`,
+  `repairAttempted`, `queryCount`, `analyticsExecutionDurationMs`, and `totalTurnDurationMs`.
+- Diagnostics do not include raw provider payloads, prompts, SQL, secrets, result rows, PII or
+  chain-of-thought.
+
+Timeout behavior:
+
+- `CUSTOMER_INTELLIGENCE_COPILOT_TIMEOUT_MS` defaults to `30000`.
+- The timeout is applied per provider `fetch` call in the model adapter.
+- It is not a whole-turn timeout. A `run_analytics` turn can spend separate timeout budgets on
+  orchestrator, planner, optional repair calls, answerer, and analytical query execution.
+- T05.5 does not use timeout increase as the primary fix.
+
+Regression coverage:
+
+- OpenAI-compatible answerer accepts plain-text answer content and does not parse free-form text as
+  JSON.
+- OpenAI-compatible orchestrator malformed model JSON is classified with stage `orchestrator`.
+- OpenAI-compatible planner malformed model JSON is classified with stage `planner`.
+- Answerer malformed provider envelopes are classified with stage `answerer`.
+- `http_json` malformed answer envelopes are classified with stage `answerer`.
+- Session stage latency diagnostics are emitted for `orchestrator`, `planner`,
+  `analytics_execution`, `answerer`, and `turn`.
+- Planner and answerer provider invalid responses are logged internally as
+  `planner_provider_invalid_response` and `answerer_provider_invalid_response`.
+- T05.4 semantic follow-up regression remains covered by the semantic benchmark.
+
+Local focused validation:
+
+`npm test -- --run tests/unit/openai-compatible-copilot-model.test.ts tests/unit/http-json-copilot-model.test.ts tests/unit/customer-intelligence-copilot-session.test.ts tests/unit/customer-intelligence-copilot-semantic-benchmark.test.ts`
+
+Result: PASS, 4 files, 65 tests.
+
+Live validation: NOT_RUN.
+
 ## T05.3 Planner AnalyticalQueryPlan Contract Hardening
 
 EC2 symptom: after T05.2, the conversational orchestrator correctly routed the fresh question

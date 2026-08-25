@@ -6,5 +6,6 @@ export {
   createCustomerIntelligenceCopilotSessionService,
   type CopilotOrchestratorDiagnostic,
   type CopilotPlannerDiagnostic,
+  type CopilotStageLatencyDiagnostic,
   type CustomerIntelligenceCopilotSessionService,
 } from './session-service.js';

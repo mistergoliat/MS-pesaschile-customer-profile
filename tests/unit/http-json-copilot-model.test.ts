@@ -88,7 +88,10 @@ describe('http_json Customer Intelligence Copilot model adapter', () => {
   it('throws on HTTP errors', async () => {
     mockFetchJson({ error: 'bad' }, false, 500);
     const model = createHttpJsonCopilotModel(config);
-    await expect(model.generateAnalysisPlan({ question: 'q', schema: { schemaVersion: CUSTOMER_INTELLIGENCE_QUERY_SCHEMA_VERSION, readModelVersion: 'r', fields: [] }, queryContract: serializeAnalyticalQueryContractForCopilot(), plannerPromptVersion: 'p', maxQueries: 3 })).rejects.toThrow(/HTTP 500/);
+    await expect(model.generateAnalysisPlan({ question: 'q', schema: { schemaVersion: CUSTOMER_INTELLIGENCE_QUERY_SCHEMA_VERSION, readModelVersion: 'r', fields: [] }, queryContract: serializeAnalyticalQueryContractForCopilot(), plannerPromptVersion: 'p', maxQueries: 3 })).rejects.toMatchObject({
+      category: 'provider_invalid_response',
+      metadata: { provider: 'http_json', model: 'demo-model', stage: 'planner', httpStatus: 500 },
+    });
   });
 
   it('throws on malformed answer responses', async () => {
@@ -105,6 +108,36 @@ describe('http_json Customer Intelligence Copilot model adapter', () => {
         contractVersion: 'customer-intelligence-read-model-v1',
       },
       executions: [],
-    })).rejects.toThrow(/non-empty answer/);
+    })).rejects.toMatchObject({
+      category: 'provider_invalid_response',
+      metadata: { provider: 'http_json', model: 'demo-model', stage: 'answerer' },
+    });
+  });
+
+  it('classifies malformed answer provider JSON with the answerer stage', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new SyntaxError('bad json');
+      },
+    })) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', fetchMock);
+    const model = createHttpJsonCopilotModel(config);
+    await expect(model.generateAnswer({
+      question: 'q',
+      answerPromptVersion: 'a',
+      context: {
+        featureSnapshot: { snapshotId: '1', referenceTime: '2026-01-01T00:00:00.000Z', featureVersion: 'f', populationPolicyVersion: 'p' },
+        rfmSnapshot: null,
+        clusterSnapshot: null,
+        population: { featurePopulation: 1, rfmMatched: 0, clusterMatched: 0, bothMatched: 0, neitherMatched: 1, rfmCoveragePct: 0, clusterCoveragePct: 0 },
+        contractVersion: 'customer-intelligence-read-model-v1',
+      },
+      executions: [],
+    })).rejects.toMatchObject({
+      category: 'provider_invalid_response',
+      metadata: { provider: 'http_json', model: 'demo-model', stage: 'answerer' },
+    });
   });
 });

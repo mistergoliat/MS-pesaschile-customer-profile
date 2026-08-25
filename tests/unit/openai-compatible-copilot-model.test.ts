@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { GenerateAnalysisPlanInput, GenerateAnswerInput } from '../../src/application/customer-intelligence-copilot/index.js';
+import type { GenerateAnalysisPlanInput, GenerateAnswerInput, GenerateConversationDecisionInput } from '../../src/application/customer-intelligence-copilot/index.js';
 import {
   CUSTOMER_INTELLIGENCE_COPILOT_ANALYSIS_PLAN_VERSION,
   CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_INSTRUCTIONS,
@@ -74,6 +74,28 @@ function answerInput(): GenerateAnswerInput {
   };
 }
 
+function orchestratorInput(): GenerateConversationDecisionInput {
+  return {
+    question: 'q',
+    orchestratorPromptVersion: 'orchestrator-v1',
+    sessionContext: {
+      sessionVersion: 'customer-intelligence-copilot-session-v1',
+      recentTurns: [],
+      analyticalReferences: [],
+      recentResults: [],
+      semanticFocus: { activeEntity: null, activeMetric: null, activeComparison: null, unresolvedClarification: null },
+    },
+    actionConstraints: {
+      allowedActions: ['run_analytics'],
+      answerFromContextAllowed: false,
+      availableSourceQueryIds: [],
+      sessionReferenceCount: 0,
+      sessionResultCount: 0,
+      freshBusinessFactQuestion: true,
+    },
+  } as unknown as GenerateConversationDecisionInput;
+}
+
 function firstPayload(fetchMock: ReturnType<typeof vi.fn>) {
   const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
   return { url, init, payload: JSON.parse(String(init.body)) as Record<string, unknown> };
@@ -146,6 +168,17 @@ describe('openai_compatible Customer Intelligence Copilot model adapter', () => 
     });
   });
 
+  it('treats answer content as plain text without JSON response format or parsing', async () => {
+    const fetchMock = mockFetchJson(chatResponse('{"answer":"still plain text"}'));
+    const model = createOpenAiCompatibleCopilotModel(config);
+
+    const result = await model.generateAnswer(answerInput());
+
+    expect(result.answer).toBe('{"answer":"still plain text"}');
+    const { payload } = firstPayload(fetchMock);
+    expect(payload.response_format).toBeUndefined();
+  });
+
   it('throws on HTTP errors', async () => {
     mockFetchJson({ error: 'bad' }, false, 500);
     const model = createOpenAiCompatibleCopilotModel(config);
@@ -178,7 +211,37 @@ describe('openai_compatible Customer Intelligence Copilot model adapter', () => 
     mockFetchJson(chatResponse('not json'));
     const model = createOpenAiCompatibleCopilotModel(config);
 
-    await expect(model.generateAnalysisPlan(plannerInput())).rejects.toThrow(/invalid planner JSON/);
+    await expect(model.generateAnalysisPlan(plannerInput())).rejects.toMatchObject({
+      category: 'provider_invalid_response',
+      metadata: { provider: 'openai_compatible', model: 'vendor-model', stage: 'planner' },
+    });
+  });
+
+  it('classifies malformed orchestrator JSON with the orchestrator stage', async () => {
+    mockFetchJson(chatResponse('not json'));
+    const model = createOpenAiCompatibleCopilotModel(config);
+
+    await expect(model.generateConversationDecision(orchestratorInput())).rejects.toMatchObject({
+      category: 'provider_invalid_response',
+      metadata: { provider: 'openai_compatible', model: 'vendor-model', stage: 'orchestrator' },
+    });
+  });
+
+  it('classifies malformed answer provider envelopes with the answerer stage', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new SyntaxError('bad json');
+      },
+    })) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', fetchMock);
+    const model = createOpenAiCompatibleCopilotModel(config);
+
+    await expect(model.generateAnswer(answerInput())).rejects.toMatchObject({
+      category: 'provider_invalid_response',
+      metadata: { provider: 'openai_compatible', model: 'vendor-model', stage: 'answerer' },
+    });
   });
 
   it('aborts requests after the configured timeout', async () => {

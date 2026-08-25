@@ -5,6 +5,7 @@ import {
   createInMemoryCopilotSessionStore,
   type CopilotOrchestratorDiagnostic,
   type CopilotPlannerDiagnostic,
+  type CopilotStageLatencyDiagnostic,
   type CopilotSessionLimits,
 } from '../../src/application/customer-intelligence-copilot-session/index.js';
 import type {
@@ -142,6 +143,8 @@ function harness(opts: {
   repairDecision?: unknown;
   plans?: unknown[];
   repairPlan?: unknown;
+  plannerError?: unknown;
+  answerError?: unknown;
   executionResults?: AnalyticalQueryResult[];
   exportResult?: AnalyticalQueryResult;
   limits?: Partial<CopilotSessionLimits>;
@@ -153,9 +156,15 @@ function harness(opts: {
   const plans = [...(opts.plans ?? [queryPlan([{ id: 'q1', plan: bestClusterPlan }])])];
   const generateConversationDecision = vi.fn(async () => ({ decision: decisions.shift() ?? runAnalytics(), metadata: { provider: 'fake', model: 'orchestrator' } }));
   const repairConversationDecision = vi.fn(async () => ({ decision: opts.repairDecision ?? runAnalytics(), metadata: { provider: 'fake', model: 'orchestrator' } }));
-  const generateAnalysisPlan = vi.fn(async (_input: GenerateAnalysisPlanInput) => ({ plan: plans.shift() ?? queryPlan([{ id: 'q1', plan: bestClusterPlan }]), metadata: { provider: 'fake', model: 'planner' } }));
+  const generateAnalysisPlan = vi.fn(async (_input: GenerateAnalysisPlanInput) => {
+    if (opts.plannerError) throw opts.plannerError;
+    return { plan: plans.shift() ?? queryPlan([{ id: 'q1', plan: bestClusterPlan }]), metadata: { provider: 'fake', model: 'planner' } };
+  });
   const repairAnalysisPlan = vi.fn(async () => ({ plan: opts.repairPlan ?? queryPlan([{ id: 'repaired', plan: bestClusterPlan }]), metadata: { provider: 'fake', model: 'planner' } }));
-  const generateAnswer = vi.fn(async () => ({ answer: 'Respuesta grounded.', metadata: { provider: 'fake', model: 'answerer' } }));
+  const generateAnswer = vi.fn(async () => {
+    if (opts.answerError) throw opts.answerError;
+    return { answer: 'Respuesta grounded.', metadata: { provider: 'fake', model: 'answerer' } };
+  });
   const model: CustomerIntelligenceCopilotModel = { generateConversationDecision, repairConversationDecision, generateAnalysisPlan, repairAnalysisPlan, generateAnswer };
   const context = opts.context ?? BASE_CONTEXT;
   const resolveCurrent = vi.fn(async () => context);
@@ -166,6 +175,7 @@ function harness(opts: {
   const store = createInMemoryCopilotSessionStore(limits);
   const diagnostics: CopilotOrchestratorDiagnostic[] = [];
   const plannerDiagnostics: CopilotPlannerDiagnostic[] = [];
+  const stageLatencyDiagnostics: CopilotStageLatencyDiagnostic[] = [];
   const service = createCustomerIntelligenceCopilotSessionService({
     getAnalyticalSchema: () => SCHEMA,
     resolveCurrent,
@@ -178,8 +188,9 @@ function harness(opts: {
     limits,
     onOrchestratorDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
     onPlannerDiagnostic: (diagnostic) => plannerDiagnostics.push(diagnostic),
+    onStageLatencyDiagnostic: (diagnostic) => stageLatencyDiagnostics.push(diagnostic),
   });
-  return { service, clock, generateConversationDecision, repairConversationDecision, generateAnalysisPlan, repairAnalysisPlan, generateAnswer, resolveCurrent, executeAnalyticalQuery, executeAnalyticalQueryForExport, store, diagnostics, plannerDiagnostics };
+  return { service, clock, generateConversationDecision, repairConversationDecision, generateAnalysisPlan, repairAnalysisPlan, generateAnswer, resolveCurrent, executeAnalyticalQuery, executeAnalyticalQueryForExport, store, diagnostics, plannerDiagnostics, stageLatencyDiagnostics };
 }
 
 async function createSession(h: ReturnType<typeof harness>) {
@@ -187,6 +198,16 @@ async function createSession(h: ReturnType<typeof harness>) {
   expect(created.status).toBe('created');
   if (created.status !== 'created') throw new Error('session not created');
   return created.session.sessionId;
+}
+
+function providerInvalidResponse(stage: string) {
+  const error = new Error('Copilot model provider returned malformed JSON') as Error & {
+    category: string;
+    metadata: { provider: string; model: string; stage: string };
+  };
+  error.category = 'provider_invalid_response';
+  error.metadata = { provider: 'fake', model: stage, stage };
+  return error;
 }
 
 describe('Customer Intelligence Copilot ephemeral sessions', () => {
@@ -222,6 +243,118 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
       availableSourceQueryIds: [],
     });
     expect(decisionInput?.actionConstraints.allowedActions).not.toContain('answer_from_context');
+  });
+
+  it('emits safe stage latency diagnostics for a run_analytics turn', async () => {
+    const h = harness({
+      decisions: [runAnalytics('Cuantos clientes hay en la poblacion actual de Customer Intelligence?')],
+      plans: [queryPlan([{ id: 'customer_count', plan: { metrics: [{ aggregation: 'count', alias: 'customers' }] } }])],
+      executionResults: [result([{ customers: 10 }])],
+    });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Cuantos clientes hay?' });
+
+    expect(response.status).toBe('ok');
+    expect(h.stageLatencyDiagnostics.map((diagnostic) => diagnostic.stage)).toEqual([
+      'orchestrator',
+      'planner',
+      'analytics_execution',
+      'answerer',
+      'turn',
+    ]);
+    expect(h.stageLatencyDiagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: 'customer_intelligence_copilot_stage_latency',
+          stage: 'answerer',
+          provider: 'fake',
+          model: 'answerer',
+          success: true,
+          failureStatus: null,
+          repairAttempted: false,
+          queryCount: 1,
+          analyticsExecutionDurationMs: 7,
+        }),
+        expect.objectContaining({
+          stage: 'turn',
+          provider: null,
+          model: null,
+          success: true,
+          failureStatus: null,
+          queryCount: 1,
+          analyticsExecutionDurationMs: 7,
+        }),
+      ]),
+    );
+    for (const diagnostic of h.stageLatencyDiagnostics) {
+      expect(diagnostic.durationMs).toEqual(expect.any(Number));
+      expect(diagnostic.totalTurnDurationMs).toEqual(expect.any(Number));
+    }
+  });
+
+  it('logs planner provider invalid responses with planner-specific diagnostics', async () => {
+    const h = harness({
+      decisions: [runAnalytics('Cuantos clientes hay en la poblacion actual de Customer Intelligence?')],
+      plannerError: providerInvalidResponse('planner'),
+    });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Cuantos clientes hay?' });
+
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') expect(response.response.status).toBe('provider_invalid_response');
+    expect(h.stageLatencyDiagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage: 'planner',
+          provider: 'fake',
+          model: 'planner',
+          success: false,
+          failureStatus: 'planner_provider_invalid_response',
+        }),
+        expect.objectContaining({
+          stage: 'turn',
+          success: false,
+          failureStatus: 'planner_provider_invalid_response',
+        }),
+      ]),
+    );
+  });
+
+  it('logs answerer provider invalid responses with answerer-specific diagnostics', async () => {
+    const h = harness({
+      decisions: [runAnalytics('Cuantos clientes hay en la poblacion actual de Customer Intelligence?')],
+      plans: [queryPlan([{ id: 'customer_count', plan: { metrics: [{ aggregation: 'count', alias: 'customers' }] } }])],
+      executionResults: [result([{ customers: 10 }])],
+      answerError: providerInvalidResponse('answerer'),
+    });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Cuantos clientes hay?' });
+
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') expect(response.response.status).toBe('provider_invalid_response');
+    expect(h.stageLatencyDiagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage: 'answerer',
+          provider: 'fake',
+          model: 'answerer',
+          success: false,
+          failureStatus: 'answerer_provider_invalid_response',
+          queryCount: 1,
+          analyticsExecutionDurationMs: 7,
+        }),
+        expect.objectContaining({
+          stage: 'turn',
+          success: false,
+          failureStatus: 'answerer_provider_invalid_response',
+          queryCount: 1,
+          analyticsExecutionDurationMs: 7,
+        }),
+      ]),
+    );
   });
 
   it('routes fresh cluster distribution counts to analytics', async () => {

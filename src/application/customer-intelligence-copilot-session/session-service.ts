@@ -121,6 +121,29 @@ export type CopilotPlannerDiagnostic = {
   readonly queryStepIds: readonly string[];
 };
 
+type CopilotLatencyStage =
+  | 'orchestrator'
+  | 'orchestrator_repair'
+  | 'planner'
+  | 'planner_repair'
+  | 'analytics_execution'
+  | 'answerer'
+  | 'turn';
+
+export type CopilotStageLatencyDiagnostic = {
+  readonly event: 'customer_intelligence_copilot_stage_latency';
+  readonly stage: CopilotLatencyStage;
+  readonly provider: string | null;
+  readonly model: string | null;
+  readonly durationMs: number;
+  readonly success: boolean;
+  readonly failureStatus: string | null;
+  readonly repairAttempted: boolean;
+  readonly queryCount: number;
+  readonly analyticsExecutionDurationMs: number;
+  readonly totalTurnDurationMs: number;
+};
+
 export function createCustomerIntelligenceCopilotSessionService(deps: {
   readonly getAnalyticalSchema: AnalyticalSchemaProvider;
   readonly resolveCurrent: ResolveCurrentCustomerIntelligenceContext;
@@ -133,6 +156,7 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
   readonly limits: CopilotSessionLimits;
   readonly onOrchestratorDiagnostic?: (diagnostic: CopilotOrchestratorDiagnostic) => void;
   readonly onPlannerDiagnostic?: (diagnostic: CopilotPlannerDiagnostic) => void;
+  readonly onStageLatencyDiagnostic?: (diagnostic: CopilotStageLatencyDiagnostic) => void;
 }): CustomerIntelligenceCopilotSessionService {
   async function resolvePinnedContext(featureSnapshotId?: string | null): Promise<Extract<ResolveCustomerIntelligenceContextResult, { status: 'available' }> | AnalyticsUnavailableResponse> {
     const contextResult = featureSnapshotId ? await deps.resolveForFeatureSnapshot(featureSnapshotId) : await deps.resolveCurrent();
@@ -180,12 +204,14 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
     },
 
     async processSessionTurn(request) {
+      const turnStartedAt = Date.now();
       const found = await deps.store.get(request.sessionId, deps.clock.now());
       if (found.status !== 'found') return { status: found.status };
       const session = found.session;
       const question = trimBounded(request.question, deps.limits.maxQuestionChars);
       const sessionContext = buildCopilotSessionContext(session, deps.limits);
       const turnId = randomUUID();
+      let analyticsExecutionDurationMs = 0;
 
       if (question.trim().length === 0) {
         const response = withSession({ sessionId: session.sessionId, turnId }, terminal('clarification_required', 'Necesito una pregunta analitica concreta para consultar Customer Intelligence.'));
@@ -199,6 +225,8 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
         sessionContext,
         model: deps.model,
         onDiagnostic: deps.onOrchestratorDiagnostic,
+        onStageLatencyDiagnostic: deps.onStageLatencyDiagnostic,
+        turnStartedAt,
       });
       if (decisionResult.status === 'terminal') {
         const response = withSession({ sessionId: session.sessionId, turnId }, decisionResult.response);
@@ -249,32 +277,68 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
           model: deps.model,
           now: deps.clock.now(),
           limits: deps.limits,
+          onStageLatencyDiagnostic: deps.onStageLatencyDiagnostic,
+          turnStartedAt,
         });
         await deps.store.save(response.session, deps.clock.now());
+        emitTurnLatency(deps.onStageLatencyDiagnostic, {
+          turnStartedAt,
+          queryCount: response.response.queryIds.length,
+          analyticsExecutionDurationMs: 0,
+          success: response.response.status === 'answered_from_context',
+          failureStatus: response.response.status === 'answered_from_context' ? null : response.response.status,
+        });
         return { status: 'ok', response: response.response, sessionContext };
       }
 
       const schema = serializeAnalyticalSchemaForCopilot(deps.getAnalyticalSchema());
       const queryContract = serializeAnalyticalQueryContractForCopilot();
       const analyticalQuestion = decisionResult.decision.analyticalQuestion;
-      const plannerOutput = await deps.model.generateAnalysisPlan({
-        question: analyticalQuestion,
-        schema,
-        queryContract,
-        plannerPromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_PROMPT_VERSION,
-        maxQueries: CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES,
-        sessionContext,
-      });
-      const planning = await validateOrRepairPlan({
-        rawPlan: plannerOutput.plan,
-        plannerMetadata: plannerOutput.metadata,
-        question: analyticalQuestion,
-        schema,
-        queryContract,
-        sessionContext,
-        model: deps.model,
-        onDiagnostic: deps.onPlannerDiagnostic,
-      });
+      let planning: Awaited<ReturnType<typeof validateOrRepairPlan>>;
+      try {
+        const plannerOutput = await timeCopilotStage({
+          stage: 'planner',
+          onDiagnostic: deps.onStageLatencyDiagnostic,
+          turnStartedAt,
+          repairAttempted: false,
+          queryCount: 0,
+          analyticsExecutionDurationMs,
+          queryCountFromOutput: (output) => queryCountFromRawPlan(output.plan),
+          call: () =>
+            deps.model.generateAnalysisPlan({
+              question: analyticalQuestion,
+              schema,
+              queryContract,
+              plannerPromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_PROMPT_VERSION,
+              maxQueries: CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES,
+              sessionContext,
+            }),
+        });
+        planning = await validateOrRepairPlan({
+          rawPlan: plannerOutput.plan,
+          plannerMetadata: plannerOutput.metadata,
+          question: analyticalQuestion,
+          schema,
+          queryContract,
+          sessionContext,
+          model: deps.model,
+          onDiagnostic: deps.onPlannerDiagnostic,
+          onStageLatencyDiagnostic: deps.onStageLatencyDiagnostic,
+          turnStartedAt,
+          analyticsExecutionDurationMs,
+        });
+      } catch (error) {
+        const response = withSession({ sessionId: session.sessionId, turnId }, answerGenerationFailed(error));
+        await deps.store.save(appendTurn(session, response, question, [], [], deps.clock.now(), deps.limits), deps.clock.now());
+        emitTurnLatency(deps.onStageLatencyDiagnostic, {
+          turnStartedAt,
+          queryCount: 0,
+          analyticsExecutionDurationMs,
+          success: false,
+          failureStatus: diagnosticFailureStatus(error) ?? response.status,
+        });
+        return { status: 'ok', response, sessionContext };
+      }
 
       if (planning.status === 'terminal') {
         const response = withSession({ sessionId: session.sessionId, turnId }, planning.response);
@@ -294,12 +358,22 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
           model: deps.model,
           now: deps.clock.now(),
           limits: deps.limits,
+          onStageLatencyDiagnostic: deps.onStageLatencyDiagnostic,
+          turnStartedAt,
         });
         await deps.store.save(answeredContext.session, deps.clock.now());
+        emitTurnLatency(deps.onStageLatencyDiagnostic, {
+          turnStartedAt,
+          queryCount: answeredContext.response.queryIds.length,
+          analyticsExecutionDurationMs: 0,
+          success: answeredContext.response.status === 'answered_from_context',
+          failureStatus: answeredContext.response.status === 'answered_from_context' ? null : answeredContext.response.status,
+        });
         return { status: 'ok', response: answeredContext.response, sessionContext };
       }
 
       const executions: { id: string; plan: AnalyticalQueryPlan; result: AnalyticalQueryResult }[] = [];
+      const analyticsStartedAt = Date.now();
       try {
         for (const step of planning.steps) {
           const execution = await deps.executeAnalyticalQuery({
@@ -308,25 +382,87 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
             resolvedIds: session.resolvedIds,
           });
           if (execution.status === 'invalid_plan') {
+            analyticsExecutionDurationMs = sumAnalyticsExecutionDurationMs(executions);
+            emitStageLatency(deps.onStageLatencyDiagnostic, {
+              stage: 'analytics_execution',
+              provider: null,
+              model: null,
+              durationMs: durationSince(analyticsStartedAt),
+              success: false,
+              failureStatus: 'planner_invalid',
+              repairAttempted: false,
+              queryCount: planning.steps.length,
+              analyticsExecutionDurationMs,
+              totalTurnDurationMs: durationSince(turnStartedAt),
+            });
             const response = withSession({ sessionId: session.sessionId, turnId }, plannerInvalid(execution.errors));
             await deps.store.save(appendTurn(session, response, question, [], [], deps.clock.now(), deps.limits), deps.clock.now());
+            emitTurnLatency(deps.onStageLatencyDiagnostic, {
+              turnStartedAt,
+              queryCount: planning.steps.length,
+              analyticsExecutionDurationMs,
+              success: false,
+              failureStatus: response.status,
+            });
             return { status: 'ok', response, sessionContext };
           }
           executions.push({ id: step.id, plan: step.plan, result: execution.result });
         }
       } catch (error) {
+        analyticsExecutionDurationMs = sumAnalyticsExecutionDurationMs(executions);
+        emitStageLatency(deps.onStageLatencyDiagnostic, {
+          stage: 'analytics_execution',
+          provider: null,
+          model: null,
+          durationMs: durationSince(analyticsStartedAt),
+          success: false,
+          failureStatus: analyticsFailureStatus(error),
+          repairAttempted: false,
+          queryCount: planning.steps.length,
+          analyticsExecutionDurationMs,
+          totalTurnDurationMs: durationSince(turnStartedAt),
+        });
         const response = withSession({ sessionId: session.sessionId, turnId }, mapAnalyticsError(error));
         await deps.store.save(appendTurn(session, response, question, [], [], deps.clock.now(), deps.limits), deps.clock.now());
+        emitTurnLatency(deps.onStageLatencyDiagnostic, {
+          turnStartedAt,
+          queryCount: planning.steps.length,
+          analyticsExecutionDurationMs,
+          success: false,
+          failureStatus: response.status,
+        });
         return { status: 'ok', response, sessionContext };
       }
+      analyticsExecutionDurationMs = sumAnalyticsExecutionDurationMs(executions);
+      emitStageLatency(deps.onStageLatencyDiagnostic, {
+        stage: 'analytics_execution',
+        provider: null,
+        model: null,
+        durationMs: durationSince(analyticsStartedAt),
+        success: true,
+        failureStatus: null,
+        repairAttempted: false,
+        queryCount: planning.steps.length,
+        analyticsExecutionDurationMs,
+        totalTurnDurationMs: durationSince(turnStartedAt),
+      });
 
       try {
-        const answerOutput = await deps.model.generateAnswer({
-          question,
-          answerPromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_ANSWER_PROMPT_VERSION,
-          context: session.pinnedContext,
-          sessionContext,
-          executions,
+        const answerOutput = await timeCopilotStage({
+          stage: 'answerer',
+          onDiagnostic: deps.onStageLatencyDiagnostic,
+          turnStartedAt,
+          repairAttempted: false,
+          queryCount: executions.length,
+          analyticsExecutionDurationMs,
+          call: () =>
+            deps.model.generateAnswer({
+              question,
+              answerPromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_ANSWER_PROMPT_VERSION,
+              context: session.pinnedContext,
+              sessionContext,
+              executions,
+            }),
         });
         const queryResults = executions.map((execution) => ({
           queryId: uniqueQueryId(session, execution.id),
@@ -345,10 +481,24 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
         );
         const updated = appendResults(appendTurn(session, response, question, queryResults.map((entry) => entry.queryId), [], deps.clock.now(), deps.limits), queryResults, deps.limits);
         await deps.store.save(updated, deps.clock.now());
+        emitTurnLatency(deps.onStageLatencyDiagnostic, {
+          turnStartedAt,
+          queryCount: executions.length,
+          analyticsExecutionDurationMs,
+          success: true,
+          failureStatus: null,
+        });
         return { status: 'ok', response, sessionContext };
       } catch (error) {
         const response = withSession({ sessionId: session.sessionId, turnId }, answerGenerationFailed(error));
         await deps.store.save(appendTurn(session, response, question, [], [], deps.clock.now(), deps.limits), deps.clock.now());
+        emitTurnLatency(deps.onStageLatencyDiagnostic, {
+          turnStartedAt,
+          queryCount: executions.length,
+          analyticsExecutionDurationMs,
+          success: false,
+          failureStatus: diagnosticFailureStatus(error) ?? response.status,
+        });
         return { status: 'ok', response, sessionContext };
       }
     },
@@ -441,6 +591,9 @@ async function validateOrRepairPlan(args: {
   readonly sessionContext: ReturnType<typeof buildCopilotSessionContext>;
   readonly model: CustomerIntelligenceCopilotModel;
   readonly onDiagnostic?: (diagnostic: CopilotPlannerDiagnostic) => void;
+  readonly onStageLatencyDiagnostic?: (diagnostic: CopilotStageLatencyDiagnostic) => void;
+  readonly turnStartedAt: number;
+  readonly analyticsExecutionDurationMs: number;
 }): Promise<
   | { readonly status: 'query_plan'; readonly steps: readonly ValidatedStep[]; readonly plannerMetadata: CopilotModelMetadata | null }
   | { readonly status: 'answer_from_context'; readonly sourceQueryIds: readonly string[]; readonly plannerMetadata: CopilotModelMetadata | null }
@@ -462,15 +615,25 @@ async function validateOrRepairPlan(args: {
   }
 
   for (let attempt = 0; attempt < CUSTOMER_INTELLIGENCE_COPILOT_PLAN_REPAIR_ATTEMPTS; attempt += 1) {
-    const repairOutput = await args.model.repairAnalysisPlan({
-      question: args.question,
-      schema: args.schema,
-      queryContract: args.queryContract,
-      plannerPromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_PROMPT_VERSION,
-      maxQueries: CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES,
-      sessionContext: args.sessionContext,
-      previousPlan: args.rawPlan,
-      validationErrors: first.errors,
+    const repairOutput = await timeCopilotStage({
+      stage: 'planner_repair',
+      onDiagnostic: args.onStageLatencyDiagnostic,
+      turnStartedAt: args.turnStartedAt,
+      repairAttempted: true,
+      queryCount: 0,
+      analyticsExecutionDurationMs: args.analyticsExecutionDurationMs,
+      queryCountFromOutput: (output) => queryCountFromRawPlan(output.plan),
+      call: () =>
+        args.model.repairAnalysisPlan({
+          question: args.question,
+          schema: args.schema,
+          queryContract: args.queryContract,
+          plannerPromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_PROMPT_VERSION,
+          maxQueries: CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES,
+          sessionContext: args.sessionContext,
+          previousPlan: args.rawPlan,
+          validationErrors: first.errors,
+        }),
     });
     const validation = validatePlanEnvelopeAndQueries(repairOutput.plan);
     if (validation.ok) {
@@ -513,14 +676,25 @@ async function decideConversation(args: {
   readonly sessionContext: ReturnType<typeof buildCopilotSessionContext>;
   readonly model: CustomerIntelligenceCopilotModel;
   readonly onDiagnostic?: (diagnostic: CopilotOrchestratorDiagnostic) => void;
+  readonly onStageLatencyDiagnostic?: (diagnostic: CopilotStageLatencyDiagnostic) => void;
+  readonly turnStartedAt: number;
 }): Promise<ValidatedConversationDecision> {
   const actionConstraints = buildConversationDecisionActionConstraints(args.question, args.sessionContext);
   try {
-    const output = await args.model.generateConversationDecision({
-      question: args.question,
-      orchestratorPromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_PROMPT_VERSION,
-      sessionContext: args.sessionContext,
-      actionConstraints,
+    const output = await timeCopilotStage({
+      stage: 'orchestrator',
+      onDiagnostic: args.onStageLatencyDiagnostic,
+      turnStartedAt: args.turnStartedAt,
+      repairAttempted: false,
+      queryCount: 0,
+      analyticsExecutionDurationMs: 0,
+      call: () =>
+        args.model.generateConversationDecision({
+          question: args.question,
+          orchestratorPromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_PROMPT_VERSION,
+          sessionContext: args.sessionContext,
+          actionConstraints,
+        }),
     });
     const first = validateCopilotConversationDecision(output.decision, { question: args.question, sessionContext: args.sessionContext });
     if (first.ok) {
@@ -539,13 +713,22 @@ async function decideConversation(args: {
     }
 
     for (let attempt = 0; attempt < CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_REPAIR_ATTEMPTS; attempt += 1) {
-      const repair = await args.model.repairConversationDecision({
-        question: args.question,
-        orchestratorPromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_PROMPT_VERSION,
-        sessionContext: args.sessionContext,
-        actionConstraints,
-        previousDecision: output.decision,
-        validationErrors: first.errors,
+      const repair = await timeCopilotStage({
+        stage: 'orchestrator_repair',
+        onDiagnostic: args.onStageLatencyDiagnostic,
+        turnStartedAt: args.turnStartedAt,
+        repairAttempted: true,
+        queryCount: 0,
+        analyticsExecutionDurationMs: 0,
+        call: () =>
+          args.model.repairConversationDecision({
+            question: args.question,
+            orchestratorPromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_PROMPT_VERSION,
+            sessionContext: args.sessionContext,
+            actionConstraints,
+            previousDecision: output.decision,
+            validationErrors: first.errors,
+          }),
       });
       const repaired = validateCopilotConversationDecision(repair.decision, { question: args.question, sessionContext: args.sessionContext });
       if (repaired.ok) {
@@ -747,6 +930,8 @@ async function answerFromSessionContext(args: {
   readonly model: CustomerIntelligenceCopilotModel;
   readonly now: Date;
   readonly limits: CopilotSessionLimits;
+  readonly onStageLatencyDiagnostic?: (diagnostic: CopilotStageLatencyDiagnostic) => void;
+  readonly turnStartedAt: number;
 }): Promise<{ readonly session: CopilotSession; readonly response: { readonly sessionId: string; readonly turnId: string; readonly queryIds: readonly string[]; readonly sourceQueryIds: readonly string[] } & CustomerIntelligenceCopilotResponse }> {
   const sources = args.sourceQueryIds.map((queryId) => args.session.analyticalState.results.find((entry) => entry.queryId === queryId)).filter((entry): entry is CopilotSessionQueryResult => entry !== undefined);
   if (sources.length !== args.sourceQueryIds.length) {
@@ -757,12 +942,21 @@ async function answerFromSessionContext(args: {
     };
   }
   try {
-    const answerOutput = await args.model.generateAnswer({
-      question: `${args.question}\n\nContext instruction: ${args.instruction}`,
-      answerPromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_ANSWER_PROMPT_VERSION,
-      context: args.session.pinnedContext,
-      sessionContext: args.sessionContext,
-      executions: sources.map((source) => ({ id: source.queryId, plan: source.plan, result: source.result })),
+    const answerOutput = await timeCopilotStage({
+      stage: 'answerer',
+      onDiagnostic: args.onStageLatencyDiagnostic,
+      turnStartedAt: args.turnStartedAt,
+      repairAttempted: false,
+      queryCount: sources.length,
+      analyticsExecutionDurationMs: 0,
+      call: () =>
+        args.model.generateAnswer({
+          question: `${args.question}\n\nContext instruction: ${args.instruction}`,
+          answerPromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_ANSWER_PROMPT_VERSION,
+          context: args.session.pinnedContext,
+          sessionContext: args.sessionContext,
+          executions: sources.map((source) => ({ id: source.queryId, plan: source.plan, result: source.result })),
+        }),
     });
     const response = withSession(
       { sessionId: args.session.sessionId, turnId: args.turnId, queryIds: [], sourceQueryIds: args.sourceQueryIds },
@@ -831,6 +1025,139 @@ function emitPlannerDiagnostic(
     repairSucceeded: args.repairSucceeded,
     queryStepIds: args.queryStepIds,
   });
+}
+
+async function timeCopilotStage<T extends { readonly metadata: CopilotModelMetadata | null }>(args: {
+  readonly stage: Exclude<CopilotLatencyStage, 'analytics_execution' | 'turn'>;
+  readonly onDiagnostic?: (diagnostic: CopilotStageLatencyDiagnostic) => void;
+  readonly turnStartedAt: number;
+  readonly repairAttempted: boolean;
+  readonly queryCount: number;
+  readonly analyticsExecutionDurationMs: number;
+  readonly queryCountFromOutput?: (output: T) => number;
+  readonly call: () => Promise<T>;
+}): Promise<T> {
+  const startedAt = Date.now();
+  try {
+    const output = await args.call();
+    emitStageLatency(args.onDiagnostic, {
+      stage: args.stage,
+      provider: output.metadata?.provider ?? null,
+      model: output.metadata?.model ?? null,
+      durationMs: durationSince(startedAt),
+      success: true,
+      failureStatus: null,
+      repairAttempted: args.repairAttempted,
+      queryCount: args.queryCountFromOutput?.(output) ?? args.queryCount,
+      analyticsExecutionDurationMs: args.analyticsExecutionDurationMs,
+      totalTurnDurationMs: durationSince(args.turnStartedAt),
+    });
+    return output;
+  } catch (error) {
+    const metadata = providerErrorMetadata(error);
+    emitStageLatency(args.onDiagnostic, {
+      stage: args.stage,
+      provider: metadata.provider,
+      model: metadata.model,
+      durationMs: durationSince(startedAt),
+      success: false,
+      failureStatus: diagnosticFailureStatus(error),
+      repairAttempted: args.repairAttempted,
+      queryCount: args.queryCount,
+      analyticsExecutionDurationMs: args.analyticsExecutionDurationMs,
+      totalTurnDurationMs: durationSince(args.turnStartedAt),
+    });
+    throw error;
+  }
+}
+
+function emitTurnLatency(
+  onDiagnostic: ((diagnostic: CopilotStageLatencyDiagnostic) => void) | undefined,
+  args: {
+    readonly turnStartedAt: number;
+    readonly queryCount: number;
+    readonly analyticsExecutionDurationMs: number;
+    readonly success: boolean;
+    readonly failureStatus: string | null;
+  },
+): void {
+  emitStageLatency(onDiagnostic, {
+    stage: 'turn',
+    provider: null,
+    model: null,
+    durationMs: durationSince(args.turnStartedAt),
+    success: args.success,
+    failureStatus: args.failureStatus,
+    repairAttempted: false,
+    queryCount: args.queryCount,
+    analyticsExecutionDurationMs: args.analyticsExecutionDurationMs,
+    totalTurnDurationMs: durationSince(args.turnStartedAt),
+  });
+}
+
+function emitStageLatency(
+  onDiagnostic: ((diagnostic: CopilotStageLatencyDiagnostic) => void) | undefined,
+  diagnostic: Omit<CopilotStageLatencyDiagnostic, 'event'>,
+): void {
+  onDiagnostic?.({
+    event: 'customer_intelligence_copilot_stage_latency',
+    ...diagnostic,
+    durationMs: Math.max(0, Math.round(diagnostic.durationMs)),
+    totalTurnDurationMs: Math.max(0, Math.round(diagnostic.totalTurnDurationMs)),
+    analyticsExecutionDurationMs: Math.max(0, Math.round(diagnostic.analyticsExecutionDurationMs)),
+  });
+}
+
+function durationSince(startedAt: number): number {
+  return Date.now() - startedAt;
+}
+
+function sumAnalyticsExecutionDurationMs(executions: readonly { readonly result: AnalyticalQueryResult }[]): number {
+  return executions.reduce((sum, execution) => sum + execution.result.execution.durationMs, 0);
+}
+
+function queryCountFromRawPlan(rawPlan: unknown): number {
+  if (rawPlan === null || typeof rawPlan !== 'object' || Array.isArray(rawPlan)) return 0;
+  const obj = rawPlan as { readonly status?: unknown; readonly queries?: unknown };
+  return obj.status === 'query_plan' && Array.isArray(obj.queries) ? obj.queries.length : 0;
+}
+
+function diagnosticFailureStatus(error: unknown): string | null {
+  if (!error || typeof error !== 'object') return null;
+  const category = (error as { readonly category?: unknown }).category;
+  if (typeof category !== 'string') return null;
+  if (category === 'provider_invalid_response') {
+    const stage = providerErrorStage(error);
+    if (stage) return `${providerFailureStageName(stage)}_provider_invalid_response`;
+  }
+  return category;
+}
+
+function providerErrorStage(error: unknown): string | null {
+  if (!error || typeof error !== 'object') return null;
+  const metadata = (error as { readonly metadata?: unknown }).metadata;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
+  const stage = (metadata as { readonly stage?: unknown }).stage;
+  return typeof stage === 'string' ? stage : null;
+}
+
+function providerFailureStageName(stage: string): string {
+  if (stage.startsWith('orchestrator')) return 'orchestrator';
+  if (stage.startsWith('planner')) return 'planner';
+  if (stage === 'answerer') return 'answerer';
+  return stage;
+}
+
+function providerErrorMetadata(error: unknown): { readonly provider: string | null; readonly model: string | null } {
+  if (!error || typeof error !== 'object') return { provider: null, model: null };
+  const metadata = (error as { readonly metadata?: unknown }).metadata;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return { provider: null, model: null };
+  const provider = (metadata as { readonly provider?: unknown }).provider;
+  const model = (metadata as { readonly model?: unknown }).model;
+  return {
+    provider: typeof provider === 'string' ? provider : null,
+    model: typeof model === 'string' ? model : null,
+  };
 }
 
 function statusFromUnknown(value: unknown): string | null {
@@ -983,6 +1310,12 @@ function mapAnalyticsError(error: unknown): AnalyticsFailureResponse {
   if (error instanceof AnalyticsTimeoutError) return { status: 'analytics_timeout', message: error.message, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
   if (error instanceof AnalyticsUnavailableError || error instanceof AnalyticsSchemaIncompatibleError) return { status: 'analytics_unavailable', message: error.message, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
   throw error;
+}
+
+function analyticsFailureStatus(error: unknown): string {
+  if (error instanceof AnalyticsTimeoutError) return 'analytics_timeout';
+  if (error instanceof AnalyticsUnavailableError || error instanceof AnalyticsSchemaIncompatibleError) return 'analytics_unavailable';
+  return 'analytics_failed';
 }
 
 function withSession<T extends CustomerIntelligenceCopilotResponse>(

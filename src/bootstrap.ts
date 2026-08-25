@@ -283,6 +283,9 @@ export function bootstrap(): Bootstrap {
       onPlannerDiagnostic: (diagnostic) => {
         console.info(diagnostic, 'customer intelligence copilot planner validation');
       },
+      onStageLatencyDiagnostic: (diagnostic) => {
+        console.info(diagnostic, 'customer intelligence copilot stage latency');
+      },
     });
   }
 

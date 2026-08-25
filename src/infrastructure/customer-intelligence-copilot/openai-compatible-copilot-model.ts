@@ -30,11 +30,18 @@ export type CopilotProviderErrorCategory =
   | 'provider_network_error'
   | 'provider_invalid_response';
 
+export type CopilotProviderCallStage =
+  | 'orchestrator'
+  | 'orchestrator_repair'
+  | 'planner'
+  | 'planner_repair'
+  | 'answerer';
+
 export class CopilotProviderError extends Error {
   constructor(
     readonly category: CopilotProviderErrorCategory,
     message: string,
-    readonly metadata: { readonly provider: string; readonly model: string; readonly httpStatus?: number | null },
+    readonly metadata: { readonly provider: string; readonly model: string; readonly stage: CopilotProviderCallStage; readonly httpStatus?: number | null },
   ) {
     super(message);
     this.name = 'CopilotProviderError';
@@ -50,8 +57,9 @@ export function createOpenAiCompatibleCopilotModel(config: OpenAiCompatibleCopil
           { role: 'user', content: serializeUserInput({ task: 'generate_conversation_decision', input }) },
         ],
         responseFormat: 'json_object',
+        stage: 'orchestrator',
       });
-      return decisionOutput(content, config.model);
+      return decisionOutput(content, config.model, 'orchestrator');
     },
 
     async repairConversationDecision(input) {
@@ -61,8 +69,9 @@ export function createOpenAiCompatibleCopilotModel(config: OpenAiCompatibleCopil
           { role: 'user', content: serializeUserInput({ task: 'repair_conversation_decision', input }) },
         ],
         responseFormat: 'json_object',
+        stage: 'orchestrator_repair',
       });
-      return decisionOutput(content, config.model);
+      return decisionOutput(content, config.model, 'orchestrator_repair');
     },
 
     async generateAnalysisPlan(input) {
@@ -72,8 +81,9 @@ export function createOpenAiCompatibleCopilotModel(config: OpenAiCompatibleCopil
           { role: 'user', content: serializeUserInput({ task: 'generate_analysis_plan', input }) },
         ],
         responseFormat: 'json_object',
+        stage: 'planner',
       });
-      return planOutput(content, config.model);
+      return planOutput(content, config.model, 'planner');
     },
 
     async repairAnalysisPlan(input) {
@@ -83,8 +93,9 @@ export function createOpenAiCompatibleCopilotModel(config: OpenAiCompatibleCopil
           { role: 'user', content: serializeUserInput({ task: 'repair_analysis_plan', input }) },
         ],
         responseFormat: 'json_object',
+        stage: 'planner_repair',
       });
-      return planOutput(content, config.model);
+      return planOutput(content, config.model, 'planner_repair');
     },
 
     async generateAnswer(input) {
@@ -93,6 +104,7 @@ export function createOpenAiCompatibleCopilotModel(config: OpenAiCompatibleCopil
           { role: 'system', content: answerSystemPrompt() },
           { role: 'user', content: serializeUserInput({ task: 'generate_answer', input }) },
         ],
+        stage: 'answerer',
       });
       return answerOutput(content, config.model);
     },
@@ -101,7 +113,7 @@ export function createOpenAiCompatibleCopilotModel(config: OpenAiCompatibleCopil
 
 async function postChatCompletion(
   config: OpenAiCompatibleCopilotModelConfig,
-  request: { readonly messages: readonly ChatMessage[]; readonly responseFormat?: 'json_object' },
+  request: { readonly messages: readonly ChatMessage[]; readonly responseFormat?: 'json_object'; readonly stage: CopilotProviderCallStage },
 ): Promise<string> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
@@ -123,44 +135,44 @@ async function postChatCompletion(
       signal: controller.signal,
     }).catch((error: unknown) => {
       if (isAbortError(error)) {
-        throw providerError(config, 'provider_timeout', 'Copilot model provider timed out', null);
+        throw providerError(config, request.stage, 'provider_timeout', 'Copilot model provider timed out', null);
       }
-      throw providerError(config, 'provider_network_error', 'Copilot model provider network error', null);
+      throw providerError(config, request.stage, 'provider_network_error', 'Copilot model provider network error', null);
     });
     if (!response.ok) {
-      throw providerError(config, categoryForHttpStatus(response.status), `Copilot model provider returned HTTP ${response.status}`, response.status);
+      throw providerError(config, request.stage, categoryForHttpStatus(response.status), `Copilot model provider returned HTTP ${response.status}`, response.status);
     }
     let raw: unknown;
     try {
       raw = await response.json();
     } catch {
-      throw providerError(config, 'provider_invalid_response', 'Copilot model provider returned malformed JSON', response.status);
+      throw providerError(config, request.stage, 'provider_invalid_response', 'Copilot model provider returned malformed JSON', response.status);
     }
-    return extractMessageContent(raw, config);
+    return extractMessageContent(raw, config, request.stage);
   } finally {
     clearTimeout(timeout);
   }
 }
 
-function decisionOutput(content: string, model: string): GenerateConversationDecisionOutput {
+function decisionOutput(content: string, model: string, stage: Extract<CopilotProviderCallStage, 'orchestrator' | 'orchestrator_repair'>): GenerateConversationDecisionOutput {
   try {
     return {
       decision: JSON.parse(content),
       metadata: { provider: 'openai_compatible', model },
     };
   } catch {
-    throw providerError({ model } as OpenAiCompatibleCopilotModelConfig, 'provider_invalid_response', 'Copilot model provider returned invalid orchestrator JSON', null);
+    throw providerError({ model }, stage, 'provider_invalid_response', 'Copilot model provider returned invalid orchestrator JSON', null);
   }
 }
 
-function planOutput(content: string, model: string): GenerateAnalysisPlanOutput {
+function planOutput(content: string, model: string, stage: Extract<CopilotProviderCallStage, 'planner' | 'planner_repair'>): GenerateAnalysisPlanOutput {
   try {
     return {
       plan: JSON.parse(content),
       metadata: { provider: 'openai_compatible', model },
     };
   } catch (error) {
-    throw providerError({ model } as OpenAiCompatibleCopilotModelConfig, 'provider_invalid_response', `Copilot model provider returned invalid planner JSON: ${errorMessage(error)}`, null);
+    throw providerError({ model }, stage, 'provider_invalid_response', `Copilot model provider returned invalid planner JSON: ${errorMessage(error)}`, null);
   }
 }
 
@@ -171,23 +183,23 @@ function answerOutput(answer: string, model: string): GenerateAnswerOutput {
   };
 }
 
-function extractMessageContent(raw: unknown, config: OpenAiCompatibleCopilotModelConfig): string {
-  const obj = expectObject(raw, 'Copilot model provider returned a non-object response', config);
+function extractMessageContent(raw: unknown, config: OpenAiCompatibleCopilotModelConfig, stage: CopilotProviderCallStage): string {
+  const obj = expectObject(raw, 'Copilot model provider returned a non-object response', config, stage);
   if (!Array.isArray(obj.choices) || obj.choices.length === 0) {
-    throw providerError(config, 'provider_invalid_response', 'Copilot model provider returned no choices', null);
+    throw providerError(config, stage, 'provider_invalid_response', 'Copilot model provider returned no choices', null);
   }
   const [firstChoice] = obj.choices;
-  const choice = expectObject(firstChoice, 'Copilot model provider returned a malformed choice', config);
-  const message = expectObject(choice.message, 'Copilot model provider returned a malformed message', config);
+  const choice = expectObject(firstChoice, 'Copilot model provider returned a malformed choice', config, stage);
+  const message = expectObject(choice.message, 'Copilot model provider returned a malformed message', config, stage);
   if (typeof message.content !== 'string' || message.content.trim().length === 0) {
-    throw providerError(config, 'provider_invalid_response', 'Copilot model provider returned empty message content', null);
+    throw providerError(config, stage, 'provider_invalid_response', 'Copilot model provider returned empty message content', null);
   }
   return message.content;
 }
 
-function expectObject(value: unknown, message: string, config: OpenAiCompatibleCopilotModelConfig): Record<string, unknown> {
+function expectObject(value: unknown, message: string, config: Pick<OpenAiCompatibleCopilotModelConfig, 'model'>, stage: CopilotProviderCallStage): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    throw providerError(config, 'provider_invalid_response', message, null);
+    throw providerError(config, stage, 'provider_invalid_response', message, null);
   }
   return value as Record<string, unknown>;
 }
@@ -237,6 +249,7 @@ function categoryForHttpStatus(status: number): CopilotProviderErrorCategory {
 
 function providerError(
   config: Pick<OpenAiCompatibleCopilotModelConfig, 'model'>,
+  stage: CopilotProviderCallStage,
   category: CopilotProviderErrorCategory,
   message: string,
   httpStatus: number | null,
@@ -244,6 +257,7 @@ function providerError(
   return new CopilotProviderError(category, message, {
     provider: 'openai_compatible',
     model: config.model,
+    stage,
     httpStatus,
   });
 }
