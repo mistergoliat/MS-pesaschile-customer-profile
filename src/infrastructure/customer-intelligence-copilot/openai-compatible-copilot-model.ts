@@ -22,6 +22,19 @@ type ChatMessage = {
   readonly content: string;
 };
 
+type ChatCompletionOutput = {
+  readonly content: string;
+  readonly metadata: {
+    readonly provider: 'openai_compatible';
+    readonly model: string;
+    readonly promptCharCount: number;
+    readonly responseCharCount: number;
+    readonly promptTokens?: number;
+    readonly completionTokens?: number;
+    readonly totalTokens?: number;
+  };
+};
+
 export type CopilotProviderErrorCategory =
   | 'provider_authentication_error'
   | 'provider_billing_error'
@@ -51,7 +64,7 @@ export class CopilotProviderError extends Error {
 export function createOpenAiCompatibleCopilotModel(config: OpenAiCompatibleCopilotModelConfig): CustomerIntelligenceCopilotModel {
   return {
     async generateConversationDecision(input) {
-      const content = await postChatCompletion(config, {
+      const output = await postChatCompletion(config, {
         messages: [
           { role: 'system', content: orchestratorSystemPrompt() },
           { role: 'user', content: serializeUserInput({ task: 'generate_conversation_decision', input }) },
@@ -59,11 +72,11 @@ export function createOpenAiCompatibleCopilotModel(config: OpenAiCompatibleCopil
         responseFormat: 'json_object',
         stage: 'orchestrator',
       });
-      return decisionOutput(content, config.model, 'orchestrator');
+      return decisionOutput(output, 'orchestrator');
     },
 
     async repairConversationDecision(input) {
-      const content = await postChatCompletion(config, {
+      const output = await postChatCompletion(config, {
         messages: [
           { role: 'system', content: orchestratorSystemPrompt() },
           { role: 'user', content: serializeUserInput({ task: 'repair_conversation_decision', input }) },
@@ -71,11 +84,11 @@ export function createOpenAiCompatibleCopilotModel(config: OpenAiCompatibleCopil
         responseFormat: 'json_object',
         stage: 'orchestrator_repair',
       });
-      return decisionOutput(content, config.model, 'orchestrator_repair');
+      return decisionOutput(output, 'orchestrator_repair');
     },
 
     async generateAnalysisPlan(input) {
-      const content = await postChatCompletion(config, {
+      const output = await postChatCompletion(config, {
         messages: [
           { role: 'system', content: plannerSystemPrompt() },
           { role: 'user', content: serializeUserInput({ task: 'generate_analysis_plan', input }) },
@@ -83,11 +96,11 @@ export function createOpenAiCompatibleCopilotModel(config: OpenAiCompatibleCopil
         responseFormat: 'json_object',
         stage: 'planner',
       });
-      return planOutput(content, config.model, 'planner');
+      return planOutput(output, 'planner');
     },
 
     async repairAnalysisPlan(input) {
-      const content = await postChatCompletion(config, {
+      const output = await postChatCompletion(config, {
         messages: [
           { role: 'system', content: plannerSystemPrompt() },
           { role: 'user', content: serializeUserInput({ task: 'repair_analysis_plan', input }) },
@@ -95,18 +108,18 @@ export function createOpenAiCompatibleCopilotModel(config: OpenAiCompatibleCopil
         responseFormat: 'json_object',
         stage: 'planner_repair',
       });
-      return planOutput(content, config.model, 'planner_repair');
+      return planOutput(output, 'planner_repair');
     },
 
     async generateAnswer(input) {
-      const content = await postChatCompletion(config, {
+      const output = await postChatCompletion(config, {
         messages: [
           { role: 'system', content: answerSystemPrompt() },
           { role: 'user', content: serializeUserInput({ task: 'generate_answer', input }) },
         ],
         stage: 'answerer',
       });
-      return answerOutput(content, config.model);
+      return answerOutput(output);
     },
   };
 }
@@ -114,9 +127,10 @@ export function createOpenAiCompatibleCopilotModel(config: OpenAiCompatibleCopil
 async function postChatCompletion(
   config: OpenAiCompatibleCopilotModelConfig,
   request: { readonly messages: readonly ChatMessage[]; readonly responseFormat?: 'json_object'; readonly stage: CopilotProviderCallStage },
-): Promise<string> {
+): Promise<ChatCompletionOutput> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
+  const promptCharCount = request.messages.reduce((sum, message) => sum + message.content.length, 0);
   try {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`;
@@ -145,41 +159,54 @@ async function postChatCompletion(
     let raw: unknown;
     try {
       raw = await response.json();
-    } catch {
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw providerError(config, request.stage, 'provider_timeout', 'Copilot model provider timed out', response.status);
+      }
       throw providerError(config, request.stage, 'provider_invalid_response', 'Copilot model provider returned malformed JSON', response.status);
     }
-    return extractMessageContent(raw, config, request.stage);
+    const content = extractMessageContent(raw, config, request.stage);
+    return {
+      content,
+      metadata: {
+        provider: 'openai_compatible',
+        model: config.model,
+        promptCharCount,
+        responseCharCount: content.length,
+        ...usageMetadata(raw),
+      },
+    };
   } finally {
     clearTimeout(timeout);
   }
 }
 
-function decisionOutput(content: string, model: string, stage: Extract<CopilotProviderCallStage, 'orchestrator' | 'orchestrator_repair'>): GenerateConversationDecisionOutput {
+function decisionOutput(output: ChatCompletionOutput, stage: Extract<CopilotProviderCallStage, 'orchestrator' | 'orchestrator_repair'>): GenerateConversationDecisionOutput {
   try {
     return {
-      decision: JSON.parse(content),
-      metadata: { provider: 'openai_compatible', model },
+      decision: JSON.parse(output.content),
+      metadata: output.metadata,
     };
   } catch {
-    throw providerError({ model }, stage, 'provider_invalid_response', 'Copilot model provider returned invalid orchestrator JSON', null);
+    throw providerError({ model: output.metadata.model }, stage, 'provider_invalid_response', 'Copilot model provider returned invalid orchestrator JSON', null);
   }
 }
 
-function planOutput(content: string, model: string, stage: Extract<CopilotProviderCallStage, 'planner' | 'planner_repair'>): GenerateAnalysisPlanOutput {
+function planOutput(output: ChatCompletionOutput, stage: Extract<CopilotProviderCallStage, 'planner' | 'planner_repair'>): GenerateAnalysisPlanOutput {
   try {
     return {
-      plan: JSON.parse(content),
-      metadata: { provider: 'openai_compatible', model },
+      plan: JSON.parse(output.content),
+      metadata: output.metadata,
     };
   } catch (error) {
-    throw providerError({ model }, stage, 'provider_invalid_response', `Copilot model provider returned invalid planner JSON: ${errorMessage(error)}`, null);
+    throw providerError({ model: output.metadata.model }, stage, 'provider_invalid_response', `Copilot model provider returned invalid planner JSON: ${errorMessage(error)}`, null);
   }
 }
 
-function answerOutput(answer: string, model: string): GenerateAnswerOutput {
+function answerOutput(output: ChatCompletionOutput): GenerateAnswerOutput {
   return {
-    answer,
-    metadata: { provider: 'openai_compatible', model },
+    answer: output.content,
+    metadata: output.metadata,
   };
 }
 
@@ -202,6 +229,22 @@ function expectObject(value: unknown, message: string, config: Pick<OpenAiCompat
     throw providerError(config, stage, 'provider_invalid_response', message, null);
   }
   return value as Record<string, unknown>;
+}
+
+function usageMetadata(raw: unknown): { readonly promptTokens?: number; readonly completionTokens?: number; readonly totalTokens?: number } {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const usage = (raw as { readonly usage?: unknown }).usage;
+  if (usage === null || typeof usage !== 'object' || Array.isArray(usage)) return {};
+  return {
+    ...positiveIntegerField(usage, 'prompt_tokens', 'promptTokens'),
+    ...positiveIntegerField(usage, 'completion_tokens', 'completionTokens'),
+    ...positiveIntegerField(usage, 'total_tokens', 'totalTokens'),
+  };
+}
+
+function positiveIntegerField(source: unknown, sourceKey: string, targetKey: 'promptTokens' | 'completionTokens' | 'totalTokens'): Record<typeof targetKey, number> | Record<string, never> {
+  const value = (source as Record<string, unknown>)[sourceKey];
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? { [targetKey]: value } as Record<typeof targetKey, number> : {};
 }
 
 function orchestratorSystemPrompt(): string {

@@ -82,7 +82,12 @@ describe('http_json Customer Intelligence Copilot model adapter', () => {
       executions: [],
     });
     expect(result.answer).toBe('Respuesta grounded.');
-    expect(result.metadata).toEqual({ provider: 'test', model: 'answerer' });
+    expect(result.metadata).toEqual(expect.objectContaining({
+      provider: 'test',
+      model: 'answerer',
+      promptCharCount: expect.any(Number),
+      responseCharCount: expect.any(Number),
+    }));
   });
 
   it('throws on HTTP errors', async () => {
@@ -138,6 +143,28 @@ describe('http_json Customer Intelligence Copilot model adapter', () => {
     })).rejects.toMatchObject({
       category: 'provider_invalid_response',
       metadata: { provider: 'http_json', model: 'demo-model', stage: 'answerer' },
+    });
+  });
+
+  it('classifies aborted provider JSON parsing as provider_timeout', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new Error('aborted');
+      },
+    })) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', fetchMock);
+    const model = createHttpJsonCopilotModel(config);
+    await expect(model.generateAnalysisPlan({
+      question: 'q',
+      schema: { schemaVersion: CUSTOMER_INTELLIGENCE_QUERY_SCHEMA_VERSION, readModelVersion: 'r', fields: [] },
+      queryContract: serializeAnalyticalQueryContractForCopilot(),
+      plannerPromptVersion: 'p',
+      maxQueries: 3,
+    })).rejects.toMatchObject({
+      category: 'provider_timeout',
+      metadata: { provider: 'http_json', model: 'demo-model', stage: 'planner' },
     });
   });
 });

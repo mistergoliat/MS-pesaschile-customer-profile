@@ -145,6 +145,7 @@ function harness(opts: {
   repairPlan?: unknown;
   plannerError?: unknown;
   answerError?: unknown;
+  executeAnalyticalQuery?: ExecuteAnalyticalQueryWithResolvedContext;
   executionResults?: AnalyticalQueryResult[];
   exportResult?: AnalyticalQueryResult;
   limits?: Partial<CopilotSessionLimits>;
@@ -170,7 +171,7 @@ function harness(opts: {
   const resolveCurrent = vi.fn(async () => context);
   const resolveForFeatureSnapshot = vi.fn(async () => context);
   const executionResults = [...(opts.executionResults ?? [result([{ clusterId: 0, label: 'HIGH_VALUE', avgAov: '100.000000' }, { clusterId: 1, label: 'NEW', avgAov: '80.000000' }])])];
-  const executeAnalyticalQuery = vi.fn(async () => ({ status: 'ok', result: executionResults.shift() ?? result([{ customers: 1 }]) })) as unknown as ExecuteAnalyticalQueryWithResolvedContext;
+  const executeAnalyticalQuery = opts.executeAnalyticalQuery ?? vi.fn(async () => ({ status: 'ok', result: executionResults.shift() ?? result([{ customers: 1 }]) })) as unknown as ExecuteAnalyticalQueryWithResolvedContext;
   const executeAnalyticalQueryForExport = vi.fn(async () => ({ status: 'ok', result: opts.exportResult ?? result([{ clusterId: 0, label: 'HIGH_VALUE', avgAov: '100.000000' }]) })) as unknown as ExecuteAnalyticalQueryForExport;
   const store = createInMemoryCopilotSessionStore(limits);
   const diagnostics: CopilotOrchestratorDiagnostic[] = [];
@@ -206,6 +207,16 @@ function providerInvalidResponse(stage: string) {
     metadata: { provider: string; model: string; stage: string };
   };
   error.category = 'provider_invalid_response';
+  error.metadata = { provider: 'fake', model: stage, stage };
+  return error;
+}
+
+function providerTimeout(stage: string) {
+  const error = new Error('Copilot model provider timed out') as Error & {
+    category: string;
+    metadata: { provider: string; model: string; stage: string };
+  };
+  error.category = 'provider_timeout';
   error.metadata = { provider: 'fake', model: stage, stage };
   return error;
 }
@@ -260,23 +271,13 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
       'orchestrator',
       'planner',
       'analytics_execution',
-      'answerer',
       'turn',
     ]);
+    expect(h.generateAnswer).not.toHaveBeenCalled();
     expect(h.stageLatencyDiagnostics).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           event: 'customer_intelligence_copilot_stage_latency',
-          stage: 'answerer',
-          provider: 'fake',
-          model: 'answerer',
-          success: true,
-          failureStatus: null,
-          repairAttempted: false,
-          queryCount: 1,
-          analyticsExecutionDurationMs: 7,
-        }),
-        expect.objectContaining({
           stage: 'turn',
           provider: null,
           model: null,
@@ -284,6 +285,7 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
           failureStatus: null,
           queryCount: 1,
           analyticsExecutionDurationMs: 7,
+          executionMode: 'fast_path',
         }),
       ]),
     );
@@ -322,11 +324,41 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
     );
   });
 
+  it('logs planner provider timeouts with planner-specific diagnostics', async () => {
+    const h = harness({
+      decisions: [runAnalytics('Cuantos clientes hay en la poblacion actual de Customer Intelligence?')],
+      plannerError: providerTimeout('planner'),
+    });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Cuantos clientes hay?' });
+
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') expect(response.response.status).toBe('provider_timeout');
+    expect(h.stageLatencyDiagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage: 'planner',
+          success: false,
+          failureStatus: 'planner_provider_timeout',
+        }),
+        expect.objectContaining({
+          stage: 'turn',
+          success: false,
+          failureStatus: 'planner_provider_timeout',
+        }),
+      ]),
+    );
+  });
+
   it('logs answerer provider invalid responses with answerer-specific diagnostics', async () => {
     const h = harness({
       decisions: [runAnalytics('Cuantos clientes hay en la poblacion actual de Customer Intelligence?')],
-      plans: [queryPlan([{ id: 'customer_count', plan: { metrics: [{ aggregation: 'count', alias: 'customers' }] } }])],
-      executionResults: [result([{ customers: 10 }])],
+      plans: [queryPlan([
+        { id: 'customer_count', plan: { metrics: [{ aggregation: 'count', alias: 'customers' }] } },
+        { id: 'cluster_count', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'count', alias: 'customers' }] } },
+      ])],
+      executionResults: [result([{ customers: 10 }]), result([{ clusterId: 1, customers: 5 }], 'b'.repeat(64), ['clusterId', 'customers'])],
       answerError: providerInvalidResponse('answerer'),
     });
     const sessionId = await createSession(h);
@@ -343,18 +375,57 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
           model: 'answerer',
           success: false,
           failureStatus: 'answerer_provider_invalid_response',
-          queryCount: 1,
-          analyticsExecutionDurationMs: 7,
+          queryCount: 2,
+          analyticsExecutionDurationMs: 14,
         }),
         expect.objectContaining({
           stage: 'turn',
           success: false,
           failureStatus: 'answerer_provider_invalid_response',
-          queryCount: 1,
-          analyticsExecutionDurationMs: 7,
+          queryCount: 2,
+          analyticsExecutionDurationMs: 14,
         }),
       ]),
     );
+  });
+
+  it('executes independent multi-query plans concurrently with stable result order', async () => {
+    let started = 0;
+    let releaseQueries!: () => void;
+    let bothStarted!: () => void;
+    const releasePromise = new Promise<void>((resolve) => {
+      releaseQueries = resolve;
+    });
+    const bothStartedPromise = new Promise<void>((resolve) => {
+      bothStarted = resolve;
+    });
+    const executeAnalyticalQuery = vi.fn(async () => {
+      started += 1;
+      if (started === 2) bothStarted();
+      await releasePromise;
+      return { status: 'ok', result: started === 1 ? result([{ customers: 10 }], 'c'.repeat(64)) : result([{ clusterId: 1, customers: 5 }], 'd'.repeat(64), ['clusterId', 'customers']) };
+    }) as unknown as ExecuteAnalyticalQueryWithResolvedContext;
+    const h = harness({
+      decisions: [runAnalytics('Compare two facts.')],
+      plans: [queryPlan([
+        { id: 'customer_count', plan: { metrics: [{ aggregation: 'count', alias: 'customers' }] } },
+        { id: 'cluster_count', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'count', alias: 'customers' }] } },
+      ])],
+      executeAnalyticalQuery,
+    });
+    const sessionId = await createSession(h);
+
+    const turnPromise = h.service.processSessionTurn({ sessionId, question: 'Compara dos hechos.' });
+    await Promise.race([
+      bothStartedPromise,
+      new Promise((_resolve, reject) => setTimeout(() => reject(new Error('queries did not start concurrently')), 100)),
+    ]);
+    releaseQueries();
+    const response = await turnPromise;
+
+    expect(response.status).toBe('ok');
+    expect(executeAnalyticalQuery).toHaveBeenCalledTimes(2);
+    if (response.status === 'ok') expect(response.response.queryIds).toEqual(['customer_count', 'cluster_count']);
   });
 
   it('routes fresh cluster distribution counts to analytics', async () => {

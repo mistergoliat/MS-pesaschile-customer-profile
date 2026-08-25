@@ -32,6 +32,12 @@ type HttpJsonProviderCallStage =
   | 'planner_repair'
   | 'answerer';
 
+type HttpJsonProviderOutput = {
+  readonly raw: unknown;
+  readonly promptCharCount: number;
+  readonly responseCharCount: number;
+};
+
 class HttpJsonCopilotProviderError extends Error {
   constructor(
     readonly category: HttpJsonProviderErrorCategory,
@@ -97,16 +103,17 @@ export function createHttpJsonCopilotModel(config: HttpJsonCopilotModelConfig): 
   };
 }
 
-async function postJson(config: HttpJsonCopilotModelConfig, body: unknown, stage: HttpJsonProviderCallStage): Promise<unknown> {
+async function postJson(config: HttpJsonCopilotModelConfig, body: unknown, stage: HttpJsonProviderCallStage): Promise<HttpJsonProviderOutput> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
+  const requestBody = JSON.stringify(body);
   try {
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (config.apiKey) headers.authorization = `Bearer ${config.apiKey}`;
     const response = await fetch(config.endpoint, {
       method: 'POST',
       headers,
-      body: JSON.stringify(body),
+      body: requestBody,
       signal: controller.signal,
     }).catch((error: unknown) => {
       if (isAbortError(error)) {
@@ -118,8 +125,12 @@ async function postJson(config: HttpJsonCopilotModelConfig, body: unknown, stage
       throw providerError(config, stage, categoryForHttpStatus(response.status), `Copilot model provider returned HTTP ${response.status}`, response.status);
     }
     try {
-      return await response.json();
-    } catch {
+      const raw = await response.json();
+      return { raw, promptCharCount: requestBody.length, responseCharCount: (JSON.stringify(raw) ?? '').length };
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw providerError(config, stage, 'provider_timeout', 'Copilot model provider timed out', response.status);
+      }
       throw providerError(config, stage, 'provider_invalid_response', 'Copilot model provider returned malformed JSON', response.status);
     }
   } finally {
@@ -127,31 +138,31 @@ async function postJson(config: HttpJsonCopilotModelConfig, body: unknown, stage
   }
 }
 
-function decisionOutput(raw: unknown, fallbackModel: string, stage: Extract<HttpJsonProviderCallStage, 'orchestrator' | 'orchestrator_repair'>): GenerateConversationDecisionOutput {
-  const obj = expectObject(raw, fallbackModel, stage);
+function decisionOutput(output: HttpJsonProviderOutput, fallbackModel: string, stage: Extract<HttpJsonProviderCallStage, 'orchestrator' | 'orchestrator_repair'>): GenerateConversationDecisionOutput {
+  const obj = expectObject(output.raw, fallbackModel, stage);
   return {
     decision: obj.decision ?? obj.output ?? obj,
-    metadata: { provider: String(obj.provider ?? 'http_json'), model: String(obj.model ?? fallbackModel) },
+    metadata: metadataFromObject(obj, fallbackModel, output),
   };
 }
 
-function planOutput(raw: unknown, fallbackModel: string, stage: Extract<HttpJsonProviderCallStage, 'planner' | 'planner_repair'>): GenerateAnalysisPlanOutput {
-  const obj = expectObject(raw, fallbackModel, stage);
+function planOutput(output: HttpJsonProviderOutput, fallbackModel: string, stage: Extract<HttpJsonProviderCallStage, 'planner' | 'planner_repair'>): GenerateAnalysisPlanOutput {
+  const obj = expectObject(output.raw, fallbackModel, stage);
   return {
     plan: obj.plan ?? obj.output ?? obj,
-    metadata: { provider: String(obj.provider ?? 'http_json'), model: String(obj.model ?? fallbackModel) },
+    metadata: metadataFromObject(obj, fallbackModel, output),
   };
 }
 
-function answerOutput(raw: unknown, fallbackModel: string, stage: Extract<HttpJsonProviderCallStage, 'answerer'>): GenerateAnswerOutput {
-  const obj = expectObject(raw, fallbackModel, stage);
+function answerOutput(output: HttpJsonProviderOutput, fallbackModel: string, stage: Extract<HttpJsonProviderCallStage, 'answerer'>): GenerateAnswerOutput {
+  const obj = expectObject(output.raw, fallbackModel, stage);
   const answer = obj.answer ?? obj.output;
   if (typeof answer !== 'string' || answer.trim().length === 0) {
     throw providerError({ model: String(obj.model ?? fallbackModel) }, stage, 'provider_invalid_response', 'Copilot model provider did not return a non-empty answer', null, String(obj.provider ?? 'http_json'));
   }
   return {
     answer,
-    metadata: { provider: String(obj.provider ?? 'http_json'), model: String(obj.model ?? fallbackModel) },
+    metadata: metadataFromObject(obj, fallbackModel, output),
   };
 }
 
@@ -160,6 +171,32 @@ function expectObject(value: unknown, fallbackModel: string, stage: HttpJsonProv
     throw providerError({ model: fallbackModel }, stage, 'provider_invalid_response', 'Copilot model provider returned a non-object response', null);
   }
   return value as Record<string, unknown>;
+}
+
+function metadataFromObject(obj: Record<string, unknown>, fallbackModel: string, output: HttpJsonProviderOutput) {
+  return {
+    provider: String(obj.provider ?? 'http_json'),
+    model: String(obj.model ?? fallbackModel),
+    promptCharCount: output.promptCharCount,
+    responseCharCount: output.responseCharCount,
+    ...usageMetadata(obj),
+  };
+}
+
+function usageMetadata(raw: unknown): { readonly promptTokens?: number; readonly completionTokens?: number; readonly totalTokens?: number } {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const usage = (raw as { readonly usage?: unknown }).usage;
+  if (usage === null || typeof usage !== 'object' || Array.isArray(usage)) return {};
+  return {
+    ...positiveIntegerField(usage, 'prompt_tokens', 'promptTokens'),
+    ...positiveIntegerField(usage, 'completion_tokens', 'completionTokens'),
+    ...positiveIntegerField(usage, 'total_tokens', 'totalTokens'),
+  };
+}
+
+function positiveIntegerField(source: unknown, sourceKey: string, targetKey: 'promptTokens' | 'completionTokens' | 'totalTokens'): Record<typeof targetKey, number> | Record<string, never> {
+  const value = (source as Record<string, unknown>)[sourceKey];
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? { [targetKey]: value } as Record<typeof targetKey, number> : {};
 }
 
 function categoryForHttpStatus(status: number): HttpJsonProviderErrorCategory {

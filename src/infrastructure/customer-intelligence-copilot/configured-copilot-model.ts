@@ -28,19 +28,31 @@ export function createConfiguredCustomerIntelligenceCopilotModel(env: NodeJS.Pro
     return { status: 'not_configured', reason: 'CUSTOMER_INTELLIGENCE_COPILOT_TIMEOUT_MS must be a positive integer' };
   }
 
-  const model =
+  const orchestratorModelName = env.CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_MODEL ?? modelName;
+  const plannerModelName = env.CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_MODEL ?? modelName;
+  const answererModelName = env.CUSTOMER_INTELLIGENCE_COPILOT_ANSWERER_MODEL ?? modelName;
+  const createModel = (stageModelName: string): CustomerIntelligenceCopilotModel =>
     provider === 'openai_compatible'
       ? createOpenAiCompatibleCopilotModel({
           endpoint,
           apiKey: env.CUSTOMER_INTELLIGENCE_COPILOT_API_KEY ?? null,
-          model: modelName,
+          model: stageModelName,
           timeoutMs,
         })
       : createHttpJsonCopilotModel({
           endpoint,
           apiKey: env.CUSTOMER_INTELLIGENCE_COPILOT_API_KEY ?? null,
-          model: modelName,
+          model: stageModelName,
           timeoutMs,
+        });
+
+  const model =
+    orchestratorModelName === modelName && plannerModelName === modelName && answererModelName === modelName
+      ? createModel(modelName)
+      : createStageRoutedModel({
+          orchestrator: createModel(orchestratorModelName),
+          planner: createModel(plannerModelName),
+          answerer: createModel(answererModelName),
         });
 
   return {
@@ -48,5 +60,19 @@ export function createConfiguredCustomerIntelligenceCopilotModel(env: NodeJS.Pro
     provider,
     modelName,
     model,
+  };
+}
+
+function createStageRoutedModel(models: {
+  readonly orchestrator: CustomerIntelligenceCopilotModel;
+  readonly planner: CustomerIntelligenceCopilotModel;
+  readonly answerer: CustomerIntelligenceCopilotModel;
+}): CustomerIntelligenceCopilotModel {
+  return {
+    generateConversationDecision: (input) => models.orchestrator.generateConversationDecision(input),
+    repairConversationDecision: (input) => models.orchestrator.repairConversationDecision(input),
+    generateAnalysisPlan: (input) => models.planner.generateAnalysisPlan(input),
+    repairAnalysisPlan: (input) => models.planner.repairAnalysisPlan(input),
+    generateAnswer: (input) => models.answerer.generateAnswer(input),
   };
 }

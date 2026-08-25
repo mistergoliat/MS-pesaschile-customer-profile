@@ -284,6 +284,113 @@ Result: PASS, 4 files, 46 tests.
 
 Live validation: NOT_RUN.
 
+## T05.6 Copilot Latency Optimization and Model Benchmarking
+
+Live baseline:
+
+- Simple analytical question, `Cual cluster tiene mayor ticket promedio?`: orchestrator about
+  4.3s, planner about 10.0s, analytics about 0.06s, answerer about 15.1s, total about 29.5s.
+- Complex follow-up, `Por que?`: orchestrator about 6.7s, planner about 30.0s, total about
+  36.8s, with planner failing at the configured provider timeout.
+- More than 99% of the observed latency is model/provider inference, not deterministic analytical
+  query execution.
+
+Timeout classification:
+
+- The OpenAI-compatible and `http_json` adapters already classified fetch aborts as
+  `provider_timeout`, but an abort raised while parsing the provider transport JSON envelope could
+  be caught as malformed JSON.
+- Transport JSON parse now checks abort errors and preserves `provider_timeout` instead of
+  `provider_invalid_response`.
+- Stage-aware internal diagnostics now classify timeouts as
+  `orchestrator_provider_timeout`, `planner_provider_timeout`, or `answerer_provider_timeout`.
+- Public response statuses remain compatible (`provider_timeout`, `provider_invalid_response`,
+  `provider_network_error`, `provider_rate_limited`, `provider_authentication_error`,
+  `provider_billing_error`).
+
+Latency optimizations:
+
+- Independent multi-query analytical plans now execute concurrently with a bounded cap equal to the
+  existing max query budget (`CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES`, currently 3).
+- Result ordering remains deterministic because query results are reassembled in validated plan
+  order.
+- Per-query provenance, stable query ids, validation failure handling and persisted result retention
+  are preserved.
+- Simple single-query aggregate answers can use an internal deterministic renderer and skip the
+  answerer LLM. Detection is based on the validated plan and result shape, not hardcoded user
+  phrases.
+- Supported deterministic render cases include total customer count, simple grouped counts and
+  top-1 grouped metric rankings such as highest average ticket by cluster.
+- Deep/exploratory multi-query analysis still uses answerer synthesis to preserve semantic and
+  epistemic quality.
+
+Prompt and context reduction:
+
+- Planner prompt version incremented to `customer-intelligence-copilot-planner-v4`.
+- Redundant textual examples were replaced with a pointer to the existing machine-readable
+  `queryContract` examples, keeping the strict contract while reducing repeated planner context.
+- T05.3 query contract validation and T05.4 semantic follow-up behavior remain covered by focused
+  tests.
+
+Observability:
+
+- `customer_intelligence_copilot_stage_latency` now supports optional `promptCharCount`,
+  `responseCharCount`, `promptTokens`, `completionTokens`, `totalTokens`, and `executionMode`.
+- `executionMode` is one of `fast_path`, `simple_analysis`, or `deep_analysis`.
+- Provider usage metadata is captured when the provider response exposes it.
+- If token usage is unavailable, adapters capture bounded serialized request/response character
+  counts.
+- Diagnostics still do not include prompts, raw provider payloads, SQL, credentials, result rows,
+  PII or chain-of-thought.
+
+Model configuration:
+
+- `CUSTOMER_INTELLIGENCE_COPILOT_MODEL` remains the default model selector.
+- Optional stage-specific overrides are supported:
+  `CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_MODEL`,
+  `CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_MODEL`, and
+  `CUSTOMER_INTELLIGENCE_COPILOT_ANSWERER_MODEL`.
+- Provider abstraction stays generic; no DeepSeek-specific branch was added to domain or
+  application logic.
+
+Benchmark harness:
+
+- Added `npm run intelligence:copilot:benchmark`.
+- Default benchmark model list is `deepseek-v4-flash,deepseek-v4-pro`, overrideable with
+  `--models=` or `CUSTOMER_INTELLIGENCE_COPILOT_BENCHMARK_MODELS`.
+- Runs default to 3, overrideable with `--runs=` or
+  `CUSTOMER_INTELLIGENCE_COPILOT_BENCHMARK_RUNS`.
+- Scenarios cover simple fact, simple grouped ranking, contextual deep follow-up, clarification
+  continuation, exploratory analysis, commercial recommendation and profitability limitation.
+- Output records include model, scenario id, run, stage latencies, total latency, query count,
+  repair count, status, timeout stage, invalid-response stage and semantic pass/fail.
+- Aggregate reporting includes mean, p50, p95 when sample size allows, min, max, timeout count,
+  invalid-response count, success rate and semantic pass rate.
+
+Example:
+
+`npm run intelligence:copilot:benchmark -- --models=deepseek-v4-flash,deepseek-v4-pro --runs=3`
+
+Flash vs Pro benchmark result: NOT_RUN locally in this task because it requires configured provider
+credentials and an analytics DB. No production model switch was made without controlled benchmark
+evidence.
+
+Remaining debt:
+
+- Orchestrator and planner were not merged into a single structured reasoning/planning call in
+  T05.6; that remains higher-risk and should be decided using benchmark evidence.
+- Simple fast path still needs the orchestrator/planner route unless a later deterministic intent
+  layer or merged plan envelope is introduced.
+- Live EC2 validation and Flash/Pro comparison remain pending.
+
+Local focused validation:
+
+`npm test -- --run tests/unit/openai-compatible-copilot-model.test.ts tests/unit/http-json-copilot-model.test.ts tests/unit/customer-intelligence-copilot-session.test.ts tests/unit/customer-intelligence-copilot-semantic-benchmark.test.ts tests/unit/customer-intelligence-copilot-benchmark.test.ts tests/unit/customer-intelligence-query-planner-contract.test.ts tests/unit/customer-intelligence-query-validator.test.ts`
+
+Result: PASS, 7 files, 131 tests.
+
+Live validation: NOT_RUN.
+
 ## T05.5 Answer Generation Reliability and Latency Observability
 
 Live symptom: in a fresh T05.4 session, `Cual cluster tiene mayor ticket promedio?` completed

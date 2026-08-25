@@ -12,6 +12,11 @@ import type {
 export type CopilotModelMetadata = {
   readonly provider: string;
   readonly model: string;
+  readonly promptCharCount?: number;
+  readonly responseCharCount?: number;
+  readonly promptTokens?: number;
+  readonly completionTokens?: number;
+  readonly totalTokens?: number;
 };
 
 export type GenerateAnalysisPlanInput = {

@@ -39,6 +39,13 @@ function chatResponse(content: string) {
   };
 }
 
+function chatResponseWithUsage(content: string) {
+  return {
+    ...chatResponse(content),
+    usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 },
+  };
+}
+
 function mockFetchJson(body: unknown, ok = true, status = 200) {
   const fetchMock = vi.fn(async () => ({
     ok,
@@ -108,7 +115,15 @@ describe('openai_compatible Customer Intelligence Copilot model adapter', () => 
 
     const result = await model.generateAnalysisPlan(plannerInput());
 
-    expect(result).toEqual({ plan, metadata: { provider: 'openai_compatible', model: 'vendor-model' } });
+    expect(result).toEqual({
+      plan,
+      metadata: expect.objectContaining({
+        provider: 'openai_compatible',
+        model: 'vendor-model',
+        promptCharCount: expect.any(Number),
+        responseCharCount: expect.any(Number),
+      }),
+    });
     const { url, init, payload } = firstPayload(fetchMock);
     expect(url).toBe(config.endpoint);
     expect(init.headers).toMatchObject({ Authorization: 'Bearer secret' });
@@ -157,14 +172,22 @@ describe('openai_compatible Customer Intelligence Copilot model adapter', () => 
   });
 
   it('extracts answer content and returns fixed provider metadata', async () => {
-    mockFetchJson(chatResponse('Respuesta grounded.'));
+    mockFetchJson(chatResponseWithUsage('Respuesta grounded.'));
     const model = createOpenAiCompatibleCopilotModel(config);
 
     const result = await model.generateAnswer(answerInput());
 
     expect(result).toEqual({
       answer: 'Respuesta grounded.',
-      metadata: { provider: 'openai_compatible', model: 'vendor-model' },
+      metadata: expect.objectContaining({
+        provider: 'openai_compatible',
+        model: 'vendor-model',
+        promptCharCount: expect.any(Number),
+        responseCharCount: 19,
+        promptTokens: 11,
+        completionTokens: 7,
+        totalTokens: 18,
+      }),
     });
   });
 
@@ -244,6 +267,23 @@ describe('openai_compatible Customer Intelligence Copilot model adapter', () => 
     });
   });
 
+  it('classifies aborted provider JSON parsing as provider_timeout', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new Error('aborted');
+      },
+    })) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', fetchMock);
+    const model = createOpenAiCompatibleCopilotModel(config);
+
+    await expect(model.generateAnalysisPlan(plannerInput())).rejects.toMatchObject({
+      category: 'provider_timeout',
+      metadata: { provider: 'openai_compatible', model: 'vendor-model', stage: 'planner' },
+    });
+  });
+
   it('aborts requests after the configured timeout', async () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn((_url: string, init: RequestInit) => {
@@ -289,6 +329,24 @@ describe('configured Customer Intelligence Copilot model provider selection', ()
     expect(await result.model.generateAnswer(answerInput())).toMatchObject({
       metadata: { provider: 'openai_compatible', model: config.model },
     });
+  });
+
+  it('routes configured stage-specific model overrides without changing provider abstraction', async () => {
+    const fetchMock = mockFetchJson(chatResponse('Respuesta.'));
+    const result = createConfiguredCustomerIntelligenceCopilotModel({
+      CUSTOMER_INTELLIGENCE_COPILOT_PROVIDER: 'openai_compatible',
+      CUSTOMER_INTELLIGENCE_COPILOT_ENDPOINT: config.endpoint,
+      CUSTOMER_INTELLIGENCE_COPILOT_MODEL: 'deepseek-v4-flash',
+      CUSTOMER_INTELLIGENCE_COPILOT_ANSWERER_MODEL: 'deepseek-v4-pro',
+      CUSTOMER_INTELLIGENCE_COPILOT_TIMEOUT_MS: String(config.timeoutMs),
+    });
+
+    expect(result.status).toBe('configured');
+    if (result.status !== 'configured') throw new Error('expected configured provider');
+    await result.model.generateAnswer(answerInput());
+
+    const { payload } = firstPayload(fetchMock);
+    expect(payload.model).toBe('deepseek-v4-pro');
   });
 
   it('fails closed for unknown providers', () => {
