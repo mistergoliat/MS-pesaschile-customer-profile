@@ -5,6 +5,7 @@ import {
   CUSTOMER_INTELLIGENCE_COPILOT_PLAN_REPAIR_ATTEMPTS,
   CUSTOMER_INTELLIGENCE_COPILOT_ANSWER_PROMPT_VERSION,
   CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_PROMPT_VERSION,
+  serializeAnalyticalQueryContractForCopilot,
   serializeAnalyticalSchemaForCopilot,
   validateCopilotAnalysisPlan,
   type CopilotAnalysisPlan,
@@ -47,9 +48,11 @@ export function createAnswerCustomerIntelligenceQuestion(deps: {
     }
 
     const schema = serializeAnalyticalSchemaForCopilot(deps.getAnalyticalSchema());
+    const queryContract = serializeAnalyticalQueryContractForCopilot();
     const plannerOutput = await deps.model.generateAnalysisPlan({
       question,
       schema,
+      queryContract,
       plannerPromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_PROMPT_VERSION,
       maxQueries: CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES,
     });
@@ -59,6 +62,7 @@ export function createAnswerCustomerIntelligenceQuestion(deps: {
       plannerMetadata: plannerOutput.metadata,
       question,
       schema,
+      queryContract,
       model: deps.model,
     });
     if (planning.status !== 'query_plan') {
@@ -129,6 +133,7 @@ async function validateOrRepairPlan(args: {
   readonly plannerMetadata: CopilotModelMetadata | null;
   readonly question: string;
   readonly schema: ReturnType<typeof serializeAnalyticalSchemaForCopilot>;
+  readonly queryContract: ReturnType<typeof serializeAnalyticalQueryContractForCopilot>;
   readonly model: CustomerIntelligenceCopilotModel;
 }): Promise<
   | { readonly status: 'query_plan'; readonly steps: readonly ValidatedStep[]; readonly plannerMetadata: CopilotModelMetadata | null }
@@ -151,6 +156,7 @@ async function validateOrRepairPlan(args: {
     const repairOutput = await args.model.repairAnalysisPlan({
       question: args.question,
       schema: args.schema,
+      queryContract: args.queryContract,
       plannerPromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_PROMPT_VERSION,
       maxQueries: CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES,
       previousPlan: args.rawPlan,

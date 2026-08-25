@@ -22,6 +22,8 @@ export type AnalyticalFilterOperator = (typeof ANALYTICAL_FILTER_OPERATORS)[numb
 export const ANALYTICAL_AGGREGATIONS = ['count', 'count_distinct', 'sum', 'avg', 'min', 'max'] as const;
 export type AnalyticalAggregation = (typeof ANALYTICAL_AGGREGATIONS)[number];
 
+export const ANALYTICAL_METRIC_ALIAS_PATTERN = '^[A-Za-z_][A-Za-z0-9_]*$';
+
 export const ANALYTICAL_FIELD_DATA_TYPES = ['integer', 'decimal', 'string', 'datetime'] as const;
 export type AnalyticalFieldDataType = (typeof ANALYTICAL_FIELD_DATA_TYPES)[number];
 

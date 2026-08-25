@@ -2,6 +2,7 @@ import type { AnalyticalQueryPlan, AnalyticalQueryResult, AnalyticalSchema } fro
 import type { CustomerIntelligenceSnapshotContext } from '../../domain/customer-intelligence/index.js';
 import type {
   CompactAnalyticalSchema,
+  CompactAnalyticalQueryContract,
   CopilotAnalysisPlan,
   CopilotConversationDecisionActionConstraints,
   CopilotConversationDecision,
@@ -16,6 +17,7 @@ export type CopilotModelMetadata = {
 export type GenerateAnalysisPlanInput = {
   readonly question: string;
   readonly schema: CompactAnalyticalSchema;
+  readonly queryContract: CompactAnalyticalQueryContract;
   readonly plannerPromptVersion: string;
   readonly maxQueries: number;
   readonly sessionContext?: CopilotSessionContext;

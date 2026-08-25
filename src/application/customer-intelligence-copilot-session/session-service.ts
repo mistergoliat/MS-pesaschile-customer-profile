@@ -11,6 +11,7 @@ import {
   CUSTOMER_INTELLIGENCE_COPILOT_ANSWER_PROMPT_VERSION,
   CUSTOMER_INTELLIGENCE_COPILOT_SESSION_VERSION,
   asksForFreshBusinessFact,
+  serializeAnalyticalQueryContractForCopilot,
   serializeAnalyticalSchemaForCopilot,
   validateCopilotAnalysisPlan,
   validateCopilotConversationDecision,
@@ -103,6 +104,17 @@ export type CopilotOrchestratorDiagnostic = {
   readonly availableSourceQueryIdCount: number;
 };
 
+export type CopilotPlannerDiagnostic = {
+  readonly event: 'customer_intelligence_copilot_planner_validation';
+  readonly initialStatus: string | null;
+  readonly selectedStatus: string | null;
+  readonly validationErrors: readonly string[];
+  readonly validationErrorCategories: readonly string[];
+  readonly repairAttempted: boolean;
+  readonly repairSucceeded: boolean;
+  readonly queryStepIds: readonly string[];
+};
+
 export function createCustomerIntelligenceCopilotSessionService(deps: {
   readonly getAnalyticalSchema: AnalyticalSchemaProvider;
   readonly resolveCurrent: ResolveCurrentCustomerIntelligenceContext;
@@ -114,6 +126,7 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
   readonly clock: Clock;
   readonly limits: CopilotSessionLimits;
   readonly onOrchestratorDiagnostic?: (diagnostic: CopilotOrchestratorDiagnostic) => void;
+  readonly onPlannerDiagnostic?: (diagnostic: CopilotPlannerDiagnostic) => void;
 }): CustomerIntelligenceCopilotSessionService {
   async function resolvePinnedContext(featureSnapshotId?: string | null): Promise<Extract<ResolveCustomerIntelligenceContextResult, { status: 'available' }> | AnalyticsUnavailableResponse> {
     const contextResult = featureSnapshotId ? await deps.resolveForFeatureSnapshot(featureSnapshotId) : await deps.resolveCurrent();
@@ -236,10 +249,12 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
       }
 
       const schema = serializeAnalyticalSchemaForCopilot(deps.getAnalyticalSchema());
+      const queryContract = serializeAnalyticalQueryContractForCopilot();
       const analyticalQuestion = decisionResult.decision.analyticalQuestion;
       const plannerOutput = await deps.model.generateAnalysisPlan({
         question: analyticalQuestion,
         schema,
+        queryContract,
         plannerPromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_PROMPT_VERSION,
         maxQueries: CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES,
         sessionContext,
@@ -249,8 +264,10 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
         plannerMetadata: plannerOutput.metadata,
         question: analyticalQuestion,
         schema,
+        queryContract,
         sessionContext,
         model: deps.model,
+        onDiagnostic: deps.onPlannerDiagnostic,
       });
 
       if (planning.status === 'terminal') {
@@ -414,8 +431,10 @@ async function validateOrRepairPlan(args: {
   readonly plannerMetadata: CopilotModelMetadata | null;
   readonly question: string;
   readonly schema: ReturnType<typeof serializeAnalyticalSchemaForCopilot>;
+  readonly queryContract: ReturnType<typeof serializeAnalyticalQueryContractForCopilot>;
   readonly sessionContext: ReturnType<typeof buildCopilotSessionContext>;
   readonly model: CustomerIntelligenceCopilotModel;
+  readonly onDiagnostic?: (diagnostic: CopilotPlannerDiagnostic) => void;
 }): Promise<
   | { readonly status: 'query_plan'; readonly steps: readonly ValidatedStep[]; readonly plannerMetadata: CopilotModelMetadata | null }
   | { readonly status: 'answer_from_context'; readonly sourceQueryIds: readonly string[]; readonly plannerMetadata: CopilotModelMetadata | null }
@@ -423,6 +442,14 @@ async function validateOrRepairPlan(args: {
 > {
   const first = validatePlanEnvelopeAndQueries(args.rawPlan);
   if (first.ok) {
+    emitPlannerDiagnostic(args.onDiagnostic, {
+      initialPlan: args.rawPlan,
+      selectedPlan: first.plan,
+      validationErrors: [],
+      repairAttempted: false,
+      repairSucceeded: false,
+      queryStepIds: first.steps.map((step) => step.id),
+    });
     if (first.plan.status === 'query_plan') return { status: 'query_plan', steps: first.steps, plannerMetadata: args.plannerMetadata };
     if (first.plan.status === 'answer_from_context') return { status: 'answer_from_context', sourceQueryIds: first.plan.sourceQueryIds, plannerMetadata: args.plannerMetadata };
     return { status: 'terminal', response: terminal(first.plan.status, first.plan.message) };
@@ -432,6 +459,7 @@ async function validateOrRepairPlan(args: {
     const repairOutput = await args.model.repairAnalysisPlan({
       question: args.question,
       schema: args.schema,
+      queryContract: args.queryContract,
       plannerPromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_PROMPT_VERSION,
       maxQueries: CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES,
       sessionContext: args.sessionContext,
@@ -440,12 +468,37 @@ async function validateOrRepairPlan(args: {
     });
     const validation = validatePlanEnvelopeAndQueries(repairOutput.plan);
     if (validation.ok) {
+      emitPlannerDiagnostic(args.onDiagnostic, {
+        initialPlan: args.rawPlan,
+        selectedPlan: validation.plan,
+        validationErrors: first.errors,
+        repairAttempted: true,
+        repairSucceeded: true,
+        queryStepIds: validation.steps.map((step) => step.id),
+      });
       if (validation.plan.status === 'query_plan') return { status: 'query_plan', steps: validation.steps, plannerMetadata: repairOutput.metadata };
       if (validation.plan.status === 'answer_from_context') return { status: 'answer_from_context', sourceQueryIds: validation.plan.sourceQueryIds, plannerMetadata: repairOutput.metadata };
       return { status: 'terminal', response: terminal(validation.plan.status, validation.plan.message) };
     }
-    return { status: 'terminal', response: plannerInvalid([...first.errors, ...validation.errors]) };
+    const validationErrors = [...first.errors, ...validation.errors];
+    emitPlannerDiagnostic(args.onDiagnostic, {
+      initialPlan: args.rawPlan,
+      selectedPlan: null,
+      validationErrors,
+      repairAttempted: true,
+      repairSucceeded: false,
+      queryStepIds: [],
+    });
+    return { status: 'terminal', response: plannerInvalid(validationErrors) };
   }
+  emitPlannerDiagnostic(args.onDiagnostic, {
+    initialPlan: args.rawPlan,
+    selectedPlan: null,
+    validationErrors: first.errors,
+    repairAttempted: false,
+    repairSucceeded: false,
+    queryStepIds: [],
+  });
   return { status: 'terminal', response: plannerInvalid(first.errors) };
 }
 
@@ -712,6 +765,49 @@ function validatePlanEnvelopeAndQueries(rawPlan: unknown):
     else steps.push({ id: query.id, plan: validation.plan.canonical });
   }
   return errors.length === 0 ? { ok: true, plan: envelope.plan, steps } : { ok: false, errors };
+}
+
+function emitPlannerDiagnostic(
+  onDiagnostic: ((diagnostic: CopilotPlannerDiagnostic) => void) | undefined,
+  args: {
+    readonly initialPlan: unknown;
+    readonly selectedPlan: CopilotAnalysisPlan | null;
+    readonly validationErrors: readonly string[];
+    readonly repairAttempted: boolean;
+    readonly repairSucceeded: boolean;
+    readonly queryStepIds: readonly string[];
+  },
+): void {
+  onDiagnostic?.({
+    event: 'customer_intelligence_copilot_planner_validation',
+    initialStatus: statusFromUnknown(args.initialPlan),
+    selectedStatus: args.selectedPlan?.status ?? null,
+    validationErrors: args.validationErrors,
+    validationErrorCategories: [...new Set(args.validationErrors.map(plannerValidationErrorCategory))],
+    repairAttempted: args.repairAttempted,
+    repairSucceeded: args.repairSucceeded,
+    queryStepIds: args.queryStepIds,
+  });
+}
+
+function statusFromUnknown(value: unknown): string | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const status = (value as Record<string, unknown>).status;
+  return typeof status === 'string' ? status : null;
+}
+
+function plannerValidationErrorCategory(error: string): string {
+  if (/plan must specify either "select".*or "metrics"/.test(error)) return 'missing_query_mode';
+  if (/alias matching/.test(error)) return 'invalid_metric_alias';
+  if (/cannot mix row-mode "select" with aggregate-mode "metrics"/.test(error)) return 'mixed_query_modes';
+  if (/requires a string field/.test(error)) return 'missing_metric_field';
+  if (/unsupported aggregation/.test(error)) return 'unsupported_aggregation';
+  if (/unknown field/.test(error)) return 'unknown_field';
+  if (/invalid orderBy field/.test(error)) return 'invalid_order_by';
+  if (/requires a structured AnalyticalQueryPlan/.test(error)) return 'malformed_query_plan';
+  if (/query_plan requires at least one query/.test(error)) return 'missing_queries';
+  if (/unsupported planVersion/.test(error)) return 'unsupported_version';
+  return 'other_validation_error';
 }
 
 function answered(

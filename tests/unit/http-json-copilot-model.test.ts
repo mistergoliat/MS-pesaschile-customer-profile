@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { serializeAnalyticalQueryContractForCopilot } from '../../src/domain/customer-intelligence-copilot/index.js';
 import { CUSTOMER_INTELLIGENCE_QUERY_SCHEMA_VERSION } from '../../src/domain/customer-intelligence-query/contracts.js';
 import { createHttpJsonCopilotModel } from '../../src/infrastructure/customer-intelligence-copilot/index.js';
 
@@ -31,6 +32,7 @@ describe('http_json Customer Intelligence Copilot model adapter', () => {
     const result = await model.generateAnalysisPlan({
       question: 'Cuantos clientes hay?',
       schema: { schemaVersion: CUSTOMER_INTELLIGENCE_QUERY_SCHEMA_VERSION, readModelVersion: 'r', fields: [] },
+      queryContract: serializeAnalyticalQueryContractForCopilot(),
       plannerPromptVersion: 'planner-v1',
       maxQueries: 3,
     });
@@ -43,6 +45,7 @@ describe('http_json Customer Intelligence Copilot model adapter', () => {
     expect(payload.task).toBe('generate_analysis_plan');
     expect(payload.model).toBe('demo-model');
     expect(payload.instructions).toEqual(expect.arrayContaining([expect.stringMatching(/Never SQL|never SQL/i)]));
+    expect(payload.input.queryContract.metricSchema.alias.pattern).toBe('^[A-Za-z_][A-Za-z0-9_]*$');
   });
 
   it('serializes repair requests', async () => {
@@ -51,6 +54,7 @@ describe('http_json Customer Intelligence Copilot model adapter', () => {
     await model.repairAnalysisPlan({
       question: 'q',
       schema: { schemaVersion: CUSTOMER_INTELLIGENCE_QUERY_SCHEMA_VERSION, readModelVersion: 'r', fields: [] },
+      queryContract: serializeAnalyticalQueryContractForCopilot(),
       plannerPromptVersion: 'planner-v1',
       maxQueries: 3,
       previousPlan: { bad: true },
@@ -59,6 +63,7 @@ describe('http_json Customer Intelligence Copilot model adapter', () => {
     const payload = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body));
     expect(payload.task).toBe('repair_analysis_plan');
     expect(payload.input.validationErrors).toEqual(['bad']);
+    expect(payload.input.queryContract.modes.row.forbidden).toEqual(['metrics']);
   });
 
   it('parses answer responses', async () => {
@@ -83,7 +88,7 @@ describe('http_json Customer Intelligence Copilot model adapter', () => {
   it('throws on HTTP errors', async () => {
     mockFetchJson({ error: 'bad' }, false, 500);
     const model = createHttpJsonCopilotModel(config);
-    await expect(model.generateAnalysisPlan({ question: 'q', schema: { schemaVersion: CUSTOMER_INTELLIGENCE_QUERY_SCHEMA_VERSION, readModelVersion: 'r', fields: [] }, plannerPromptVersion: 'p', maxQueries: 3 })).rejects.toThrow(/HTTP 500/);
+    await expect(model.generateAnalysisPlan({ question: 'q', schema: { schemaVersion: CUSTOMER_INTELLIGENCE_QUERY_SCHEMA_VERSION, readModelVersion: 'r', fields: [] }, queryContract: serializeAnalyticalQueryContractForCopilot(), plannerPromptVersion: 'p', maxQueries: 3 })).rejects.toThrow(/HTTP 500/);
   });
 
   it('throws on malformed answer responses', async () => {

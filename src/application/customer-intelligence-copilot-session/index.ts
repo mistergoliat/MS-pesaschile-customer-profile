@@ -5,5 +5,6 @@ export { buildCopilotXlsxExport, createCopilotExportFilename } from './xlsx-expo
 export {
   createCustomerIntelligenceCopilotSessionService,
   type CopilotOrchestratorDiagnostic,
+  type CopilotPlannerDiagnostic,
   type CustomerIntelligenceCopilotSessionService,
 } from './session-service.js';

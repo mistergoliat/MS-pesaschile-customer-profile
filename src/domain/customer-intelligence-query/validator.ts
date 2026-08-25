@@ -1,5 +1,6 @@
 import {
   ANALYTICAL_FILTER_OPERATORS,
+  ANALYTICAL_METRIC_ALIAS_PATTERN,
   CUSTOMER_INTELLIGENCE_QUERY_PLAN_VERSION,
   type AnalyticalAggregation,
   type AnalyticalFieldDataType,
@@ -25,7 +26,7 @@ export const MAX_RESULT_ROWS = 1000;
 // Every alias this validator accepts is later embedded as a backtick-quoted SQL identifier by
 // the compiler (AS/GROUP BY/ORDER BY) — identifiers can never be bound `?` parameters, so this
 // pattern is the actual injection defense for aliases (task Section 23/57), not cosmetic.
-const SAFE_ALIAS_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const SAFE_ALIAS_PATTERN = new RegExp(ANALYTICAL_METRIC_ALIAS_PATTERN);
 
 export type NormalizedFilterCondition = {
   readonly kind: 'condition';
@@ -234,7 +235,7 @@ function resolveMetric(rawMetric: unknown, errors: string[], usedAliases: Set<st
     // way to parameterize an identifier. A user-supplied alias must therefore be restricted to
     // a safe character set at the validator, or a value like "x` ; DROP TABLE --" could break
     // out of the identifier quoting once compiled.
-    errors.push('each metric requires a string alias matching ^[A-Za-z_][A-Za-z0-9_]*$');
+    errors.push(`each metric requires a string alias matching ${ANALYTICAL_METRIC_ALIAS_PATTERN}`);
     return null;
   }
   if (usedAliases.has(m.alias)) {

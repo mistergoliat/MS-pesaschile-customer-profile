@@ -4,6 +4,7 @@ import {
   createCustomerIntelligenceCopilotSessionService,
   createInMemoryCopilotSessionStore,
   type CopilotOrchestratorDiagnostic,
+  type CopilotPlannerDiagnostic,
   type CopilotSessionLimits,
 } from '../../src/application/customer-intelligence-copilot-session/index.js';
 import type {
@@ -164,6 +165,7 @@ function harness(opts: {
   const executeAnalyticalQueryForExport = vi.fn(async () => ({ status: 'ok', result: opts.exportResult ?? result([{ clusterId: 0, label: 'HIGH_VALUE', avgAov: '100.000000' }]) })) as unknown as ExecuteAnalyticalQueryForExport;
   const store = createInMemoryCopilotSessionStore(limits);
   const diagnostics: CopilotOrchestratorDiagnostic[] = [];
+  const plannerDiagnostics: CopilotPlannerDiagnostic[] = [];
   const service = createCustomerIntelligenceCopilotSessionService({
     getAnalyticalSchema: () => SCHEMA,
     resolveCurrent,
@@ -175,8 +177,9 @@ function harness(opts: {
     clock,
     limits,
     onOrchestratorDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    onPlannerDiagnostic: (diagnostic) => plannerDiagnostics.push(diagnostic),
   });
-  return { service, clock, generateConversationDecision, repairConversationDecision, generateAnalysisPlan, generateAnswer, resolveCurrent, executeAnalyticalQuery, executeAnalyticalQueryForExport, store, diagnostics };
+  return { service, clock, generateConversationDecision, repairConversationDecision, generateAnalysisPlan, repairAnalysisPlan, generateAnswer, resolveCurrent, executeAnalyticalQuery, executeAnalyticalQueryForExport, store, diagnostics, plannerDiagnostics };
 }
 
 async function createSession(h: ReturnType<typeof harness>) {
@@ -307,6 +310,74 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
       repairAttempted: true,
       repairSucceeded: true,
     });
+  });
+
+  it('continues when planner repair replaces an invalid embedded count plan with a valid aggregate plan', async () => {
+    const invalidPlan = queryPlan([{ id: 'q1', plan: { metrics: [{ aggregation: 'count' }] } }]);
+    const repairedPlan = queryPlan([
+      {
+        id: 'q1',
+        plan: {
+          planVersion: 'customer-intelligence-query-plan-v1',
+          metrics: [{ aggregation: 'count', alias: 'customer_count' }],
+        },
+      },
+    ]);
+    const h = harness({
+      decisions: [runAnalytics('Cuantos clientes hay en la poblacion actual de Customer Intelligence?')],
+      plans: [invalidPlan],
+      repairPlan: repairedPlan,
+      executionResults: [result([{ customer_count: 10 }], 'f'.repeat(64), ['customer_count'])],
+    });
+    const sessionId = await createSession(h);
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Cuantos clientes hay?' });
+
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') expect(response.response.status).toBe('answered');
+    expect(h.repairAnalysisPlan).toHaveBeenCalledTimes(1);
+    const repairCalls = h.repairAnalysisPlan.mock.calls as unknown as [{ validationErrors: readonly string[]; queryContract: { metricSchema: { alias: { pattern: string } } } }][];
+    expect(repairCalls[0]?.[0].validationErrors).toEqual(
+      expect.arrayContaining(['q1: each metric requires a string alias matching ^[A-Za-z_][A-Za-z0-9_]*$']),
+    );
+    expect(repairCalls[0]?.[0].queryContract.metricSchema.alias.pattern).toBe('^[A-Za-z_][A-Za-z0-9_]*$');
+    expect(h.executeAnalyticalQuery).toHaveBeenCalledTimes(1);
+    expect(h.plannerDiagnostics[0]).toMatchObject({
+      initialStatus: 'query_plan',
+      selectedStatus: 'query_plan',
+      repairAttempted: true,
+      repairSucceeded: true,
+      queryStepIds: ['q1'],
+    });
+    expect(h.plannerDiagnostics[0]?.validationErrorCategories).toContain('invalid_metric_alias');
+  });
+
+  it('fails closed when planner repair leaves the embedded query malformed', async () => {
+    const h = harness({
+      decisions: [runAnalytics('Cuantos clientes hay en la poblacion actual de Customer Intelligence?')],
+      plans: [queryPlan([{ id: 'q1', plan: {} }])],
+      repairPlan: queryPlan([{ id: 'q1', plan: { metrics: [{ aggregation: 'count' }] } }]),
+    });
+    const sessionId = await createSession(h);
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Cuantos clientes hay?' });
+
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') {
+      expect(response.response.status).toBe('planner_invalid');
+      if (response.response.status === 'planner_invalid') {
+        expect(response.response.errors.join(' ')).toMatch(/must specify either "select".*or "metrics"/);
+        expect(response.response.errors.join(' ')).toMatch(/alias matching/);
+      }
+    }
+    expect(h.repairAnalysisPlan).toHaveBeenCalledTimes(1);
+    expect(h.executeAnalyticalQuery).not.toHaveBeenCalled();
+    expect(h.plannerDiagnostics[0]).toMatchObject({
+      initialStatus: 'query_plan',
+      selectedStatus: null,
+      repairAttempted: true,
+      repairSucceeded: false,
+      queryStepIds: [],
+    });
+    expect(h.plannerDiagnostics[0]?.validationErrorCategories).toEqual(expect.arrayContaining(['missing_query_mode', 'invalid_metric_alias']));
   });
 
   it('passes bounded references to the planner for a follow-up query', async () => {

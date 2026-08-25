@@ -3,6 +3,7 @@ import type { GenerateAnalysisPlanInput, GenerateAnswerInput } from '../../src/a
 import {
   CUSTOMER_INTELLIGENCE_COPILOT_ANALYSIS_PLAN_VERSION,
   CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_INSTRUCTIONS,
+  serializeAnalyticalQueryContractForCopilot,
 } from '../../src/domain/customer-intelligence-copilot/index.js';
 import { CUSTOMER_INTELLIGENCE_QUERY_SCHEMA_VERSION } from '../../src/domain/customer-intelligence-query/contracts.js';
 import {
@@ -52,6 +53,7 @@ function plannerInput(): GenerateAnalysisPlanInput {
   return {
     question: 'Cuantos clientes hay?',
     schema: { schemaVersion: CUSTOMER_INTELLIGENCE_QUERY_SCHEMA_VERSION, readModelVersion: 'r', fields: [] },
+    queryContract: serializeAnalyticalQueryContractForCopilot(),
     plannerPromptVersion: 'planner-v1',
     maxQueries: 3,
   };
@@ -106,6 +108,9 @@ describe('openai_compatible Customer Intelligence Copilot model adapter', () => 
       input: { question: 'Cuantos clientes hay?', maxQueries: 3 },
       task: 'generate_analysis_plan',
     });
+    expect(JSON.parse(String((payload.messages as { content: string }[])[1]?.content))).toMatchObject({
+      input: { queryContract: { planVersion: 'customer-intelligence-query-plan-v1', metricSchema: { alias: { pattern: '^[A-Za-z_][A-Za-z0-9_]*$' } } } },
+    });
   });
 
   it('serializes repair requests with previous plan and validation errors', async () => {
@@ -126,6 +131,7 @@ describe('openai_compatible Customer Intelligence Copilot model adapter', () => 
     expect(userInput.task).toBe('repair_analysis_plan');
     expect(userInput.input.previousPlan).toEqual({ bad: true });
     expect(userInput.input.validationErrors).toEqual(['query 0 requires a structured AnalyticalQueryPlan']);
+    expect(userInput.input.queryContract.modes.aggregate.required).toEqual(['planVersion', 'metrics']);
   });
 
   it('extracts answer content and returns fixed provider metadata', async () => {

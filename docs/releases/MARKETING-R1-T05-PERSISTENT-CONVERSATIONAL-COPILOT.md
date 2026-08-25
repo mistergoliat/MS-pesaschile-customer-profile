@@ -283,3 +283,58 @@ Local focused validation:
 Result: PASS, 4 files, 46 tests.
 
 Live validation: NOT_RUN.
+
+## T05.3 Planner AnalyticalQueryPlan Contract Hardening
+
+EC2 symptom: after T05.2, the conversational orchestrator correctly routed the fresh question
+`Cuantos clientes hay?` into analytics, but the planner returned `planner_invalid` with an invalid
+embedded `q1` AnalyticalQueryPlan:
+
+- `q1: plan must specify either "select" (row mode) or "metrics" (aggregate mode)`
+- `q1: each metric requires a string alias matching ^[A-Za-z_][A-Za-z0-9_]*$`
+
+This confirmed the live failure had moved downstream:
+
+conversation -> orchestrator PASS -> planner reached -> CopilotAnalysisPlan envelope parsed ->
+embedded AnalyticalQueryPlan rejected by the deterministic runtime validator.
+
+Root cause: planner instructions described the outer CopilotAnalysisPlan envelope but did not give
+the model a strong enough contract for the embedded AnalyticalQueryPlan. In particular, the planner
+was not consistently adhering to the row-vs-aggregate mode split and did not consistently include
+required metric aliases.
+
+Fix:
+
+- Planner prompt version incremented from `customer-intelligence-copilot-planner-v1` to
+  `customer-intelligence-copilot-planner-v2`.
+- The outer CopilotAnalysisPlan contract remains `customer-intelligence-copilot-analysis-plan-v1`.
+- The embedded AnalyticalQueryPlan contract remains `customer-intelligence-query-plan-v1`.
+- Planner instructions now explicitly document row mode and aggregate mode, including required,
+  optional and forbidden fields.
+- Metric rules now explicitly require `aggregation` and `alias`, require `field` for
+  `count_distinct`, `sum`, `avg`, `min` and `max`, and require omitting `field` for COUNT(*)
+  semantics.
+- Metric aliases are documented with the exact runtime regex:
+  `^[A-Za-z_][A-Za-z0-9_]*$`.
+- The planner now receives a compact machine-readable `queryContract` containing the query plan
+  version, mode rules, metric schema, allowed aggregations, alias pattern, filter structure,
+  dimension limits, ordering rules, row limits and validator-conformant examples.
+- `queryContract` is sent to both initial planner generation and bounded repair.
+- Repair still regenerates a complete CopilotAnalysisPlan envelope and fails closed if the repaired
+  embedded AnalyticalQueryPlan remains invalid.
+- Session planner diagnostics now distinguish initial invalid plans, repair attempted, repair
+  succeeded, repair failed, query step ids and validation error categories without logging raw
+  provider payloads, SQL, credentials or DB records.
+
+Tests added cover valid total population count, customers per cluster, average ticket by cluster,
+missing row/aggregate mode, missing metric alias, invalid alias examples, count without field, avg
+without field, select plus metrics, valid repair continuation, invalid repair fail-closed behavior,
+and provider serialization of `queryContract`.
+
+Local focused validation:
+
+`npm test -- --run tests/unit/customer-intelligence-query-planner-contract.test.ts tests/unit/customer-intelligence-query-validator.test.ts tests/unit/customer-intelligence-copilot-contracts.test.ts tests/unit/customer-intelligence-copilot-session.test.ts tests/unit/customer-intelligence-copilot.test.ts tests/unit/openai-compatible-copilot-model.test.ts tests/unit/http-json-copilot-model.test.ts`
+
+Result: PASS, 7 files, 123 tests.
+
+Live validation: NOT_RUN.

@@ -280,6 +280,9 @@ export function bootstrap(): Bootstrap {
       onOrchestratorDiagnostic: (diagnostic) => {
         console.info(diagnostic, 'customer intelligence copilot orchestrator decision');
       },
+      onPlannerDiagnostic: (diagnostic) => {
+        console.info(diagnostic, 'customer intelligence copilot planner validation');
+      },
     });
   }
 

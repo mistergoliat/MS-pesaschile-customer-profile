@@ -1,4 +1,4 @@
-export const CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_PROMPT_VERSION = 'customer-intelligence-copilot-planner-v1';
+export const CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_PROMPT_VERSION = 'customer-intelligence-copilot-planner-v2';
 export const CUSTOMER_INTELLIGENCE_COPILOT_ANSWER_PROMPT_VERSION = 'customer-intelligence-copilot-answer-v1';
 export const CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_PROMPT_VERSION = 'customer-intelligence-copilot-orchestrator-v2';
 
@@ -10,6 +10,19 @@ export const CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_INSTRUCTIONS = [
   'For status "query_plan", include a non-empty queries array. Each item MUST have a safe id and a structured AnalyticalQueryPlan in plan.',
   'For status "answer_from_context", include a non-empty sourceQueryIds array and no queries.',
   'For status "unsupported_data", "unsupported_operation", or "clarification_required", include a non-empty message and no queries.',
+  'Every embedded AnalyticalQueryPlan must use exactly one mode: row mode or aggregate mode.',
+  'Row mode is only for bounded individual rows. It requires planVersion and a non-empty select array, and it must not contain metrics.',
+  'Aggregate mode is for counts, sums, averages, minima, maxima, grouped summaries, and rankings based on aggregate metrics. It requires planVersion and a non-empty metrics array, and it must not contain select.',
+  'Every metric MUST include aggregation and alias. Alias MUST match ^[A-Za-z_][A-Za-z0-9_]*$ with no spaces, accents, punctuation, dashes, or numeric-first names.',
+  'For COUNT(*) semantics, use aggregation "count", omit field, and still include a valid alias such as customer_count.',
+  'For count_distinct, sum, avg, min, and max, include a valid logical field supported by the provided schema for that aggregation.',
+  'orderBy.field must reference a selected field alias, a dimension alias, or a metric alias already produced by the same query.',
+  'Use the supplied queryContract object as the authoritative machine-readable AnalyticalQueryPlan structure.',
+  'Valid embedded count example: {"planVersion":"customer-intelligence-query-plan-v1","metrics":[{"aggregation":"count","alias":"customer_count"}]}.',
+  'Valid grouped count example: {"planVersion":"customer-intelligence-query-plan-v1","dimensions":["cluster.clusterId"],"metrics":[{"aggregation":"count","alias":"customer_count"}],"orderBy":[{"field":"customer_count","direction":"desc"}]}.',
+  'Valid average-ranking example: {"planVersion":"customer-intelligence-query-plan-v1","dimensions":["cluster.clusterId"],"metrics":[{"aggregation":"avg","field":"commercial.averageOrderValueTaxIncl","alias":"avg_ticket"}],"orderBy":[{"field":"avg_ticket","direction":"desc"}],"limit":1}.',
+  'Valid filtered aggregate example: {"planVersion":"customer-intelligence-query-plan-v1","filters":[{"field":"cluster.clusterId","operator":"eq","value":1}],"metrics":[{"aggregation":"count","alias":"customer_count"}]}.',
+  'Valid row-mode example: {"planVersion":"customer-intelligence-query-plan-v1","select":["customer.customerId","commercial.totalSpentTaxIncl"],"filters":[{"field":"cluster.clusterId","operator":"eq","value":1}],"orderBy":[{"field":"totalSpentTaxIncl","direction":"desc"}],"limit":20}.',
   'During repair, regenerate the COMPLETE valid CopilotAnalysisPlan envelope from scratch using the validator errors; do not patch individual values in isolation.',
   'Do not invent fields, metrics, aggregations, or data sources.',
   'Minimize the number of queries and never exceed 3 required queries.',

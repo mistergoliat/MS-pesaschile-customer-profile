@@ -93,6 +93,67 @@ export type CompactAnalyticalSchema = Pick<AnalyticalSchema, 'schemaVersion' | '
   }[];
 };
 
+export type CompactAnalyticalQueryContract = {
+  readonly planVersion: string;
+  readonly maxQueries: number;
+  readonly modes: {
+    readonly row: {
+      readonly useFor: readonly string[];
+      readonly required: readonly string[];
+      readonly forbidden: readonly string[];
+      readonly optional: readonly string[];
+    };
+    readonly aggregate: {
+      readonly useFor: readonly string[];
+      readonly required: readonly string[];
+      readonly forbidden: readonly string[];
+      readonly optional: readonly string[];
+    };
+  };
+  readonly metricSchema: {
+    readonly required: readonly string[];
+    readonly aggregation: {
+      readonly allowed: readonly string[];
+      readonly count: { readonly field: 'omit_for_count_all' };
+      readonly count_distinct: { readonly field: 'required' };
+      readonly sum: { readonly field: 'required_numeric' };
+      readonly avg: { readonly field: 'required_numeric' };
+      readonly min: { readonly field: 'required' };
+      readonly max: { readonly field: 'required' };
+    };
+    readonly alias: {
+      readonly required: true;
+      readonly pattern: string;
+      readonly validExamples: readonly string[];
+      readonly invalidExamples: readonly string[];
+    };
+  };
+  readonly filters: {
+    readonly shape: string;
+    readonly operators: readonly string[];
+    readonly maxLeaves: number;
+    readonly maxDepth: number;
+    readonly maxInValues: number;
+  };
+  readonly dimensions: {
+    readonly max: number;
+    readonly fieldsMustBeLogicalNames: true;
+    readonly requireMetrics: true;
+  };
+  readonly orderBy: {
+    readonly fieldsMustReference: string;
+    readonly directions: readonly ['asc', 'desc'];
+  };
+  readonly limits: {
+    readonly default: number;
+    readonly maxRows: number;
+  };
+  readonly examples: readonly {
+    readonly question: string;
+    readonly plan: AnalyticalQueryPlan;
+  }[];
+};
+
 export type CopilotExecutedQuery = {
   readonly id: string;
   readonly plan: AnalyticalQueryPlan;
