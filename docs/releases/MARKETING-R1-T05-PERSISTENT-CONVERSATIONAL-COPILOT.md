@@ -234,3 +234,52 @@ Test evidence:
 - `npm test -- tests/unit/mysql-copilot-session-store.test.ts` - PASS, 1 file, 15 tests
 
 Live validation status remains pending until redeployed and re-tested on EC2.
+
+## T05.2 Orchestrator Contract Hardening
+
+EC2 symptom: after T05.1 fixed MariaDB persistence, a fresh persisted session loaded with
+`turnCount = 0`, `resultCount = 0` and `analyticalReferences = []`. The first real turn,
+`Cuantos clientes hay?`, reached the conversational orchestrator but returned `502` with
+`orchestrator_invalid`. The invalid decision attempted `answer_from_context` even though the fresh
+session had no analytical references or retained results.
+
+Root cause: the conversation decision validator enforced envelope syntax but did not validate
+action feasibility against the supplied session context. The repair attempt received the invalid
+decision and validator errors, but not compact explicit constraints showing that zero usable
+`sourceQueryIds` made `answer_from_context` impossible.
+
+Fix:
+
+- The conversation decision validator now checks `answer_from_context` against current session
+  analytical references and recent results.
+- `answer_from_context` is rejected when no usable session sources exist, when `sourceQueryIds` is
+  empty, when an id is malformed, when an id is duplicated, when an id was invented, or when
+  `instruction` is empty.
+- `run_analytics` still requires a non-empty `analyticalQuestion`.
+- `respond_directly` is rejected for deterministic fresh Customer Intelligence business fact
+  requests such as counts, aggregates, rankings, segmentation values and population values.
+- The orchestrator prompt version was incremented from
+  `customer-intelligence-copilot-orchestrator-v1` to
+  `customer-intelligence-copilot-orchestrator-v2`; the decision contract remains
+  `customer-intelligence-conversation-decision-v1`.
+- Initial decision and repair inputs now include compact action constraints: allowed actions,
+  available source ids, reference/result counts, whether context answering is allowed, whether the
+  question is a fresh business fact, and concise valid envelopes.
+- Repair still regenerates a complete envelope and fails closed if the repaired decision remains
+  invalid.
+- Production wiring emits safe orchestrator diagnostics with action names, validation errors,
+  repair flags and source counts only. It does not log raw provider payloads, credentials or DB
+  records.
+
+Tests added cover fresh customer counts, cluster distribution counts, direct RFM explanation,
+invalid empty context answers, invented `sourceQueryIds`, valid prior-result context answering,
+ambiguous best-group clarification, valid repair to `run_analytics`, and invalid repair fail-closed
+behavior.
+
+Local focused validation:
+
+`npm test -- --run tests/unit/customer-intelligence-copilot-contracts.test.ts tests/unit/customer-intelligence-copilot-session.test.ts tests/unit/openai-compatible-copilot-model.test.ts tests/unit/http-json-copilot-model.test.ts`
+
+Result: PASS, 4 files, 46 tests.
+
+Live validation: NOT_RUN.

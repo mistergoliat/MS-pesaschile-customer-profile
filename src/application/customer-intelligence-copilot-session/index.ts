@@ -4,5 +4,6 @@ export { buildCopilotSessionContext, deriveAnalyticalReferences } from './sessio
 export { buildCopilotXlsxExport, createCopilotExportFilename } from './xlsx-export.js';
 export {
   createCustomerIntelligenceCopilotSessionService,
+  type CopilotOrchestratorDiagnostic,
   type CustomerIntelligenceCopilotSessionService,
 } from './session-service.js';

@@ -3,6 +3,7 @@ import type { CustomerIntelligenceSnapshotContext } from '../../domain/customer-
 import type {
   CompactAnalyticalSchema,
   CopilotAnalysisPlan,
+  CopilotConversationDecisionActionConstraints,
   CopilotConversationDecision,
   CopilotSessionContext,
 } from '../../domain/customer-intelligence-copilot/index.js';
@@ -34,6 +35,7 @@ export type GenerateConversationDecisionInput = {
   readonly question: string;
   readonly orchestratorPromptVersion: string;
   readonly sessionContext: CopilotSessionContext;
+  readonly actionConstraints: CopilotConversationDecisionActionConstraints;
 };
 
 export type RepairConversationDecisionInput = GenerateConversationDecisionInput & {

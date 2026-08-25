@@ -10,10 +10,13 @@ import {
   CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_PROMPT_VERSION,
   CUSTOMER_INTELLIGENCE_COPILOT_ANSWER_PROMPT_VERSION,
   CUSTOMER_INTELLIGENCE_COPILOT_SESSION_VERSION,
+  asksForFreshBusinessFact,
   serializeAnalyticalSchemaForCopilot,
   validateCopilotAnalysisPlan,
   validateCopilotConversationDecision,
   type CopilotAnalysisPlan,
+  type CopilotConversationDecisionAction,
+  type CopilotConversationDecisionActionConstraints,
   type CopilotConversationDecision,
   type CustomerIntelligenceCopilotResponse,
 } from '../../domain/customer-intelligence-copilot/index.js';
@@ -88,6 +91,18 @@ type AnalyticsFailureResponse =
       readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION;
     };
 
+export type CopilotOrchestratorDiagnostic = {
+  readonly event: 'customer_intelligence_copilot_orchestrator_decision';
+  readonly initialAction: string | null;
+  readonly selectedAction: string | null;
+  readonly validationErrors: readonly string[];
+  readonly repairAttempted: boolean;
+  readonly repairSucceeded: boolean;
+  readonly sessionReferenceCount: number;
+  readonly sessionResultCount: number;
+  readonly availableSourceQueryIdCount: number;
+};
+
 export function createCustomerIntelligenceCopilotSessionService(deps: {
   readonly getAnalyticalSchema: AnalyticalSchemaProvider;
   readonly resolveCurrent: ResolveCurrentCustomerIntelligenceContext;
@@ -98,6 +113,7 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
   readonly store: CopilotSessionStore;
   readonly clock: Clock;
   readonly limits: CopilotSessionLimits;
+  readonly onOrchestratorDiagnostic?: (diagnostic: CopilotOrchestratorDiagnostic) => void;
 }): CustomerIntelligenceCopilotSessionService {
   async function resolvePinnedContext(featureSnapshotId?: string | null): Promise<Extract<ResolveCustomerIntelligenceContextResult, { status: 'available' }> | AnalyticsUnavailableResponse> {
     const contextResult = featureSnapshotId ? await deps.resolveForFeatureSnapshot(featureSnapshotId) : await deps.resolveCurrent();
@@ -163,6 +179,7 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
         question,
         sessionContext,
         model: deps.model,
+        onDiagnostic: deps.onOrchestratorDiagnostic,
       });
       if (decisionResult.status === 'terminal') {
         const response = withSession({ sessionId: session.sessionId, turnId }, decisionResult.response);
@@ -436,32 +453,191 @@ async function decideConversation(args: {
   readonly question: string;
   readonly sessionContext: ReturnType<typeof buildCopilotSessionContext>;
   readonly model: CustomerIntelligenceCopilotModel;
+  readonly onDiagnostic?: (diagnostic: CopilotOrchestratorDiagnostic) => void;
 }): Promise<ValidatedConversationDecision> {
+  const actionConstraints = buildConversationDecisionActionConstraints(args.question, args.sessionContext);
   try {
     const output = await args.model.generateConversationDecision({
       question: args.question,
       orchestratorPromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_PROMPT_VERSION,
       sessionContext: args.sessionContext,
+      actionConstraints,
     });
-    const first = validateCopilotConversationDecision(output.decision);
-    if (first.ok) return { status: 'decision', decision: first.decision, metadata: output.metadata };
+    const first = validateCopilotConversationDecision(output.decision, { question: args.question, sessionContext: args.sessionContext });
+    if (first.ok) {
+      emitOrchestratorDiagnostic(args.onDiagnostic, {
+        actionConstraints,
+        initialAction: actionFromUnknown(output.decision),
+        selectedAction: first.decision.action,
+        validationErrors: [],
+        repairAttempted: false,
+        repairSucceeded: false,
+      });
+      return { status: 'decision', decision: first.decision, metadata: output.metadata };
+    }
 
     for (let attempt = 0; attempt < CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_REPAIR_ATTEMPTS; attempt += 1) {
       const repair = await args.model.repairConversationDecision({
         question: args.question,
         orchestratorPromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_PROMPT_VERSION,
         sessionContext: args.sessionContext,
+        actionConstraints,
         previousDecision: output.decision,
         validationErrors: first.errors,
       });
-      const repaired = validateCopilotConversationDecision(repair.decision);
-      if (repaired.ok) return { status: 'decision', decision: repaired.decision, metadata: repair.metadata };
-      return { status: 'terminal', response: orchestratorInvalid([...first.errors, ...repaired.errors]) };
+      const repaired = validateCopilotConversationDecision(repair.decision, { question: args.question, sessionContext: args.sessionContext });
+      if (repaired.ok) {
+        emitOrchestratorDiagnostic(args.onDiagnostic, {
+          actionConstraints,
+          initialAction: actionFromUnknown(output.decision),
+          selectedAction: repaired.decision.action,
+          validationErrors: first.errors,
+          repairAttempted: true,
+          repairSucceeded: true,
+        });
+        return { status: 'decision', decision: repaired.decision, metadata: repair.metadata };
+      }
+      const validationErrors = [...first.errors, ...repaired.errors];
+      emitOrchestratorDiagnostic(args.onDiagnostic, {
+        actionConstraints,
+        initialAction: actionFromUnknown(output.decision),
+        selectedAction: null,
+        validationErrors,
+        repairAttempted: true,
+        repairSucceeded: false,
+      });
+      return { status: 'terminal', response: orchestratorInvalid(validationErrors) };
     }
+    emitOrchestratorDiagnostic(args.onDiagnostic, {
+      actionConstraints,
+      initialAction: actionFromUnknown(output.decision),
+      selectedAction: null,
+      validationErrors: first.errors,
+      repairAttempted: false,
+      repairSucceeded: false,
+    });
     return { status: 'terminal', response: orchestratorInvalid(first.errors) };
   } catch (error) {
     return { status: 'terminal', response: mapProviderError(error) ?? answerGenerationFailed(error) };
   }
+}
+
+function buildConversationDecisionActionConstraints(
+  question: string,
+  sessionContext: ReturnType<typeof buildCopilotSessionContext>,
+): CopilotConversationDecisionActionConstraints {
+  const availableSourceQueryIds = availableSourceQueryIdsFor(sessionContext);
+  const answerFromContextAllowed = availableSourceQueryIds.length > 0;
+  const freshBusinessFactQuestion = asksForFreshBusinessFact(question);
+  const allowedActions: CopilotConversationDecisionAction[] = [
+    ...(freshBusinessFactQuestion ? [] : (['respond_directly'] as const)),
+    'clarification_required',
+    ...(answerFromContextAllowed ? (['answer_from_context'] as const) : []),
+    'run_analytics',
+    'unsupported',
+  ];
+
+  return {
+    decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
+    allowedActions,
+    availableSourceQueryIds,
+    sessionReferenceCount: sessionContext.analyticalReferences.length,
+    sessionResultCount: sessionContext.recentResults.length,
+    answerFromContextAllowed,
+    freshBusinessFactQuestion,
+    rules: [
+      'If a fresh Customer Intelligence fact, count, aggregate, ranking, segmentation value, or population value is requested and no session source already answers it, choose run_analytics.',
+      'answer_from_context is allowed only with sourceQueryIds from availableSourceQueryIds.',
+      'Never invent sourceQueryIds.',
+      'If answerFromContextAllowed is false, do not choose answer_from_context.',
+      'respond_directly is not allowed when freshBusinessFactQuestion is true.',
+      'Regenerate a complete decision envelope during repair.',
+    ],
+    allowedActionEnvelopes: allowedDecisionEnvelopes(allowedActions, availableSourceQueryIds),
+  };
+}
+
+function availableSourceQueryIdsFor(sessionContext: ReturnType<typeof buildCopilotSessionContext>): readonly string[] {
+  return [
+    ...new Set([
+      ...sessionContext.analyticalReferences.map((reference) => reference.sourceQueryId),
+      ...sessionContext.recentResults.map((result) => result.queryId),
+    ]),
+  ];
+}
+
+function allowedDecisionEnvelopes(
+  allowedActions: readonly CopilotConversationDecisionAction[],
+  availableSourceQueryIds: readonly string[],
+): readonly Record<string, unknown>[] {
+  const envelopes: Record<string, unknown>[] = [];
+  if (allowedActions.includes('respond_directly')) {
+    envelopes.push({
+      decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
+      action: 'respond_directly',
+      message: 'RFM clasifica clientes por recencia, frecuencia y valor monetario.',
+    });
+  }
+  if (allowedActions.includes('clarification_required')) {
+    envelopes.push({
+      decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
+      action: 'clarification_required',
+      message: 'Necesito un criterio concreto para comparar los grupos.',
+    });
+  }
+  if (allowedActions.includes('answer_from_context')) {
+    envelopes.push({
+      decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
+      action: 'answer_from_context',
+      sourceQueryIds: [availableSourceQueryIds[0]],
+      instruction: 'Usa el resultado previo citado para responder la pregunta.',
+    });
+  }
+  if (allowedActions.includes('run_analytics')) {
+    envelopes.push({
+      decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
+      action: 'run_analytics',
+      analyticalQuestion: 'Cuantos clientes hay en la poblacion actual de Customer Intelligence?',
+    });
+  }
+  if (allowedActions.includes('unsupported')) {
+    envelopes.push({
+      decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
+      action: 'unsupported',
+      message: 'La solicitud esta fuera del runtime acotado de Customer Intelligence.',
+    });
+  }
+  return envelopes;
+}
+
+function emitOrchestratorDiagnostic(
+  onDiagnostic: ((diagnostic: CopilotOrchestratorDiagnostic) => void) | undefined,
+  args: {
+    readonly actionConstraints: CopilotConversationDecisionActionConstraints;
+    readonly initialAction: string | null;
+    readonly selectedAction: string | null;
+    readonly validationErrors: readonly string[];
+    readonly repairAttempted: boolean;
+    readonly repairSucceeded: boolean;
+  },
+): void {
+  onDiagnostic?.({
+    event: 'customer_intelligence_copilot_orchestrator_decision',
+    initialAction: args.initialAction,
+    selectedAction: args.selectedAction,
+    validationErrors: args.validationErrors,
+    repairAttempted: args.repairAttempted,
+    repairSucceeded: args.repairSucceeded,
+    sessionReferenceCount: args.actionConstraints.sessionReferenceCount,
+    sessionResultCount: args.actionConstraints.sessionResultCount,
+    availableSourceQueryIdCount: args.actionConstraints.availableSourceQueryIds.length,
+  });
+}
+
+function actionFromUnknown(value: unknown): string | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const action = (value as Record<string, unknown>).action;
+  return typeof action === 'string' ? action : null;
 }
 
 async function answerFromSessionContext(args: {

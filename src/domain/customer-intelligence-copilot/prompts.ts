@@ -1,6 +1,6 @@
 export const CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_PROMPT_VERSION = 'customer-intelligence-copilot-planner-v1';
 export const CUSTOMER_INTELLIGENCE_COPILOT_ANSWER_PROMPT_VERSION = 'customer-intelligence-copilot-answer-v1';
-export const CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_PROMPT_VERSION = 'customer-intelligence-copilot-orchestrator-v1';
+export const CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_PROMPT_VERSION = 'customer-intelligence-copilot-orchestrator-v2';
 
 export const CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_INSTRUCTIONS = [
   'Use only the provided analytical schema logical fields.',
@@ -24,6 +24,11 @@ export const CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_INSTRUCTIONS = [
   'Output only one valid JSON object matching customer-intelligence-conversation-decision-v1.',
   'The top-level decisionVersion property MUST equal exactly "customer-intelligence-conversation-decision-v1".',
   'The action property MUST equal exactly one of: "respond_directly", "clarification_required", "answer_from_context", "run_analytics", "unsupported".',
+  'Apply action rules in this order.',
+  '1. If the user asks for a factual value derived from Customer Intelligence and the required result is NOT already present in session context, action MUST be "run_analytics".',
+  '2. action "answer_from_context" is legal ONLY if at least one provided analytical reference or recent result already contains enough evidence to answer.',
+  '3. Never invent sourceQueryIds. Use only sourceQueryIds present in analyticalReferences or recentResults.',
+  '4. If analyticalReferences and recentResults are empty, NEVER use "answer_from_context".',
   'Use respond_directly only for safe domain explanations, meta conversation, or non-data answers that do not require fresh business facts.',
   'Use clarification_required when the user asks an ambiguous analytical question without a deterministic criterion.',
   'Use answer_from_context only when supplied recent results or analytical references are enough; cite sourceQueryIds and include a concise instruction for the answerer.',
@@ -32,6 +37,12 @@ export const CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_INSTRUCTIONS = [
   'Never emit SQL, table names, DB columns, credentials, executable code, shell commands, unrestricted tool names, or provider-specific behavior.',
   'Resolve follow-ups and clarification answers using the conversation summary, recent turns, unresolved clarification, analytical references, and pinned snapshot context.',
   'During repair, regenerate the COMPLETE valid decision envelope from scratch using the validator errors.',
+  'For a new conversation, "Cuantos clientes hay?" must produce {"decisionVersion":"customer-intelligence-conversation-decision-v1","action":"run_analytics","analyticalQuestion":"Cuantos clientes hay en la poblacion actual de Customer Intelligence?"}.',
+  'Fresh analytics example: {"decisionVersion":"customer-intelligence-conversation-decision-v1","action":"run_analytics","analyticalQuestion":"Cuantos clientes hay en la poblacion actual de Customer Intelligence?"}.',
+  'Context reuse example: {"decisionVersion":"customer-intelligence-conversation-decision-v1","action":"answer_from_context","sourceQueryIds":["cluster_distribution"],"instruction":"Identifica el cluster con mayor cantidad de clientes usando el resultado previo."}.',
+  'Direct response example: {"decisionVersion":"customer-intelligence-conversation-decision-v1","action":"respond_directly","message":"RFM clasifica clientes por recencia, frecuencia y valor monetario."}.',
+  'Clarification example: {"decisionVersion":"customer-intelligence-conversation-decision-v1","action":"clarification_required","message":"Necesito un criterio concreto para comparar los grupos."}.',
+  'Unsupported example: {"decisionVersion":"customer-intelligence-conversation-decision-v1","action":"unsupported","message":"No puedo realizar esa operacion dentro del runtime acotado de Customer Intelligence."}.',
 ] as const;
 
 export const CUSTOMER_INTELLIGENCE_COPILOT_ANSWER_INSTRUCTIONS = [

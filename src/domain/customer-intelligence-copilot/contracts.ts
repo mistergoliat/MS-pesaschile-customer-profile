@@ -42,6 +42,18 @@ export type CopilotConversationDecisionAction =
   | 'run_analytics'
   | 'unsupported';
 
+export type CopilotConversationDecisionActionConstraints = {
+  readonly decisionVersion: typeof CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION;
+  readonly allowedActions: readonly CopilotConversationDecisionAction[];
+  readonly availableSourceQueryIds: readonly string[];
+  readonly sessionReferenceCount: number;
+  readonly sessionResultCount: number;
+  readonly answerFromContextAllowed: boolean;
+  readonly freshBusinessFactQuestion: boolean;
+  readonly rules: readonly string[];
+  readonly allowedActionEnvelopes: readonly Record<string, unknown>[];
+};
+
 export type CopilotConversationDecision =
   | {
       readonly decisionVersion: typeof CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION;

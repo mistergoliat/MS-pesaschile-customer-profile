@@ -3,11 +3,14 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createCustomerIntelligenceCopilotSessionService,
   createInMemoryCopilotSessionStore,
+  type CopilotOrchestratorDiagnostic,
   type CopilotSessionLimits,
 } from '../../src/application/customer-intelligence-copilot-session/index.js';
 import type {
   CustomerIntelligenceCopilotModel,
   GenerateAnalysisPlanInput,
+  GenerateConversationDecisionInput,
+  RepairConversationDecisionInput,
 } from '../../src/application/customer-intelligence-copilot/index.js';
 import type { ExecuteAnalyticalQueryForExport, ExecuteAnalyticalQueryWithResolvedContext } from '../../src/application/customer-intelligence-query/index.js';
 import type { ResolveCustomerIntelligenceContextResult } from '../../src/application/customer-intelligence/resolve-customer-intelligence-context.js';
@@ -91,6 +94,18 @@ function runAnalytics(analyticalQuestion = 'Run analytics') {
   return { decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION, action: 'run_analytics', analyticalQuestion };
 }
 
+function conversationAnswerFromContext(sourceQueryIds: readonly string[], instruction = 'Usa el resultado previo.') {
+  return { decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION, action: 'answer_from_context', sourceQueryIds, instruction };
+}
+
+function respondDirectly(message = 'RFM clasifica clientes por recencia, frecuencia y valor monetario.') {
+  return { decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION, action: 'respond_directly', message };
+}
+
+function clarificationRequired(message = 'Necesito un criterio concreto para comparar los grupos.') {
+  return { decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION, action: 'clarification_required', message };
+}
+
 const bestClusterPlan = {
   dimensions: ['cluster.clusterId', 'cluster.label'],
   metrics: [{ aggregation: 'avg', field: 'commercial.averageOrderValueTaxIncl', alias: 'avgAov' }],
@@ -148,6 +163,7 @@ function harness(opts: {
   const executeAnalyticalQuery = vi.fn(async () => ({ status: 'ok', result: executionResults.shift() ?? result([{ customers: 1 }]) })) as unknown as ExecuteAnalyticalQueryWithResolvedContext;
   const executeAnalyticalQueryForExport = vi.fn(async () => ({ status: 'ok', result: opts.exportResult ?? result([{ clusterId: 0, label: 'HIGH_VALUE', avgAov: '100.000000' }]) })) as unknown as ExecuteAnalyticalQueryForExport;
   const store = createInMemoryCopilotSessionStore(limits);
+  const diagnostics: CopilotOrchestratorDiagnostic[] = [];
   const service = createCustomerIntelligenceCopilotSessionService({
     getAnalyticalSchema: () => SCHEMA,
     resolveCurrent,
@@ -158,8 +174,9 @@ function harness(opts: {
     store,
     clock,
     limits,
+    onOrchestratorDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
   });
-  return { service, clock, generateConversationDecision, repairConversationDecision, generateAnalysisPlan, generateAnswer, resolveCurrent, executeAnalyticalQuery, executeAnalyticalQueryForExport, store };
+  return { service, clock, generateConversationDecision, repairConversationDecision, generateAnalysisPlan, generateAnswer, resolveCurrent, executeAnalyticalQuery, executeAnalyticalQueryForExport, store, diagnostics };
 }
 
 async function createSession(h: ReturnType<typeof harness>) {
@@ -182,6 +199,116 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
     expect(created.session.resultCount).toBe(0);
   });
 
+  it('routes a fresh customer count question to analytics with no context answer available', async () => {
+    const h = harness({
+      decisions: [runAnalytics('Cuantos clientes hay en la poblacion actual de Customer Intelligence?')],
+      plans: [queryPlan([{ id: 'customer_count', plan: { metrics: [{ aggregation: 'count', alias: 'customers' }] } }])],
+      executionResults: [result([{ customers: 10 }])],
+    });
+    const sessionId = await createSession(h);
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Cuantos clientes hay?' });
+
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') expect(response.response.status).toBe('answered');
+    expect(h.generateAnalysisPlan).toHaveBeenCalledWith(expect.objectContaining({ question: 'Cuantos clientes hay en la poblacion actual de Customer Intelligence?' }));
+    const decisionCalls = h.generateConversationDecision.mock.calls as unknown as [GenerateConversationDecisionInput][];
+    const decisionInput = decisionCalls[0]?.[0];
+    expect(decisionInput?.actionConstraints).toMatchObject({
+      answerFromContextAllowed: false,
+      freshBusinessFactQuestion: true,
+      availableSourceQueryIds: [],
+    });
+    expect(decisionInput?.actionConstraints.allowedActions).not.toContain('answer_from_context');
+  });
+
+  it('routes fresh cluster distribution counts to analytics', async () => {
+    const h = harness({
+      decisions: [runAnalytics('Cuantos clientes hay en cada cluster?')],
+      plans: [
+        queryPlan([
+          {
+            id: 'cluster_distribution',
+            plan: {
+              dimensions: ['cluster.clusterId'],
+              metrics: [{ aggregation: 'count', alias: 'customers' }],
+            },
+          },
+        ]),
+      ],
+      executionResults: [result([{ clusterId: 0, customers: 4 }, { clusterId: 1, customers: 6 }], 'b'.repeat(64), ['clusterId', 'customers'])],
+    });
+    const sessionId = await createSession(h);
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Cuantos hay en cada cluster?' });
+
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') expect(response.response.status).toBe('answered');
+    expect(h.generateAnalysisPlan).toHaveBeenCalledWith(expect.objectContaining({ question: 'Cuantos clientes hay en cada cluster?' }));
+    expect(h.executeAnalyticalQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed when the orchestrator tries answer_from_context in a fresh session and repair remains invalid', async () => {
+    const h = harness({
+      decisions: [conversationAnswerFromContext([], '')],
+      repairDecision: conversationAnswerFromContext(['invented_query'], 'Usa el resultado previo.'),
+    });
+    const sessionId = await createSession(h);
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Cuantos clientes hay?' });
+
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') {
+      expect(response.response.status).toBe('orchestrator_invalid');
+      if (response.response.status === 'orchestrator_invalid') {
+        expect(response.response.errors.join(' ')).toMatch(/answer_from_context requires at least one sourceQueryId/);
+        expect(response.response.errors.join(' ')).toMatch(/sourceQueryId is not available in session context: invented_query/);
+      }
+    }
+    expect(h.repairConversationDecision).toHaveBeenCalledTimes(1);
+    expect(h.generateAnalysisPlan).not.toHaveBeenCalled();
+    expect(h.diagnostics[0]).toMatchObject({
+      initialAction: 'answer_from_context',
+      selectedAction: null,
+      repairAttempted: true,
+      repairSucceeded: false,
+      sessionReferenceCount: 0,
+      sessionResultCount: 0,
+      availableSourceQueryIdCount: 0,
+    });
+  });
+
+  it('continues through analytics when repair corrects a fresh-session answer_from_context decision', async () => {
+    const h = harness({
+      decisions: [conversationAnswerFromContext([], '')],
+      repairDecision: runAnalytics('Cuantos clientes hay en la poblacion actual de Customer Intelligence?'),
+      plans: [queryPlan([{ id: 'customer_count', plan: { metrics: [{ aggregation: 'count', alias: 'customers' }] } }])],
+      executionResults: [result([{ customers: 10 }])],
+    });
+    const sessionId = await createSession(h);
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Cuantos clientes hay?' });
+
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') expect(response.response.status).toBe('answered');
+    expect(h.repairConversationDecision).toHaveBeenCalledTimes(1);
+    const repairCalls = h.repairConversationDecision.mock.calls as unknown as [RepairConversationDecisionInput][];
+    const repairInput = repairCalls[0]?.[0];
+    expect(repairInput).toMatchObject({
+      previousDecision: conversationAnswerFromContext([], ''),
+      validationErrors: expect.arrayContaining(['answer_from_context requires at least one sourceQueryId']),
+      actionConstraints: {
+        answerFromContextAllowed: false,
+        freshBusinessFactQuestion: true,
+        availableSourceQueryIds: [],
+        decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
+      },
+    });
+    expect(h.generateAnalysisPlan).toHaveBeenCalledWith(expect.objectContaining({ question: 'Cuantos clientes hay en la poblacion actual de Customer Intelligence?' }));
+    expect(h.diagnostics[0]).toMatchObject({
+      initialAction: 'answer_from_context',
+      selectedAction: 'run_analytics',
+      repairAttempted: true,
+      repairSucceeded: true,
+    });
+  });
+
   it('passes bounded references to the planner for a follow-up query', async () => {
     const h = harness({
       plans: [queryPlan([{ id: 'q1', plan: bestClusterPlan }]), queryPlan([{ id: 'q2', plan: atRiskPlan }])],
@@ -201,16 +328,23 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
 
   it('asks for clarification without invoking the analytical planner for ambiguous criteria', async () => {
     const h = harness({
-      decisions: [
-        {
-          decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
-          action: 'clarification_required',
-          message: 'Quieres priorizarlos por gasto total, ticket promedio, frecuencia o recencia?',
-        },
-      ],
+      decisions: [clarificationRequired('Quieres priorizarlos por gasto total, ticket promedio, frecuencia o recencia?')],
     });
     const sessionId = await createSession(h);
     const response = await h.service.processSessionTurn({ sessionId, question: 'Cuales son nuestros mejores clientes?' });
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') expect(response.response.status).toBe('clarification_required');
+    expect(h.generateAnalysisPlan).not.toHaveBeenCalled();
+    expect(h.executeAnalyticalQuery).not.toHaveBeenCalled();
+  });
+
+  it('asks for clarification for an ambiguous best-group question', async () => {
+    const h = harness({
+      decisions: [clarificationRequired()],
+    });
+    const sessionId = await createSession(h);
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Cual es el mejor grupo?' });
+
     expect(response.status).toBe('ok');
     if (response.status === 'ok') expect(response.response.status).toBe('clarification_required');
     expect(h.generateAnalysisPlan).not.toHaveBeenCalled();
@@ -241,16 +375,10 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
 
   it('responds directly to safe domain explanations without planner or analytics', async () => {
     const h = harness({
-      decisions: [
-        {
-          decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
-          action: 'respond_directly',
-          message: 'RFM clasifica clientes por recencia, frecuencia y valor monetario.',
-        },
-      ],
+      decisions: [respondDirectly()],
     });
     const sessionId = await createSession(h);
-    const response = await h.service.processSessionTurn({ sessionId, question: 'What is RFM?' });
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Que es RFM?' });
     expect(response.status).toBe('ok');
     if (response.status === 'ok') {
       expect(response.response.status).toBe('responded_directly');
@@ -271,6 +399,42 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
       expect(second.response.sourceQueryIds).toEqual(['q1']);
     }
     expect(h.executeAnalyticalQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts answer_from_context when the orchestrator cites an existing prior result', async () => {
+    const h = harness({
+      decisions: [runAnalytics('Distribucion de clientes por cluster.'), conversationAnswerFromContext(['cluster_distribution'], 'Identifica el cluster con mayor cantidad de clientes usando el resultado previo.')],
+      plans: [
+        queryPlan([
+          {
+            id: 'cluster_distribution',
+            plan: {
+              dimensions: ['cluster.clusterId'],
+              metrics: [{ aggregation: 'count', alias: 'customers' }],
+              orderBy: [{ field: 'customers', direction: 'desc' }],
+            },
+          },
+        ]),
+      ],
+      executionResults: [result([{ clusterId: 1, customers: 6 }, { clusterId: 0, customers: 4 }], 'e'.repeat(64), ['clusterId', 'customers'])],
+    });
+    const sessionId = await createSession(h);
+    await h.service.processSessionTurn({ sessionId, question: 'Cuantos hay en cada cluster?' });
+    const second = await h.service.processSessionTurn({ sessionId, question: 'Cual de esos clusters tiene mas clientes?' });
+
+    expect(second.status).toBe('ok');
+    if (second.status === 'ok') {
+      expect(second.response.status).toBe('answered_from_context');
+      expect(second.response.sourceQueryIds).toEqual(['cluster_distribution']);
+    }
+    expect(h.generateAnalysisPlan).toHaveBeenCalledTimes(1);
+    expect(h.executeAnalyticalQuery).toHaveBeenCalledTimes(1);
+    expect(h.diagnostics[1]).toMatchObject({
+      selectedAction: 'answer_from_context',
+      sessionReferenceCount: 1,
+      sessionResultCount: 1,
+      availableSourceQueryIdCount: 1,
+    });
   });
 
   it('pins context per session and refresh clears context-dependent results', async () => {
