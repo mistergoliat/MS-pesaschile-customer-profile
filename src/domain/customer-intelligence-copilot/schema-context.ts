@@ -88,6 +88,46 @@ export function serializeAnalyticalQueryContractForCopilot(): CompactAnalyticalQ
       default: DEFAULT_LIMIT,
       maxRows: MAX_RESULT_ROWS,
     },
+    semanticRules: {
+      nullableDimensions: [
+        {
+          field: 'cluster.clusterId',
+          nullMeaning: 'customer has no cluster assignment in the pinned cluster snapshot',
+          excludeNullWhen: ['comparing named clusters', 'ranking clusters', 'asking which cluster or group is best/worst/highest/lowest'],
+          includeNullWhen: ['asking for the whole base distribution', 'explicitly asking to include unclustered customers'],
+        },
+        {
+          field: 'rfm.segmentCode',
+          nullMeaning: 'customer has no RFM segment in the pinned RFM snapshot',
+          excludeNullWhen: ['comparing named RFM segments', 'ranking segments'],
+          includeNullWhen: ['asking for whole base RFM coverage or explicitly including unsegmented customers'],
+        },
+      ],
+      exploratoryAnalysis: {
+        maxQueries: CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES,
+        preferredMetricFamilies: [
+          'population and coverage',
+          'cluster distribution',
+          'revenue and average ticket',
+          'frequency and recency',
+          'product diversity and repeat behavior',
+          'RFM segment distribution',
+        ],
+        stateLimitations: true,
+      },
+      unsupportedConcepts: [
+        {
+          concept: 'profitability',
+          reason: 'current logical fields do not include margin, cost, or profit',
+          closestSupportedAnalyses: ['revenue via commercial.totalSpentTaxIncl', 'average ticket via commercial.averageOrderValueTaxIncl', 'frequency via commercial.validOrders or commercial.orders365d'],
+        },
+        {
+          concept: 'future prediction',
+          reason: 'runtime has historical snapshot features but no predictive model output',
+          closestSupportedAnalyses: ['recent activity', 'frequency', 'recency', 'historical spending patterns'],
+        },
+      ],
+    },
     examples: [
       {
         question: 'Cuantos clientes hay?',
@@ -124,6 +164,17 @@ export function serializeAnalyticalQueryContractForCopilot(): CompactAnalyticalQ
             { field: 'commercial.totalSpentTaxIncl', operator: 'gte', value: '100000' },
           ],
           metrics: [{ aggregation: 'count', alias: 'customer_count' }],
+        },
+      },
+      {
+        question: 'Que cluster tiene mayor gasto total?',
+        plan: {
+          planVersion: CUSTOMER_INTELLIGENCE_QUERY_PLAN_VERSION,
+          dimensions: ['cluster.clusterId'],
+          filters: [{ field: 'cluster.clusterId', operator: 'is_not_null' }],
+          metrics: [{ aggregation: 'sum', field: 'commercial.totalSpentTaxIncl', alias: 'total_spent' }],
+          orderBy: [{ field: 'total_spent', direction: 'desc' }],
+          limit: 1,
         },
       },
       {

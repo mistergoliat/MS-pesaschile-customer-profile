@@ -1,9 +1,10 @@
 import {
   CUSTOMER_INTELLIGENCE_COPILOT_SESSION_CONTEXT_VERSION,
   type CopilotAnalyticalReference,
+  type CopilotSemanticFocus,
   type CopilotSessionContext,
 } from '../../domain/customer-intelligence-copilot/index.js';
-import type { AnalyticalQueryResultRow } from '../../domain/customer-intelligence-query/index.js';
+import type { AnalyticalQueryPlan, AnalyticalQueryResultRow } from '../../domain/customer-intelligence-query/index.js';
 import type { CopilotSession, CopilotSessionLimits, CopilotSessionQueryResult } from './contracts.js';
 
 export function buildCopilotSessionContext(session: CopilotSession, limits: CopilotSessionLimits): CopilotSessionContext {
@@ -17,6 +18,7 @@ export function buildCopilotSessionContext(session: CopilotSession, limits: Copi
       assistantStatus: turn.assistantStatus,
       assistantAnswer: turn.assistantAnswer,
     })),
+    semanticFocus: deriveSemanticFocus(session),
     analyticalReferences: session.analyticalState.references,
     recentResults: session.analyticalState.results.slice(-3).map((entry) => ({
       queryId: entry.queryId,
@@ -31,7 +33,7 @@ export function buildCopilotSessionContext(session: CopilotSession, limits: Copi
 
 export function deriveAnalyticalReferences(entries: readonly CopilotSessionQueryResult[]): readonly CopilotAnalyticalReference[] {
   const references: CopilotAnalyticalReference[] = [];
-  for (const entry of entries) {
+  for (const entry of [...entries].reverse()) {
     const first = entry.result.rows[0];
     if (!first) continue;
     const filters = filtersFromRow(first);
@@ -40,6 +42,102 @@ export function deriveAnalyticalReferences(entries: readonly CopilotSessionQuery
     break;
   }
   return references;
+}
+
+export function deriveSemanticFocus(session: CopilotSession): CopilotSemanticFocus {
+  const lastResult = latestResult(session.analyticalState.results);
+  const activeComparison = lastResult ? comparisonFromResult(lastResult) : null;
+  const activeEntity = lastResult ? entityFromRow(lastResult.result.rows[0], activeComparison, lastResult.queryId) : null;
+  const activeMetric = lastResult ? metricFromPlan(lastResult.plan, lastResult.queryId) : null;
+  const unresolvedClarificationTurn = [...session.turns].reverse().find((turn) => turn.assistantStatus === 'clarification_required');
+
+  return {
+    activeEntity,
+    activeMetric,
+    activeComparison,
+    unresolvedClarification: unresolvedClarificationTurn
+      ? {
+          turnId: unresolvedClarificationTurn.turnId,
+          originalQuestion: unresolvedClarificationTurn.userQuestion,
+          assistantMessage: unresolvedClarificationTurn.assistantAnswer,
+        }
+      : null,
+    lastAnalyticalResult: lastResult
+      ? {
+          queryId: lastResult.queryId,
+          rowCount: lastResult.result.rowCount,
+          columns: lastResult.result.columns.map((column) => column.name),
+          topRowFacts: factsFromRow(lastResult.result.rows[0]),
+        }
+      : null,
+  };
+}
+
+function latestResult(entries: readonly CopilotSessionQueryResult[]): CopilotSessionQueryResult | null {
+  return entries.length > 0 ? entries[entries.length - 1]! : null;
+}
+
+function comparisonFromResult(entry: CopilotSessionQueryResult): CopilotSemanticFocus['activeComparison'] {
+  const dimensions = entry.plan.dimensions ?? [];
+  const entityType = dimensions.includes('cluster.clusterId')
+    ? 'cluster'
+    : dimensions.includes('rfm.segmentCode')
+      ? 'rfm_segment'
+      : null;
+  if (!entityType) return null;
+
+  const entityField = entityType === 'cluster' ? 'clusterId' : 'segmentCode';
+  const entityIds = entry.result.rows
+    .slice(0, 5)
+    .map((row) => row[entityField])
+    .filter((value): value is string | number | null => typeof value === 'string' || typeof value === 'number' || value === null);
+
+  return {
+    entityType,
+    entityIds,
+    criterion: metricFromPlan(entry.plan, entry.queryId)?.name ?? null,
+    sourceQueryId: entry.queryId,
+  };
+}
+
+function entityFromRow(
+  row: AnalyticalQueryResultRow | undefined,
+  comparison: CopilotSemanticFocus['activeComparison'],
+  sourceQueryId: string,
+): CopilotSemanticFocus['activeEntity'] {
+  if (!row) return null;
+  if (typeof row.clusterId === 'number') {
+    return { type: comparison ? 'comparison_set' : 'cluster', id: row.clusterId, sourceQueryId };
+  }
+  if (typeof row.segmentCode === 'string' && row.segmentCode.length > 0) {
+    return { type: comparison ? 'comparison_set' : 'rfm_segment', id: row.segmentCode, sourceQueryId };
+  }
+  return comparison ? { type: 'comparison_set', id: comparison.entityIds[0] ?? null, sourceQueryId } : null;
+}
+
+function metricFromPlan(plan: AnalyticalQueryPlan, sourceQueryId: string): CopilotSemanticFocus['activeMetric'] {
+  const metric = plan.metrics?.[0];
+  if (!metric) return null;
+  return {
+    name: metric.alias,
+    field: metric.field ?? null,
+    aggregation: metric.aggregation,
+    sourceQueryId,
+  };
+}
+
+type TopRowFacts = NonNullable<CopilotSemanticFocus['lastAnalyticalResult']>['topRowFacts'];
+
+function factsFromRow(row: AnalyticalQueryResultRow | undefined): TopRowFacts {
+  if (!row) return [];
+  return Object.entries(row)
+    .filter((entry): entry is [string, string | number | boolean | null] => isFactValue(entry[1]))
+    .slice(0, 8)
+    .map(([field, value]) => ({ field, value }));
+}
+
+function isFactValue(value: unknown): value is string | number | boolean | null {
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value === null;
 }
 
 function filtersFromRow(row: AnalyticalQueryResultRow): CopilotAnalyticalReference['filters'] {

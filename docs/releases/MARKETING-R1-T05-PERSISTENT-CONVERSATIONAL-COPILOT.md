@@ -338,3 +338,100 @@ Local focused validation:
 Result: PASS, 7 files, 123 tests.
 
 Live validation: NOT_RUN.
+
+## T05.4 Semantic Analytical Reasoning
+
+Motivation: after T05.1-T05.3, the live EC2 path was healthy for persistence, routing, planner
+contract generation, bounded AnalyticalQueryPlan execution, provenance and simple factual answers.
+The remaining failures were semantic: conversational follow-ups and broad commercial questions were
+not getting enough context to resolve intent, choose useful analyses, and synthesize evidence with
+proper limitations.
+
+Observed EC2 semantic failures:
+
+- After `Cual tiene mayor ticket promedio?` returned Cluster 3, the follow-up `Por que?` produced
+  `clarification_required` instead of resolving the referent and running explanatory analytics.
+- `Cual es el mejor grupo?` correctly asked for clarification, but the follow-up `Por gasto total`
+  did not sufficiently constrain the comparison to assigned clusters and could surface
+  `clusterId = null` as the top group.
+- `currentAudience` could remain tied to an older first retained query result, such as
+  `clusters_by_count -> clusterId = 0`, after the conversational focus had moved to Cluster 3.
+
+Semantic context:
+
+- `CopilotSessionContext` now includes a compact derived `semanticFocus`.
+- The focus is reconstructed from persisted turns, retained analytical results and stored query
+  plans, so no schema migration is required.
+- The focus includes active entity, active metric, active comparison, unresolved clarification and
+  bounded top-row facts from the latest analytical result.
+- It does not persist or expose chain-of-thought, raw provider payloads, SQL, credentials or PII.
+- `currentAudience` reference derivation now uses the most recent retained result with derivable
+  entity filters instead of the oldest retained result, preventing stale Cluster 0 focus after a
+  later Cluster 3 result.
+
+Contextual follow-ups:
+
+- Orchestrator prompt version incremented from `customer-intelligence-copilot-orchestrator-v2` to
+  `customer-intelligence-copilot-orchestrator-v3`.
+- The orchestrator is instructed to resolve elliptical follow-ups from `semanticFocus`, recent
+  turns, unresolved clarification, analytical references and recent results when there is one
+  dominant plausible referent.
+- Examples include `Por que?`, `Y el 1?`, `Eso es mucho?`, `Y versus los otros?`, `Cual de esos?`
+  and `Que pasa con ese grupo?`.
+- Clarification remains correct when ambiguity materially changes the result, such as an initial
+  `Cual es el mejor grupo?` with no criterion.
+
+Analytical reasoning:
+
+- Planner prompt version incremented from `customer-intelligence-copilot-planner-v2` to
+  `customer-intelligence-copilot-planner-v3`.
+- The planner is encouraged to use the existing max-3-query budget for explanatory and exploratory
+  analysis when synthesis requires more than one bounded query.
+- The query contract now includes semantic rules for nullable analytical dimensions. For cluster
+  and segment comparisons/rankings, nullable ids should be excluded unless the user explicitly asks
+  for whole-base distribution including unassigned/unsegmented customers.
+- Broad prompts such as `Que ves interesante?`, `Analiza mis clientes`, `Donde ves oportunidades?`
+  and `Hay algo raro?` should run useful initial analytics instead of defaulting to clarification.
+- Colloquial commercial language is explicitly mapped to available analytical concepts through
+  model interpretation, not a hardcoded synonym table.
+
+Epistemic answer boundaries:
+
+- Answer prompt version incremented from `customer-intelligence-copilot-answer-v1` to
+  `customer-intelligence-copilot-answer-v2`.
+- The answerer must distinguish facts, interpretations, hypotheses, recommendations and
+  limitations semantically.
+- Correlation must not be converted into causation.
+- Profitability must not be equated with spend or AOV when margin/cost/profit fields are absent.
+- Future purchase questions must not be answered as predictions when no predictive model output is
+  available.
+
+Observability:
+
+- Orchestrator diagnostics now include safe semantic validation fields: whether follow-up context
+  was used, active semantic entity type/id, whether an unresolved clarification is present, and a
+  bounded sanitized summary plus hash of the rewritten analytical question when `run_analytics` is
+  selected.
+- Planner diagnostics from T05.3 remain bounded to statuses, repair flags, query step ids and
+  validation error categories.
+
+Benchmark coverage:
+
+- Simple facts: customer count and assigned-cluster counts.
+- Contextual follow-ups: `Por que?`, `Y el 1?`, and `Eso es mucho?`.
+- Clarification resolution: `Cual es el mejor grupo?` then `Por gasto total`, with assigned-cluster
+  filtering.
+- Colloquial language: `compra mas caro`, `medios muertos`, and `compra harto pero poco seguido`.
+- Exploratory prompts: interesting patterns, general read, commercial opportunity and anomaly
+  exploration.
+- Limits: unavailable profitability and unsupported future prediction.
+- Epistemic safety: explanatory analysis passes through answerer with non-causal grounding rules.
+- Reference state: focus moves from an older Cluster 0 distribution to the later Cluster 3 result.
+
+Local focused validation:
+
+`npm test -- --run tests/unit/customer-intelligence-copilot-semantic-benchmark.test.ts tests/unit/customer-intelligence-copilot-session.test.ts tests/unit/customer-intelligence-query-planner-contract.test.ts tests/unit/customer-intelligence-query-validator.test.ts tests/unit/openai-compatible-copilot-model.test.ts tests/unit/http-json-copilot-model.test.ts`
+
+Result: PASS, 6 files, 118 tests.
+
+Live validation: NOT_RUN.

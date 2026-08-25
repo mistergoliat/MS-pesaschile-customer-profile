@@ -148,6 +148,24 @@ export type CompactAnalyticalQueryContract = {
     readonly default: number;
     readonly maxRows: number;
   };
+  readonly semanticRules: {
+    readonly nullableDimensions: readonly {
+      readonly field: string;
+      readonly nullMeaning: string;
+      readonly excludeNullWhen: readonly string[];
+      readonly includeNullWhen: readonly string[];
+    }[];
+    readonly exploratoryAnalysis: {
+      readonly maxQueries: number;
+      readonly preferredMetricFamilies: readonly string[];
+      readonly stateLimitations: true;
+    };
+    readonly unsupportedConcepts: readonly {
+      readonly concept: string;
+      readonly reason: string;
+      readonly closestSupportedAnalyses: readonly string[];
+    }[];
+  };
   readonly examples: readonly {
     readonly question: string;
     readonly plan: AnalyticalQueryPlan;
@@ -170,6 +188,37 @@ export type CopilotAnalyticalReference = {
   }[];
 };
 
+export type CopilotSemanticFocus = {
+  readonly activeEntity: {
+    readonly type: 'cluster' | 'rfm_segment' | 'audience' | 'comparison_set';
+    readonly id: string | number | null;
+    readonly sourceQueryId: string | null;
+  } | null;
+  readonly activeMetric: {
+    readonly name: string;
+    readonly field: string | null;
+    readonly aggregation: string | null;
+    readonly sourceQueryId: string | null;
+  } | null;
+  readonly activeComparison: {
+    readonly entityType: 'cluster' | 'rfm_segment' | 'audience';
+    readonly entityIds: readonly (string | number | null)[];
+    readonly criterion: string | null;
+    readonly sourceQueryId: string | null;
+  } | null;
+  readonly unresolvedClarification: {
+    readonly turnId: string;
+    readonly originalQuestion: string;
+    readonly assistantMessage: string | null;
+  } | null;
+  readonly lastAnalyticalResult: {
+    readonly queryId: string;
+    readonly rowCount: number;
+    readonly columns: readonly string[];
+    readonly topRowFacts: readonly { readonly field: string; readonly value: string | number | boolean | null }[];
+  } | null;
+};
+
 export type CopilotSessionContext = {
   readonly contextVersion: typeof CUSTOMER_INTELLIGENCE_COPILOT_SESSION_CONTEXT_VERSION;
   readonly pinnedContext: CustomerIntelligenceSnapshotContext;
@@ -180,6 +229,7 @@ export type CopilotSessionContext = {
     readonly assistantStatus: string;
     readonly assistantAnswer: string | null;
   }[];
+  readonly semanticFocus: CopilotSemanticFocus;
   readonly analyticalReferences: readonly CopilotAnalyticalReference[];
   readonly recentResults: readonly {
     readonly queryId: string;

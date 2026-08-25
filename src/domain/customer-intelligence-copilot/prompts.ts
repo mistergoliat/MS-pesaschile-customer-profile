@@ -1,6 +1,6 @@
-export const CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_PROMPT_VERSION = 'customer-intelligence-copilot-planner-v2';
-export const CUSTOMER_INTELLIGENCE_COPILOT_ANSWER_PROMPT_VERSION = 'customer-intelligence-copilot-answer-v1';
-export const CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_PROMPT_VERSION = 'customer-intelligence-copilot-orchestrator-v2';
+export const CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_PROMPT_VERSION = 'customer-intelligence-copilot-planner-v3';
+export const CUSTOMER_INTELLIGENCE_COPILOT_ANSWER_PROMPT_VERSION = 'customer-intelligence-copilot-answer-v2';
+export const CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_PROMPT_VERSION = 'customer-intelligence-copilot-orchestrator-v3';
 
 export const CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_INSTRUCTIONS = [
   'Use only the provided analytical schema logical fields.',
@@ -29,6 +29,12 @@ export const CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_INSTRUCTIONS = [
   'Use AnalyticalQueryPlan objects inside query steps; each plan will be validated by the deterministic runtime.',
   'Use unsupported_data when the schema lacks the required data, unsupported_operation when the runtime lacks the needed operation, and clarification_required when the request lacks a deterministic criterion.',
   'Prefer aggregate results unless the user explicitly asks for bounded row-level customer ids.',
+  'For cluster or segment comparison questions, exclude nullable dimension values with is_not_null unless the user explicitly asks for whole-base distribution including unassigned/unsegmented customers.',
+  'For broad exploratory questions, do not default to clarification_required. Choose up to 3 high-value aggregate analyses using the available schema, then let the answerer synthesize evidence and limitations.',
+  'For explanatory "why" questions, plan comparisons of observed available features. Do not try to prove causality; gather evidence that can support interpretations or hypotheses.',
+  'Interpret colloquial commercial language using available analytical concepts, such as expensive purchases as average ticket, loyal/high frequency as valid orders or orders365d, inactive as recency/daysSinceLastOrder, and high value as total spend.',
+  'If the user asks for profitability and no margin/cost/profit field exists, return unsupported_data or plan only a clearly labeled closest supported revenue analysis when the request allows it. Never equate spend with profit.',
+  'If the user asks for future prediction and no predictive field exists, do not present a prediction as fact. Use unsupported_data or historical risk/activity analysis as a limitation-aware substitute.',
   'Do not answer the question during planning.',
 ] as const;
 
@@ -43,8 +49,13 @@ export const CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_INSTRUCTIONS = [
   '3. Never invent sourceQueryIds. Use only sourceQueryIds present in analyticalReferences or recentResults.',
   '4. If analyticalReferences and recentResults are empty, NEVER use "answer_from_context".',
   'Use respond_directly only for safe domain explanations, meta conversation, or non-data answers that do not require fresh business facts.',
-  'Use clarification_required when the user asks an ambiguous analytical question without a deterministic criterion.',
+  'Use clarification_required only when ambiguity materially changes the analytical result and recent context does not supply a dominant plausible referent.',
+  'Resolve elliptical follow-ups from semanticFocus, recent turns, unresolvedClarification, analytical references, and recent results when there is one dominant plausible referent.',
+  'Do not clarify follow-ups such as "Por que?", "Y el 1?", "Eso es mucho?", "Y versus los otros?", or "Que pasa con ese grupo?" when recent context makes the referent clear.',
+  'If the previous turn requested clarification and the user supplies the missing criterion, resolve the original analytical question plus the new criterion into run_analytics.',
+  'Broad exploratory analytical requests such as "Que ves interesante?", "Analiza mis clientes", "Donde ves oportunidades?", or "Hay algo raro?" should usually be run_analytics, not clarification_required.',
   'Use answer_from_context only when supplied recent results or analytical references are enough; cite sourceQueryIds and include a concise instruction for the answerer.',
+  'Use run_analytics for explanatory follow-ups when prior results identify the target but do not contain enough evidence to explain observed differences.',
   'Use run_analytics when fresh Customer Intelligence data is required; include a precise analyticalQuestion for the internal strict analytical planner.',
   'Use unsupported for unavailable data, unsafe requests, or operations outside the bounded Customer Intelligence runtime.',
   'Never emit SQL, table names, DB columns, credentials, executable code, shell commands, unrestricted tool names, or provider-specific behavior.',
@@ -52,6 +63,8 @@ export const CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_INSTRUCTIONS = [
   'During repair, regenerate the COMPLETE valid decision envelope from scratch using the validator errors.',
   'For a new conversation, "Cuantos clientes hay?" must produce {"decisionVersion":"customer-intelligence-conversation-decision-v1","action":"run_analytics","analyticalQuestion":"Cuantos clientes hay en la poblacion actual de Customer Intelligence?"}.',
   'Fresh analytics example: {"decisionVersion":"customer-intelligence-conversation-decision-v1","action":"run_analytics","analyticalQuestion":"Cuantos clientes hay en la poblacion actual de Customer Intelligence?"}.',
+  'Contextual why example after Cluster 3 had highest AOV: {"decisionVersion":"customer-intelligence-conversation-decision-v1","action":"run_analytics","analyticalQuestion":"Compare Cluster 3 against the other assigned clusters using available behavioral and commercial features that could explain its higher averageOrderValue. Do not infer causality; identify observed differences."}.',
+  'Clarification resolution example after "Cual es el mejor grupo?" and user says "Por gasto total": {"decisionVersion":"customer-intelligence-conversation-decision-v1","action":"run_analytics","analyticalQuestion":"Which assigned cluster has the highest totalSpentTaxIncl? Exclude customers with no cluster assignment."}.',
   'Context reuse example: {"decisionVersion":"customer-intelligence-conversation-decision-v1","action":"answer_from_context","sourceQueryIds":["cluster_distribution"],"instruction":"Identifica el cluster con mayor cantidad de clientes usando el resultado previo."}.',
   'Direct response example: {"decisionVersion":"customer-intelligence-conversation-decision-v1","action":"respond_directly","message":"RFM clasifica clientes por recencia, frecuencia y valor monetario."}.',
   'Clarification example: {"decisionVersion":"customer-intelligence-conversation-decision-v1","action":"clarification_required","message":"Necesito un criterio concreto para comparar los grupos."}.',
@@ -62,6 +75,10 @@ export const CUSTOMER_INTELLIGENCE_COPILOT_ANSWER_INSTRUCTIONS = [
   'Use only the supplied analytical results and provenance.',
   'Do not invent numbers, fields, causal explanations, or unsupported metrics.',
   'Distinguish observed results from interpretation.',
+  'For analytical and exploratory answers, keep FACT, INTERPRETATION, HYPOTHESIS, RECOMMENDATION, and LIMITATION distinct semantically, even when the response is short and natural.',
+  'Never convert correlation into causation. Use cautious language such as "suggests", "is consistent with", or "may indicate" when explaining patterns.',
+  'If a requested concept is unavailable, such as profitability without margin/cost/profit fields or future prediction without a predictive model, state the limitation explicitly and do not substitute a different metric as if equivalent.',
+  'For explanatory "why" questions, cite observed differences first, then offer hypotheses clearly labeled as non-causal.',
   'Respect nullable RFM and cluster coverage; mention partial coverage when materially relevant.',
   'Cluster labels are analytical interpretations, not permanent customer identities; clusterId is model-scoped.',
   'RFM values are snapshot and policy scoped.',

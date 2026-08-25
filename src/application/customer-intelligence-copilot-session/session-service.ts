@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   CUSTOMER_INTELLIGENCE_COPILOT_ANALYSIS_PLAN_VERSION,
   CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION,
@@ -102,6 +102,12 @@ export type CopilotOrchestratorDiagnostic = {
   readonly sessionReferenceCount: number;
   readonly sessionResultCount: number;
   readonly availableSourceQueryIdCount: number;
+  readonly followUpContextUsed: boolean;
+  readonly activeSemanticEntityType: string | null;
+  readonly activeSemanticEntityId: string | number | null;
+  readonly unresolvedClarificationPresent: boolean;
+  readonly rewrittenAnalyticalQuestionHash: string | null;
+  readonly rewrittenAnalyticalQuestionSummary: string | null;
 };
 
 export type CopilotPlannerDiagnostic = {
@@ -520,7 +526,10 @@ async function decideConversation(args: {
     if (first.ok) {
       emitOrchestratorDiagnostic(args.onDiagnostic, {
         actionConstraints,
+        sessionContext: args.sessionContext,
         initialAction: actionFromUnknown(output.decision),
+        question: args.question,
+        selectedDecision: first.decision,
         selectedAction: first.decision.action,
         validationErrors: [],
         repairAttempted: false,
@@ -542,7 +551,10 @@ async function decideConversation(args: {
       if (repaired.ok) {
         emitOrchestratorDiagnostic(args.onDiagnostic, {
           actionConstraints,
+          sessionContext: args.sessionContext,
           initialAction: actionFromUnknown(output.decision),
+          question: args.question,
+          selectedDecision: repaired.decision,
           selectedAction: repaired.decision.action,
           validationErrors: first.errors,
           repairAttempted: true,
@@ -553,7 +565,10 @@ async function decideConversation(args: {
       const validationErrors = [...first.errors, ...repaired.errors];
       emitOrchestratorDiagnostic(args.onDiagnostic, {
         actionConstraints,
+        sessionContext: args.sessionContext,
         initialAction: actionFromUnknown(output.decision),
+        question: args.question,
+        selectedDecision: null,
         selectedAction: null,
         validationErrors,
         repairAttempted: true,
@@ -563,7 +578,10 @@ async function decideConversation(args: {
     }
     emitOrchestratorDiagnostic(args.onDiagnostic, {
       actionConstraints,
+      sessionContext: args.sessionContext,
       initialAction: actionFromUnknown(output.decision),
+      question: args.question,
+      selectedDecision: null,
       selectedAction: null,
       validationErrors: first.errors,
       repairAttempted: false,
@@ -667,7 +685,10 @@ function emitOrchestratorDiagnostic(
   onDiagnostic: ((diagnostic: CopilotOrchestratorDiagnostic) => void) | undefined,
   args: {
     readonly actionConstraints: CopilotConversationDecisionActionConstraints;
+    readonly sessionContext: ReturnType<typeof buildCopilotSessionContext>;
     readonly initialAction: string | null;
+    readonly question: string;
+    readonly selectedDecision: CopilotConversationDecision | null;
     readonly selectedAction: string | null;
     readonly validationErrors: readonly string[];
     readonly repairAttempted: boolean;
@@ -684,6 +705,12 @@ function emitOrchestratorDiagnostic(
     sessionReferenceCount: args.actionConstraints.sessionReferenceCount,
     sessionResultCount: args.actionConstraints.sessionResultCount,
     availableSourceQueryIdCount: args.actionConstraints.availableSourceQueryIds.length,
+    followUpContextUsed: isLikelyFollowUp(args.question) && (args.sessionContext.semanticFocus.activeEntity !== null || args.sessionContext.semanticFocus.unresolvedClarification !== null),
+    activeSemanticEntityType: args.sessionContext.semanticFocus.activeEntity?.type ?? null,
+    activeSemanticEntityId: args.sessionContext.semanticFocus.activeEntity?.id ?? null,
+    unresolvedClarificationPresent: args.sessionContext.semanticFocus.unresolvedClarification !== null,
+    rewrittenAnalyticalQuestionHash: args.selectedDecision?.action === 'run_analytics' ? safeHash(args.selectedDecision.analyticalQuestion) : null,
+    rewrittenAnalyticalQuestionSummary: args.selectedDecision?.action === 'run_analytics' ? trimBounded(args.selectedDecision.analyticalQuestion, 160) : null,
   });
 }
 
@@ -691,6 +718,22 @@ function actionFromUnknown(value: unknown): string | null {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
   const action = (value as Record<string, unknown>).action;
   return typeof action === 'string' ? action : null;
+}
+
+function isLikelyFollowUp(question: string): boolean {
+  const normalized = question
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+  return (
+    normalized.length <= 80 &&
+    /^(por que|y\b|y el\b|y la\b|versus|eso|cual de esos|que pasa con ese|que pasa con esa|cuanto era|cual era|por gasto|por ticket|por frecuencia|por recencia)/.test(normalized)
+  );
+}
+
+function safeHash(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
 }
 
 async function answerFromSessionContext(args: {
