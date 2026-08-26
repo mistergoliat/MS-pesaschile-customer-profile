@@ -163,7 +163,7 @@ const rowPlan = {
   filters: [{ field: 'cluster.clusterId', operator: 'eq', value: 0 }],
 };
 
-function result(rows: readonly Record<string, unknown>[], hash = 'a'.repeat(64), columns = Object.keys(rows[0] ?? { customers: 1 })): AnalyticalQueryResult {
+function result(rows: readonly Record<string, unknown>[], hash = 'a'.repeat(64), columns = Object.keys(rows[0] ?? { customers: 1 }), truncated = false): AnalyticalQueryResult {
   return {
     queryVersion: 'customer-intelligence-query-v1',
     queryPlanHash: hash,
@@ -171,7 +171,7 @@ function result(rows: readonly Record<string, unknown>[], hash = 'a'.repeat(64),
     columns: columns.map((name) => ({ name, type: name === 'customerId' || name === 'clusterId' || name === 'customers' ? 'integer' : name.includes('Aov') || name.includes('Spent') ? 'decimal' : 'string' })),
     rows: rows as AnalyticalQueryResult['rows'],
     rowCount: rows.length,
-    execution: { durationMs: 7, truncated: false },
+    execution: { durationMs: 7, truncated },
   };
 }
 
@@ -439,6 +439,71 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
     ]));
   });
 
+  it('renders an ordered top-1 grouped ranking deterministically even when RESULT_LIMIT_TRUNCATION is set (safe top-k truncation)', async () => {
+    const h = harness({
+      toolRuntimeEnabled: true,
+      conversationalTurns: [
+        toolRuntimeCall([{ id: 'avg_ticket_by_cluster', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'avg', field: 'commercial.averageOrderValueTaxIncl', alias: 'avg_ticket' }], orderBy: [{ field: 'avg_ticket', direction: 'desc' }], limit: 1 } }]),
+      ],
+      // truncated=true here means the LIMIT 1 cut off other clusters beyond the winner - safe,
+      // because the plan only asked for the top-1 row in the first place.
+      executionResults: [result([{ clusterId: 3, avg_ticket: '381304.040000' }], '9'.repeat(64), ['clusterId', 'avg_ticket'], true)],
+    });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Cual cluster tiene mayor ticket promedio?' });
+
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') {
+      expect(response.response.status).toBe('answered');
+      if (response.response.status === 'answered') {
+        expect(response.response.answer).toMatch(/cluster 3.*381304\.040000/i);
+        expect(response.response.analysis.queryPlanHashes).toEqual(['9'.repeat(64)]);
+        expect(response.response.provenance.featureSnapshot.snapshotId).toBe('17');
+      }
+    }
+    // one-model-call path: tool selection only, no synthesis, even though the result was flagged truncated.
+    expect(h.generateConversationalTurn).toHaveBeenCalledTimes(1);
+    expect(h.generateAnswer).not.toHaveBeenCalled();
+    expect(h.stageLatencyDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: 'analytics_execution', deterministicRendererEligible: true, deterministicRendererReason: 'eligible_top_k_truncation' }),
+      expect.objectContaining({
+        stage: 'turn',
+        deterministicRendererEligible: true,
+        deterministicRendererReason: 'eligible_top_k_truncation',
+        primaryFindingEntityType: 'cluster',
+        primaryFindingEntityId: 3,
+        primaryFindingMetric: 'averageOrderValue',
+        primaryFindingType: 'top_rank',
+        primaryFindingSourceQueryId: 'avg_ticket_by_cluster',
+      }),
+    ]));
+  });
+
+  it('keeps unsafe truncation (no top-1 ranking) routed to bounded synthesis', async () => {
+    const h = harness({
+      toolRuntimeEnabled: true,
+      conversationalTurns: [
+        toolRuntimeCall([{ id: 'cluster_distribution', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'count', alias: 'customers' }] } }]),
+        toolRuntimeContent('Se listan solo algunos clusters observados; hay mas fuera del limite retornado.'),
+      ],
+      // truncated=true with no orderBy/limit=1 top-1 ranking: this is a real runtime cutoff of
+      // needed distribution rows, not an intentional top-k request.
+      executionResults: [result([{ clusterId: 0, customers: 4 }, { clusterId: 1, customers: 6 }], 'e'.repeat(64), ['clusterId', 'customers'], true)],
+    });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Cuantos clientes hay por cluster?' });
+
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') expect(response.response.status).toBe('answered');
+    expect(h.generateConversationalTurn).toHaveBeenCalledTimes(2);
+    expect(h.stageLatencyDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: 'analytics_execution', deterministicRendererEligible: false, deterministicRendererReason: 'truncated_result' }),
+      expect.objectContaining({ stage: 'tool_synthesis' }),
+    ]));
+  });
+
   it('runs multiple native tool queries concurrently and synthesizes exactly once', async () => {
     let started = 0;
     let releaseQueries!: () => void;
@@ -554,10 +619,14 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
       expect(response.response.analysis.synthesisFallbackReason).toBe(entry.failureStatus);
       expect(response.response.provenance.featureSnapshot.snapshotId).toBe('17');
       expect(response.response.queryIds).toEqual(['cluster_count', 'ticket_by_cluster']);
+      // deep model-call budget: exactly one tool_selection + one tool_synthesis attempt. The
+      // deterministic fallback that produces the degraded answer must not add a second
+      // tool_synthesis model call on top of the one that failed.
       expect(h.generateConversationalTurn).toHaveBeenCalledTimes(2);
       expect(h.generateAnswer).not.toHaveBeenCalled();
       expect(h.generateConversationDecision).not.toHaveBeenCalled();
       expect(h.generateAnalysisPlan).not.toHaveBeenCalled();
+      expect(h.stageLatencyDiagnostics.filter((diagnostic) => diagnostic.stage === 'tool_synthesis')).toHaveLength(1);
       expect(h.stageLatencyDiagnostics).toEqual(expect.arrayContaining([
         expect.objectContaining({ stage: 'analytics_execution', success: true, deterministicRendererEligible: false, deterministicRendererReason: 'multiple_queries' }),
         expect.objectContaining({ stage: 'tool_synthesis', success: false, failureStatus: entry.failureStatus, evidenceBundleChars: expect.any(Number), evidenceFactCount: 2 }),
@@ -732,6 +801,52 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
           expect.objectContaining({ id: 'ticket_by_cluster', filterFieldNames: ['cluster.clusterId'] }),
           expect.objectContaining({ id: 'spend_by_cluster', filterFieldNames: ['cluster.clusterId'] }),
         ]),
+      }),
+    ]));
+  });
+
+  it('keeps the ranking query as the primary finding when a multi-query first turn also runs an auxiliary query', async () => {
+    const h = harness({
+      toolRuntimeEnabled: true,
+      conversationalTurns: [
+        // The ranking query is declared first and the auxiliary audience-level count second, but
+        // the audience query is appended to session state *last* - proving primary-finding
+        // selection is structural, not "whichever result landed last in array order".
+        toolRuntimeCall([
+          { id: 'avg_ticket_by_cluster', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'avg', field: 'commercial.averageOrderValueTaxIncl', alias: 'avg_ticket' }], orderBy: [{ field: 'avg_ticket', direction: 'desc' }], limit: 1 } },
+          { id: 'total_customer_count', plan: { metrics: [{ aggregation: 'count', alias: 'customers' }] } },
+        ]),
+        toolRuntimeContent('El cluster 3 lidera en ticket promedio; hay 25 clientes en total.'),
+        toolRuntimeContent('Cluster 3 sigue siendo el foco semantico.'),
+      ],
+      executionResults: [
+        result([{ clusterId: 3, avg_ticket: '381304.040000' }], '1'.repeat(64), ['clusterId', 'avg_ticket']),
+        result([{ customers: 25 }], '2'.repeat(64), ['customers']),
+      ],
+    });
+    const sessionId = await createSession(h);
+    await h.service.processSessionTurn({ sessionId, question: 'Cual cluster tiene mayor ticket promedio y cuantos clientes hay en total?' });
+
+    const second = await h.service.processSessionTurn({ sessionId, question: 'Por que?' });
+
+    expect(second.status).toBe('ok');
+    const calls = h.generateConversationalTurn.mock.calls as unknown as [GenerateConversationalTurnInput][];
+    expect(calls).toHaveLength(3);
+    const secondPayload = JSON.parse(String(calls[2]?.[0].messages[2]?.content));
+    expect(secondPayload.semanticFocus.activeFinding).toMatchObject({
+      findingType: 'top_rank',
+      entityType: 'cluster',
+      entityId: 3,
+      metric: 'averageOrderValue',
+      sourceQueryId: 'avg_ticket_by_cluster',
+    });
+    expect(h.stageLatencyDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 'tool_selection',
+        activeSemanticEntityType: 'cluster',
+        activeSemanticEntityId: 3,
+        activeFindingType: 'top_rank',
+        activeFindingSourceQueryId: 'avg_ticket_by_cluster',
       }),
     ]));
   });

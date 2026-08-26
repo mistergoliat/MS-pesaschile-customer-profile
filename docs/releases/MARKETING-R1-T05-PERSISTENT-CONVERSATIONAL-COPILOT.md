@@ -729,6 +729,147 @@ Live benchmark: NOT_RUN.
 
 Live validation: NOT_RUN.
 
+## T05.8.4 Primary Finding Stability and Safe Top-K Rendering
+
+Motivation: fresh T05.8.3 EC2 evidence with `deepseek-v4-flash` showed the remaining defect was
+variability, not architecture. `simple_grouped_ranking` was PASS in 2/3 runs but one run hit
+`deterministicRendererReason=truncated_result` and fell through to an unnecessary 4s synthesis
+call (`semanticFailureReason=unexpected_tool_synthesis`). `contextual_deep_followup` had a
+`semanticPassRate` of only 0.333, with one run losing the Cluster 3 anchor
+(`semanticAnchorEntityId=0`) and one run running an extra query
+(`queryCount=5` instead of ~4). This slice does not redesign the runtime; it fixes truncation
+eligibility and primary-finding/semantic-anchor selection.
+
+Live T05.8.3 EC2 baseline (`deepseek-v4-flash`):
+
+- `simple_fact`: 3/3 PASS, p50 1.651s, semanticPassRate 1.0.
+- `simple_grouped_ranking`: successRate 1.0, semanticPassRate 0.667; 2/3 runs rendered
+  deterministically, 1/3 hit `truncated_result` and paid an unnecessary
+  `toolSynthesisMs=4038` synthesis call.
+- `contextual_deep_followup`: successRate 1.0, no timeout, p50 19.883s, semanticPassRate 0.333;
+  one run reported `semanticAnchorEntityId=0` instead of `3`, one run reported `queryCount=5`
+  instead of ~4, and the synthesis fallback prevented terminal failures.
+- `exploratory`: 3/3 usable, semanticPassRate 1.0, no timeout, deterministic synthesis fallback
+  working.
+
+### Safe top-k truncation
+
+The deterministic renderer previously rejected any query result flagged
+`execution.truncated`, unconditionally. `execution.truncated` is set whenever the compiled SQL's
+`LIMIT <plan.limit> + 1` probe fetched more rows than `plan.limit` (`execute-analytical-query.ts`)
+- it does not distinguish "the runtime cut off rows the answer needed" from "the plan only asked
+for the top row and there happen to be more rows behind it". For an ordered grouped ranking
+(`GROUP BY` dimension, `ORDER BY` the target aggregate, explicit deterministic direction, single
+grouped dimension, `LIMIT 1`, one row returned, no runtime error), that truncation is intentional
+and safe: the caller asked for exactly the winner.
+
+- `deterministicRendererEligibility` now distinguishes `intentional_top_k_truncation` from
+  `unsafe_runtime_truncation` using the already-validated query/result structure (limit, orderBy,
+  dimension count, `isSimpleTopMetricRankingPlan`) - never by matching user phrases.
+- A new `deterministicRendererReason` value, `eligible_top_k_truncation`, is emitted when the
+  renderer accepts a truncated top-1 ranking. The prior `truncated_result` rejection is
+  unchanged for every other truncated shape (distributions, non-ranked groupings, multi-row
+  windows), so truncation is not globally ignored.
+- `renderDeterministicSimpleAnswer` no longer re-rejects on `execution.truncated` internally; all
+  three call sites (native tool runtime, legacy planner, unified planner) already gate on
+  `deterministicRendererEligibility` before calling it, so truncation safety has a single source
+  of truth instead of being checked twice with different rules.
+
+### PrimaryAnalyticalFinding contract
+
+`CopilotSemanticFocus.activeFinding` is now typed as an exported `CopilotPrimaryFinding` contract
+(`sourceQueryId`, `sourceTurnId`, `findingType`, `entityType`, `entityId`, `metric`, `value`) -
+the canonical finding that actually answered the prior turn. `sourceTurnId` is new; every other
+field already existed under T05.8.1's semantic-focus work.
+
+Root cause fixed: `deriveSemanticFocus` selected `activeFinding`/`activeEntity`/`activeMetric`
+from `session.analyticalState.results[results.length - 1]` - literally whichever result an
+LLM-emitted multi-query tool call happened to append last, not the query that structurally
+answered the question. A simple ranking turn that also emitted an auxiliary
+count/distribution/context query could have that auxiliary query silently become the primary
+finding for every subsequent follow-up.
+
+Fix: `selectPrimaryQueryResult` (`session-context.ts`) first narrows to the latest turn's own
+result group (results are always appended per-turn in a contiguous block), then - only when that
+turn produced more than one result - prefers structurally: an ordered top-ranking query
+(`isTopRankPlan`), then a single-value aggregate query (`isSingleValuePlan`), before falling back
+to declaration order. It never phrase-matches the user's question. `deriveSemanticFocus` now
+routes `activeEntity`, `activeMetric`, `activeComparison`, `activeFinding` and
+`lastAnalyticalResult` through this one selection instead of each depending on raw array
+position.
+
+### Semantic anchor from primary finding
+
+`semanticAnchorFromSessionContext` already prioritized `semanticFocus.activeFinding` over
+`activeEntity`/`activeMetric` (T05.8.3); fixing `activeFinding`'s derivation above fixes the
+anchor transitively; no change was needed to the anchor's own priority order. For
+"Cual cluster tiene mayor ticket promedio?" followed by "Por que?", the anchor now resolves to
+cluster 3 / `averageOrderValue` / `top_rank` even when the first turn executed more than one
+analytical query, as long as one of those queries is the ordered ranking.
+
+### Multi-query first-turn stability and redundant query suppression
+
+Section 4/5 of the task are covered by the same structural selection: no additional query
+suppression was added. Aggressive pre-execution pruning of "provably redundant" queries was
+considered and rejected as out of scope - it would require judging tool-call intent before
+execution, which is exactly the kind of runtime redesign this slice avoids. All emitted queries
+still execute; only the *interpretation* of which result is primary changed.
+
+### Synthesis fallback benchmark accounting
+
+Audited: each turn calls `tool_synthesis` at most once (`processToolRuntimeTurn` has no retry
+loop around the synthesis call), and the deterministic fallback (`fallbackToolSynthesisResponse`)
+never issues a second model call - it only runs after the single synthesis attempt already
+succeeded-with-invalid-output or failed. The live `tool_synthesis_count_above_1` observation on
+`contextual_deep_followup` came from its *first* turn ("Cual cluster tiene mayor ticket
+promedio?") being structurally identical to `simple_grouped_ranking` and hitting the same
+`truncated_result` bug, which forced an extra synthesis call before the second turn's own
+(legitimate) synthesis call. Fixing safe top-k truncation removes this; no separate accounting
+change was needed. Test G below pins the invariant (fallback adds zero extra
+`tool_synthesis` diagnostics) directly.
+
+### Diagnostics and benchmark harness
+
+- New `CopilotStageLatencyDiagnostic` fields: `primaryFindingEntityType`,
+  `primaryFindingEntityId`, `primaryFindingMetric`, `primaryFindingType`,
+  `primaryFindingSourceQueryId`, emitted on the `turn` stage for deterministic fast-path answers.
+- `CopilotBenchmarkRecord` gained matching flat `primaryFindingEntityType`,
+  `primaryFindingEntityId`, `primaryFindingMetric`, `primaryFindingType` fields for live
+  inspection. This is observability only; it does not change any `semanticPass` gate.
+- Diagnostics remain metadata-only: no raw result rows, PII, prompts, SQL or provider payloads.
+
+### Tests added
+
+- Ordered grouped `LIMIT 1` + `execution.truncated=true` remains renderer-eligible
+  (`deterministicRendererReason: 'eligible_top_k_truncation'`), one model call, correct
+  `queryPlanHashes`/`provenance` (T03 provenance unchanged).
+- A truncated grouped count distribution with no top-1 ranking still rejects the renderer
+  (`truncated_result`) and routes to bounded synthesis.
+- A multi-query first turn (ranking query declared first, auxiliary audience-level count query
+  declared second) still anchors the next turn's `semanticFocus.activeFinding` /
+  `activeSemanticEntityType`/`Id` on the ranking query's Cluster 3, not the auxiliary query.
+- The existing tool-synthesis-provider-failure fallback test now also asserts exactly one
+  `tool_synthesis` stage diagnostic is emitted (fallback adds none).
+- Full T05.8.1-T05.8.3 regression suite (session, benchmark, semantic benchmark, contracts,
+  config, OpenAI-compatible/http-json model adapters, compact query adapter, query planner
+  contract/validator) re-run unchanged.
+
+Local focused validation:
+
+`npx vitest run tests/unit/customer-intelligence-copilot-session.test.ts tests/unit/customer-intelligence-copilot-benchmark.test.ts tests/unit/customer-intelligence-copilot-semantic-benchmark.test.ts tests/unit/customer-intelligence-copilot-contracts.test.ts tests/unit/config.test.ts tests/unit/openai-compatible-copilot-model.test.ts tests/unit/http-json-copilot-model.test.ts tests/unit/customer-intelligence-compact-query-adapter.test.ts tests/unit/customer-intelligence-query-planner-contract.test.ts tests/unit/customer-intelligence-query-validator.test.ts`
+
+Result: PASS, 10 files, 196 tests.
+
+Full suite (`npx vitest run`): PASS, 178 files, 1515 tests. `tsc --noEmit` and `npm run lint`
+clean.
+
+Live benchmark (5 runs, per task acceptance criteria): NOT_RUN - no configured provider
+credentials or analytics DB access in this environment. The benchmark harness and diagnostics are
+ready to record `primaryFinding.entityId`, `deterministicRendererReason`, and
+`semanticAnchorEntityId` for that run.
+
+Live validation: NOT_RUN.
+
 ## T05.5 Answer Generation Reliability and Latency Observability
 
 Live symptom: in a fresh T05.4 session, `Cual cluster tiene mayor ticket promedio?` completed

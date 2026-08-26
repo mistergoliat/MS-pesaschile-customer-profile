@@ -45,7 +45,7 @@ export function deriveAnalyticalReferences(entries: readonly CopilotSessionQuery
 }
 
 export function deriveSemanticFocus(session: CopilotSession): CopilotSemanticFocus {
-  const lastResult = latestResult(session.analyticalState.results);
+  const lastResult = selectPrimaryQueryResult(session.analyticalState.results);
   const activeComparison = lastResult ? comparisonFromResult(lastResult) : null;
   const activeEntity = lastResult ? entityFromRow(lastResult.result.rows[0], activeComparison, lastResult.queryId) : null;
   const activeMetric = lastResult ? metricFromPlan(lastResult.plan, lastResult.queryId) : null;
@@ -85,6 +85,7 @@ function findingFromResult(entry: CopilotSessionQueryResult): CopilotSemanticFoc
   if (dimensions.includes('cluster.clusterId')) {
     return {
       sourceQueryId: entry.queryId,
+      sourceTurnId: entry.turnId,
       findingType: isTopRankPlan(entry.plan) ? 'top_rank' : 'single_value',
       entityType: 'cluster',
       entityId: typeof row.clusterId === 'string' || typeof row.clusterId === 'number' ? row.clusterId : null,
@@ -95,6 +96,7 @@ function findingFromResult(entry: CopilotSessionQueryResult): CopilotSemanticFoc
   if (dimensions.includes('rfm.segmentCode')) {
     return {
       sourceQueryId: entry.queryId,
+      sourceTurnId: entry.turnId,
       findingType: isTopRankPlan(entry.plan) ? 'top_rank' : 'single_value',
       entityType: 'rfm_segment',
       entityId: typeof row.segmentCode === 'string' || typeof row.segmentCode === 'number' ? row.segmentCode : null,
@@ -105,6 +107,7 @@ function findingFromResult(entry: CopilotSessionQueryResult): CopilotSemanticFoc
   if ((entry.plan.metrics?.length ?? 0) === 1 && (entry.plan.dimensions?.length ?? 0) === 0) {
     return {
       sourceQueryId: entry.queryId,
+      sourceTurnId: entry.turnId,
       findingType: 'single_value',
       entityType: 'audience',
       entityId: null,
@@ -120,8 +123,32 @@ function isTopRankPlan(plan: AnalyticalQueryPlan): boolean {
   return (plan.dimensions?.length ?? 0) > 0 && !!metricAlias && plan.orderBy?.[0]?.field === metricAlias && plan.orderBy[0]?.direction === 'desc';
 }
 
-function latestResult(entries: readonly CopilotSessionQueryResult[]): CopilotSessionQueryResult | null {
-  return entries.length > 0 ? entries[entries.length - 1]! : null;
+function isSingleValuePlan(plan: AnalyticalQueryPlan): boolean {
+  return (plan.metrics?.length ?? 0) === 1 && (plan.dimensions?.length ?? 0) === 0;
+}
+
+// Section 4/5 (task MARKETING-R1-T05.8.4): a turn's tool call is probabilistic and may emit an
+// auxiliary count/distribution/context query alongside the query that actually answers the
+// question. The primary result must be picked structurally - an ordered top-ranking query, then
+// a single-value aggregate - never by array position (latest/first), so an auxiliary query can
+// never silently replace the real answer.
+function selectPrimaryQueryResult(entries: readonly CopilotSessionQueryResult[]): CopilotSessionQueryResult | null {
+  const group = latestTurnGroup(entries);
+  if (group.length === 0) return null;
+  if (group.length === 1) return group[0]!;
+  return group.find((entry) => isTopRankPlan(entry.plan)) ?? group.find((entry) => isSingleValuePlan(entry.plan)) ?? group[0]!;
+}
+
+function latestTurnGroup(entries: readonly CopilotSessionQueryResult[]): readonly CopilotSessionQueryResult[] {
+  if (entries.length === 0) return [];
+  const lastTurnId = entries[entries.length - 1]!.turnId;
+  const group: CopilotSessionQueryResult[] = [];
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index]!;
+    if (entry.turnId !== lastTurnId) break;
+    group.unshift(entry);
+  }
+  return group;
 }
 
 function comparisonFromResult(entry: CopilotSessionQueryResult): CopilotSemanticFocus['activeComparison'] {

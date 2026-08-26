@@ -174,6 +174,7 @@ const DEFAULT_SYNTHESIS_MAX_TOKENS = 500;
 const ANALYTICAL_EVIDENCE_BUNDLE_MAX_CHARS = 4000;
 type DeterministicRendererReason =
   | 'eligible'
+  | 'eligible_top_k_truncation'
   | 'multiple_queries'
   | 'multiple_metrics'
   | 'unsupported_dimension'
@@ -244,6 +245,11 @@ export type CopilotStageLatencyDiagnostic = {
   }[];
   readonly synthesisInputResultCount?: number;
   readonly semanticFailureReason?: string | null;
+  readonly primaryFindingEntityType?: string | null;
+  readonly primaryFindingEntityId?: string | number | null;
+  readonly primaryFindingMetric?: string | null;
+  readonly primaryFindingType?: string | null;
+  readonly primaryFindingSourceQueryId?: string | null;
 };
 
 export function createCustomerIntelligenceCopilotSessionService(deps: {
@@ -1424,6 +1430,7 @@ async function processToolRuntimeTurn(args: {
     );
     const updated = appendResults(appendTurn(args.session, response, args.question, queryResults.map((entry) => entry.queryId), [], args.clock.now(), args.limits), queryResults, args.limits);
     await args.store.save(updated, args.clock.now());
+    const primaryFinding = primaryFindingFromDeterministicExecution(executions[0]!, queryResults[0]!.queryId);
     emitTurnLatency(args.onStageLatencyDiagnostic, {
       turnStartedAt: args.turnStartedAt,
       queryCount: executions.length,
@@ -1434,7 +1441,12 @@ async function processToolRuntimeTurn(args: {
       diagnosticContext: {
         ...semanticAnchorDiagnostic(semanticAnchor),
         deterministicRendererEligible: true,
-        deterministicRendererReason: 'eligible',
+        deterministicRendererReason: deterministicEligibility.reason,
+        primaryFindingEntityType: primaryFinding?.entityType ?? null,
+        primaryFindingEntityId: primaryFinding?.entityId ?? null,
+        primaryFindingMetric: primaryFinding?.metric ?? null,
+        primaryFindingType: primaryFinding?.findingType ?? null,
+        primaryFindingSourceQueryId: primaryFinding?.sourceQueryId ?? null,
       },
     });
     return { status: 'ok', response, sessionContext: args.sessionContext };
@@ -1816,6 +1828,29 @@ function compactEvidenceBundle(bundle: AnalyticalEvidenceBundle): AnalyticalEvid
     }
   }
   return compacted;
+}
+
+// The PrimaryAnalyticalFinding this turn established (task MARKETING-R1-T05.8.4 Section 2),
+// derived from the single execution the deterministic renderer just answered from - never the
+// arbitrary "latest query" or "current audience" reference.
+function primaryFindingFromDeterministicExecution(
+  execution: { readonly plan: AnalyticalQueryPlan; readonly result: AnalyticalQueryResult },
+  sourceQueryId: string,
+): { readonly entityType: string | null; readonly entityId: string | number | null; readonly metric: string | null; readonly findingType: 'top_rank' | 'single_value'; readonly sourceQueryId: string } | null {
+  const metric = primaryDeterministicMetric(execution.plan);
+  if (!metric) return null;
+  const entity = entityDescriptorForPlan(execution.plan);
+  if (!entity) {
+    return { entityType: 'audience', entityId: null, metric: semanticMetricName(metric.field ?? null, metric.alias), findingType: 'single_value', sourceQueryId };
+  }
+  const entityId = scalarValue(execution.result.rows[0], entity.resultField);
+  return {
+    entityType: entity.type,
+    entityId: entityId === null || typeof entityId === 'boolean' ? null : entityId,
+    metric: semanticMetricName(metric.field ?? null, metric.alias),
+    findingType: isSimpleTopMetricRankingPlan(execution.plan) ? 'top_rank' : 'single_value',
+    sourceQueryId,
+  };
 }
 
 function entityDescriptorForPlan(plan: AnalyticalQueryPlan): { readonly type: 'cluster' | 'rfm_segment'; readonly resultField: string } | null {
@@ -2432,7 +2467,6 @@ function deterministicRendererEligibility(
   const execution = executions[0];
   if (!execution) return { eligible: false, reason: 'unexpected_result_shape' };
   if (semanticAnchor?.findingType !== null && semanticAnchor?.findingType !== undefined) return { eligible: false, reason: 'explanatory_question_requires_synthesis' };
-  if (execution.result.execution.truncated) return { eligible: false, reason: 'truncated_result' };
   if (execution.plan.select || !execution.plan.metrics || execution.plan.metrics.length === 0) return { eligible: false, reason: 'unexpected_result_shape' };
   const dimensionCount = semanticDimensionCount(execution.plan);
   if (dimensionCount === 0 && execution.plan.metrics.length !== 1) return { eligible: false, reason: 'multiple_metrics' };
@@ -2441,9 +2475,18 @@ function deterministicRendererEligibility(
   if (dimensionCount > 0 && !primaryDeterministicDimension(execution.plan)) return { eligible: false, reason: 'unsupported_dimension' };
   if (dimensionCount > 0 && metric.aggregation !== 'count' && !execution.plan.orderBy?.length) return { eligible: false, reason: 'missing_order' };
   if (dimensionCount > 0 && metric.aggregation !== 'count' && !isSimpleTopMetricRankingPlan(execution.plan)) return { eligible: false, reason: 'order_metric_mismatch' };
+  // RESULT_LIMIT_TRUNCATION caused by the plan's own `LIMIT 1` top-k request is semantically
+  // safe (task MARKETING-R1-T05.8.4 Section 1): the caller asked for only the winner, so rows
+  // beyond it are intentionally absent, not a runtime cutoff of needed data.
+  const truncationSafe = !execution.result.execution.truncated || isIntentionalTopKTruncation(execution.plan, dimensionCount);
+  if (!truncationSafe) return { eligible: false, reason: 'truncated_result' };
   const resultReason = deterministicResultRejectionReason(execution, metric);
   if (resultReason) return { eligible: false, reason: resultReason };
-  return { eligible: true, reason: 'eligible' };
+  return { eligible: true, reason: execution.result.execution.truncated ? 'eligible_top_k_truncation' : 'eligible' };
+}
+
+function isIntentionalTopKTruncation(plan: AnalyticalQueryPlan, dimensionCount: number): boolean {
+  return plan.limit === 1 && dimensionCount === 1 && !!plan.orderBy?.length && isSimpleTopMetricRankingPlan(plan);
 }
 
 function renderDeterministicSimpleAnswer(
@@ -2452,7 +2495,10 @@ function renderDeterministicSimpleAnswer(
 ): string | null {
   if (executions.length !== 1) return null;
   const execution = executions[0];
-  if (!execution || execution.result.execution.truncated || !canRenderDeterministicSimpleAnswer(execution.plan) || !resultSupportsDeterministicAnswer(execution)) return null;
+  // Truncation safety is already decided by deterministicRendererEligibility (callers only
+  // reach this function when eligible, including the safe top-k truncation case), so this does
+  // not re-reject on `execution.result.execution.truncated`.
+  if (!execution || !canRenderDeterministicSimpleAnswer(execution.plan) || !resultSupportsDeterministicAnswer(execution)) return null;
   const metric = primaryDeterministicMetric(execution.plan);
   if (!metric) return null;
   if ((execution.plan.dimensions?.length ?? 0) === 0 && metric.aggregation === 'count') {

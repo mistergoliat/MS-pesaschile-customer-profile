@@ -31,6 +31,10 @@ export type CopilotBenchmarkRecord = {
   readonly deterministicRendererReason: string | null;
   readonly semanticAnchorEntityType: string | null;
   readonly semanticAnchorEntityId: string | number | null;
+  readonly primaryFindingEntityType: string | null;
+  readonly primaryFindingEntityId: string | number | null;
+  readonly primaryFindingMetric: string | null;
+  readonly primaryFindingType: string | null;
   readonly evidenceBundleChars: number | null;
   readonly evidenceFactCount: number;
   readonly evidenceComparisonCount: number;

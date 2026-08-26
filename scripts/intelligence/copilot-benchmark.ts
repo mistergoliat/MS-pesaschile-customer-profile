@@ -263,6 +263,10 @@ function recordFromDiagnostics(args: {
     deterministicRendererReason: lastOptionalString(args.diagnostics, 'deterministicRendererReason'),
     semanticAnchorEntityType: lastOptionalString(args.diagnostics, 'semanticAnchorEntityType'),
     semanticAnchorEntityId: lastOptionalStringOrNumber(args.diagnostics, 'semanticAnchorEntityId'),
+    primaryFindingEntityType: lastOptionalString(args.diagnostics, 'primaryFindingEntityType'),
+    primaryFindingEntityId: lastOptionalStringOrNumber(args.diagnostics, 'primaryFindingEntityId'),
+    primaryFindingMetric: lastOptionalString(args.diagnostics, 'primaryFindingMetric'),
+    primaryFindingType: lastOptionalString(args.diagnostics, 'primaryFindingType'),
     evidenceBundleChars: maxOptional(args.diagnostics, 'evidenceBundleChars'),
     evidenceFactCount: maxOptional(args.diagnostics, 'evidenceFactCount') ?? 0,
     evidenceComparisonCount: maxOptional(args.diagnostics, 'evidenceComparisonCount') ?? 0,
@@ -347,12 +351,15 @@ function lastOptionalBoolean(diagnostics: readonly CopilotStageLatencyDiagnostic
   return [...diagnostics].reverse().find((diagnostic) => typeof diagnostic[key] === 'boolean')?.[key] ?? null;
 }
 
-function lastOptionalString(diagnostics: readonly CopilotStageLatencyDiagnostic[], key: 'deterministicRendererReason' | 'semanticAnchorEntityType'): string | null {
+function lastOptionalString(
+  diagnostics: readonly CopilotStageLatencyDiagnostic[],
+  key: 'deterministicRendererReason' | 'semanticAnchorEntityType' | 'primaryFindingEntityType' | 'primaryFindingMetric' | 'primaryFindingType',
+): string | null {
   const value = [...diagnostics].reverse().find((diagnostic) => typeof diagnostic[key] === 'string')?.[key];
   return typeof value === 'string' ? value : null;
 }
 
-function lastOptionalStringOrNumber(diagnostics: readonly CopilotStageLatencyDiagnostic[], key: 'semanticAnchorEntityId'): string | number | null {
+function lastOptionalStringOrNumber(diagnostics: readonly CopilotStageLatencyDiagnostic[], key: 'semanticAnchorEntityId' | 'primaryFindingEntityId'): string | number | null {
   const value = [...diagnostics].reverse().find((diagnostic) => typeof diagnostic[key] === 'string' || typeof diagnostic[key] === 'number')?.[key];
   return typeof value === 'string' || typeof value === 'number' ? value : null;
 }

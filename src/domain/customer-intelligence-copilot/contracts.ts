@@ -204,6 +204,20 @@ export type CopilotAnalyticalReference = {
   }[];
 };
 
+// The deterministic, explicit "what actually answered the prior turn" contract (task
+// MARKETING-R1-T05.8.4 Section 2). It is selected structurally from the executed query/result
+// shape, never from position (latest/first) or an arbitrary top row - see
+// selectPrimaryQueryResult in session-context.ts.
+export type CopilotPrimaryFinding = {
+  readonly sourceQueryId: string;
+  readonly sourceTurnId: string;
+  readonly findingType: 'top_rank' | 'single_value';
+  readonly entityType: 'cluster' | 'rfm_segment' | 'audience' | null;
+  readonly entityId: string | number | null;
+  readonly metric: string | null;
+  readonly value: string | number | boolean | null;
+};
+
 export type CopilotSemanticFocus = {
   readonly activeEntity: {
     readonly type: 'cluster' | 'rfm_segment' | 'audience' | 'comparison_set';
@@ -227,14 +241,7 @@ export type CopilotSemanticFocus = {
     readonly originalQuestion: string;
     readonly assistantMessage: string | null;
   } | null;
-  readonly activeFinding?: {
-    readonly sourceQueryId: string;
-    readonly findingType: 'top_rank' | 'single_value';
-    readonly entityType: 'cluster' | 'rfm_segment' | 'audience' | null;
-    readonly entityId: string | number | null;
-    readonly metric: string | null;
-    readonly value: string | number | boolean | null;
-  } | null;
+  readonly activeFinding?: CopilotPrimaryFinding | null;
   readonly lastAnalyticalResult: {
     readonly queryId: string;
     readonly rowCount: number;
@@ -249,6 +256,7 @@ export type CopilotSemanticAnchor = {
   readonly metric: string | null;
   readonly findingType: 'top_rank' | 'single_value' | null;
   readonly sourceQueryId: string | null;
+  readonly sourceTurnId?: string | null;
 };
 
 export type AnalyticalEvidenceBundle = {
