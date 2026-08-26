@@ -504,6 +504,178 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
     ]));
   });
 
+  it('classifies a cluster count breakdown as a distribution with no active entity, keeping an unclustered auxiliary count separate', async () => {
+    const h = harness({
+      toolRuntimeEnabled: true,
+      conversationalTurns: [
+        toolRuntimeCall([
+          // Ordered desc with no LIMIT, exactly like the live EC2 tool call: the model orders the
+          // breakdown for presentation, but this is still a complete grouped breakdown, not a
+          // top-K request (task MARKETING-R1-T05.8.5 Section 2).
+          { id: 'cluster_distribution', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'count', alias: 'customer_count' }], orderBy: [{ field: 'customer_count', direction: 'desc' }] } },
+          { id: 'unclustered_count', plan: { filters: [{ field: 'cluster.clusterId', operator: 'is_null' }], metrics: [{ aggregation: 'count', alias: 'unclustered_count' }] } },
+        ]),
+        toolRuntimeContent('Cluster 0: 3973 clientes. Cluster 1: 2077. Cluster 2: 1539. Cluster 3: 2569. Sin cluster: 34792.'),
+      ],
+      executionResults: [
+        result(
+          [
+            { clusterId: 0, customer_count: 3973 },
+            { clusterId: 1, customer_count: 2077 },
+            { clusterId: 2, customer_count: 1539 },
+            { clusterId: 3, customer_count: 2569 },
+          ],
+          '1'.repeat(64),
+          ['clusterId', 'customer_count'],
+        ),
+        result([{ unclustered_count: 34792 }], '2'.repeat(64), ['unclustered_count']),
+      ],
+    });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Cuantos hay en cada cluster?' });
+
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') {
+      expect(response.response.status).toBe('answered');
+      if (response.response.status === 'answered') expect(response.response.analysis.queryPlanHashes).toEqual(['1'.repeat(64), '2'.repeat(64)]);
+    }
+    // The synthesis prompt's evidence bundle preserves every cluster row (not just the largest)
+    // plus the unclustered count as its own, separate fact.
+    const calls = h.generateConversationalTurn.mock.calls as unknown as [GenerateConversationalTurnInput][];
+    const synthesisPayload = JSON.parse(String(calls[1]?.[0].messages[1]?.content));
+    expect(synthesisPayload.evidence.facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ entityType: 'cluster', entityId: 0, metric: 'customer_count', value: 3973 }),
+      expect.objectContaining({ entityType: 'cluster', entityId: 1, metric: 'customer_count', value: 2077 }),
+      expect.objectContaining({ entityType: 'cluster', entityId: 2, metric: 'customer_count', value: 1539 }),
+      expect.objectContaining({ entityType: 'cluster', entityId: 3, metric: 'customer_count', value: 2569 }),
+      expect.objectContaining({ entityType: 'audience', entityId: null, metric: 'unclustered_count', value: 34792 }),
+    ]));
+    expect(synthesisPayload.evidence.facts).toHaveLength(5);
+    // Primary finding for the turn is the distribution itself, not any single cluster row and not
+    // the auxiliary unclustered-count query (task MARKETING-R1-T05.8.5 Section 1/7).
+    expect(h.stageLatencyDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 'turn',
+        primaryFindingType: 'distribution',
+        primaryFindingEntityType: 'cluster',
+        primaryFindingEntityId: null,
+        primaryFindingMetric: 'customer_count',
+        primaryFindingSourceQueryId: 'cluster_distribution',
+        distributionRowCount: 4,
+      }),
+    ]));
+
+    // The next turn's context confirms no entity became active: the conversation stays neutral
+    // across every cluster until a follow-up resolves one.
+    await h.service.processSessionTurn({ sessionId, question: 'Y que mas?' });
+    const secondSelectionPayload = JSON.parse(String(calls[2]?.[0].messages[2]?.content));
+    expect(secondSelectionPayload.semanticFocus.activeEntity).toBeNull();
+    expect(secondSelectionPayload.semanticFocus.activeFinding).toMatchObject({ findingType: 'distribution', entityType: 'cluster', entityId: null, sourceQueryId: 'cluster_distribution' });
+  });
+
+  it('renders every cluster in the deterministic fallback when synthesis fails after a distribution query', async () => {
+    const h = harness({
+      toolRuntimeEnabled: true,
+      conversationalTurns: [
+        toolRuntimeCall([
+          { id: 'cluster_distribution', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'count', alias: 'customer_count' }], orderBy: [{ field: 'customer_count', direction: 'desc' }] } },
+          { id: 'unclustered_count', plan: { filters: [{ field: 'cluster.clusterId', operator: 'is_null' }], metrics: [{ aggregation: 'count', alias: 'unclustered_count' }] } },
+        ]),
+      ],
+      conversationalTurnErrors: [null, providerInvalidResponse('tool_synthesis')],
+      executionResults: [
+        result(
+          [
+            { clusterId: 0, customer_count: 3973 },
+            { clusterId: 1, customer_count: 2077 },
+            { clusterId: 2, customer_count: 1539 },
+            { clusterId: 3, customer_count: 2569 },
+          ],
+          '3'.repeat(64),
+          ['clusterId', 'customer_count'],
+        ),
+        result([{ unclustered_count: 34792 }], '4'.repeat(64), ['unclustered_count']),
+      ],
+    });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Cuantos hay en cada cluster?' });
+
+    expect(response.status).toBe('ok');
+    if (response.status !== 'ok') throw new Error('expected ok');
+    expect(response.response.status).toBe('answered');
+    if (response.response.status !== 'answered') throw new Error('expected answered');
+    expect(response.response.analysis.synthesisFallbackUsed).toBe(true);
+    // Every grouped value survives into the fallback text - none of the four clusters, nor the
+    // unclustered count, is dropped (task MARKETING-R1-T05.8.5 Section 6).
+    expect(response.response.answer).toMatch(/cluster 0.*3973/i);
+    expect(response.response.answer).toMatch(/cluster 1.*2077/i);
+    expect(response.response.answer).toMatch(/cluster 2.*1539/i);
+    expect(response.response.answer).toMatch(/cluster 3.*2569/i);
+    expect(response.response.answer).toMatch(/34792/);
+  });
+
+  it('resolves "Cual tiene mas?" to Cluster 0 after a distribution, then AOV ranking to Cluster 3, preserving the Cluster 3 anchor for "Por que?"', async () => {
+    const h = harness({
+      toolRuntimeEnabled: true,
+      conversationalTurns: [
+        // Turn 1: distribution, no active entity.
+        toolRuntimeCall([{ id: 'cluster_distribution', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'count', alias: 'customer_count' }], orderBy: [{ field: 'customer_count', direction: 'desc' }] } }]),
+        // Turn 2: "Cual tiene mas?" - explicit top-1 count ranking resolves Cluster 0.
+        toolRuntimeCall([{ id: 'top_cluster_by_count', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'count', alias: 'customer_count' }], orderBy: [{ field: 'customer_count', direction: 'desc' }], limit: 1 } }]),
+        // Turn 3: "Y cual tiene mayor ticket promedio?" - a fresh top-1 AOV ranking resolves Cluster 3.
+        toolRuntimeCall([{ id: 'avg_ticket_by_cluster', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'avg', field: 'commercial.averageOrderValueTaxIncl', alias: 'avg_ticket' }], orderBy: [{ field: 'avg_ticket', direction: 'desc' }], limit: 1 } }]),
+        toolRuntimeContent('Cluster 3 lidera en ticket promedio.'),
+        // Turn 4: "Por que?" - direct response; what matters is the anchor carried into the turn.
+        toolRuntimeContent('Cluster 3 concentra clientes de mayor valor por orden.'),
+      ],
+      executionResults: [
+        result(
+          [
+            { clusterId: 0, customer_count: 3973 },
+            { clusterId: 1, customer_count: 2077 },
+            { clusterId: 2, customer_count: 1539 },
+            { clusterId: 3, customer_count: 2569 },
+          ],
+          '5'.repeat(64),
+          ['clusterId', 'customer_count'],
+        ),
+        result([{ clusterId: 0, customer_count: 3973 }], '6'.repeat(64), ['clusterId', 'customer_count']),
+        result([{ clusterId: 3, avg_ticket: '381304.040000' }], '7'.repeat(64), ['clusterId', 'avg_ticket']),
+      ],
+    });
+    const sessionId = await createSession(h);
+
+    await h.service.processSessionTurn({ sessionId, question: 'Cuantos hay en cada cluster?' });
+    const second = await h.service.processSessionTurn({ sessionId, question: 'Cual tiene mas?' });
+    expect(second.status).toBe('ok');
+    if (second.status === 'ok') {
+      expect(second.response.status).toBe('answered');
+      if (second.response.status === 'answered') expect(second.response.answer).toMatch(/cluster 0/i);
+    }
+
+    const third = await h.service.processSessionTurn({ sessionId, question: 'Y cual tiene mayor ticket promedio?' });
+    expect(third.status).toBe('ok');
+    if (third.status === 'ok') expect(third.response.status).toBe('answered');
+
+    await h.service.processSessionTurn({ sessionId, question: 'Por que?' });
+
+    const calls = h.generateConversationalTurn.mock.calls as unknown as [GenerateConversationalTurnInput][];
+    // Turn 2's own tool_selection context confirms the distribution left no active entity.
+    const secondSelectionPayload = JSON.parse(String(calls[1]?.[0].messages[2]?.content));
+    expect(secondSelectionPayload.semanticFocus.activeEntity).toBeNull();
+    // Whichever call ran turn 4's tool_selection carries Cluster 3 - not Cluster 0 - as the
+    // semantic anchor (task MARKETING-R1-T05.8.5 Section 8/9: does not fall back to Cluster 0).
+    const finalSelectionCall = calls.at(-1)?.[0];
+    const finalPayload = JSON.parse(String(finalSelectionCall?.messages[2]?.content));
+    expect(finalPayload.semanticFocus.activeEntity).toMatchObject({ type: 'cluster', id: 3 });
+    expect(finalPayload.semanticFocus.activeMetric).toMatchObject({ name: 'averageOrderValue' });
+    expect(h.stageLatencyDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: 'tool_selection', semanticAnchorEntityType: 'cluster', semanticAnchorEntityId: 3 }),
+    ]));
+  });
+
   it('runs multiple native tool queries concurrently and synthesizes exactly once', async () => {
     let started = 0;
     let releaseQueries!: () => void;
@@ -655,9 +827,11 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
     if (response.status === 'ok') expect(response.response.status).toBe('answered');
     expect(h.generateConversationalTurn).toHaveBeenCalledTimes(2);
     expect(h.generateConversationalTurn.mock.calls[1]?.[0]).toMatchObject({ stage: 'tool_synthesis', toolChoice: 'none', maxTokens: 500 });
+    // Both tied clusters are preserved as evidence facts (task MARKETING-R1-T05.8.5 Section 5) -
+    // a tie means no anchored winner, so the bundle must not collapse to just the first row.
     expect(h.stageLatencyDiagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({ stage: 'analytics_execution', deterministicRendererEligible: false, deterministicRendererReason: 'tie_detected' }),
-      expect.objectContaining({ stage: 'tool_synthesis', evidenceBundleChars: expect.any(Number), evidenceFactCount: 1, synthesisPromptChars: expect.any(Number) }),
+      expect.objectContaining({ stage: 'tool_synthesis', evidenceBundleChars: expect.any(Number), evidenceFactCount: 2, synthesisPromptChars: expect.any(Number) }),
     ]));
   });
 

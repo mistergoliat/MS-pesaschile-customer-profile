@@ -870,6 +870,164 @@ ready to record `primaryFinding.entityId`, `deterministicRendererReason`, and
 
 Live validation: NOT_RUN.
 
+## T05.8.5 Distribution Semantics and Fallback Preservation
+
+Motivation: live EC2 evidence for `Cuantos hay en cada cluster?` showed the tool runtime correctly
+selected and executed a `cluster_distribution` query plus an auxiliary `unclustered_count` query
+(`queryCount = 2`), then `tool_synthesis` failed
+(`tool_synthesis_provider_invalid_response`) and the deterministic fallback correctly activated
+(`answered_degraded_synthesis`, `synthesisFallbackUsed = true`). But the semantic state the turn
+left behind was wrong: `activeSemanticEntityType = "cluster"`, `activeSemanticEntityId = 0`,
+`activeFindingType = "top_rank"`, `activeFindingSourceQueryId = "cluster_distribution"` - a full
+cluster breakdown was recorded as if Cluster 0 had been specifically asked for and identified. That
+false anchor would have contaminated every subsequent turn. The evidence bundle was also
+overcollapsed: `evidenceFactCount = 2` for a turn with 4+ clusters plus an unclustered count,
+because only the first row of the grouped query became a fact.
+
+Root cause:
+
+- `execute-analytical-query.ts` always slices `rows` to `plan.limit` (or leaves every matched row
+  when no limit is set/exceeded), so more than one returned row can only ever mean the query was
+  never actually reduced to a single winner - a `LIMIT 1` query can never return 2+ rows. Despite
+  this, `isTopRankPlan` (session-context.ts) only checked that `orderBy` matched the metric and
+  direction, never row count or `limit`. A grouped count query the model happened to order
+  descending for presentation - with no `LIMIT` - satisfied that check and was misclassified as a
+  resolved single entity, with `entityId` taken from row 0.
+- `entityFromRow` (the separate `activeEntity` derivation) had no concept of distribution vs.
+  ranking at all: it read `row.clusterId` off the first row of any multi-row result unconditionally.
+  Two independent, divergent classifiers (`findingFromResult` for `activeFinding`, `entityFromRow`
+  for `activeEntity`) could disagree, and both defaulted to "row 0 wins."
+- `buildAnalyticalEvidenceBundle` picked exactly one row per metric (the semantic-anchor match, or
+  row 0 when there was no anchor) regardless of how many rows the query actually returned,
+  silently discarding every other group.
+- `renderDeterministicEvidenceFallback` additionally capped the already-undercollected facts at 5.
+
+## 1-2. Distribution finding type and top-rank distinction
+
+- `CopilotPrimaryFinding.findingType` (and `CopilotSemanticAnchor.findingType`) gained a third
+  value, `distribution`, alongside the existing `top_rank` and `single_value`.
+- `findingFromResult` (session-context.ts) now classifies purely from the validated
+  plan/result shape: a grouped-by-entity query (`cluster.clusterId` or `rfm.segmentCode`) that
+  returned more than one row is always `distribution`, with `entityId: null` - never phrase-matched,
+  never inferred from row order or which row happens to hold the largest value. Exactly one row
+  means the query reduced to one specific entity (via an explicit `LIMIT`, a narrowing filter, or a
+  single group in the data), so it is `top_rank` when ordered by the metric, `single_value`
+  otherwise. This is structurally impossible to get backwards for a genuine top-1 ranking, since
+  `execute-analytical-query.ts` can never return more than `plan.limit` rows.
+- `deriveSemanticFocus` now computes the finding once and derives `activeEntity` from it (null for
+  `distribution`), eliminating the second, divergent `entityFromRow`-only path that used to ignore
+  distribution/ranking status entirely.
+- `selectPrimaryQueryResult`'s priority list is reordered to `top_rank > distribution >
+  single_value > declaration order`, reusing `findingFromResult` itself for the classification
+  instead of separate ad hoc checks, so the priority list and the persisted finding can never
+  disagree again. `distribution` outranks `single_value` deliberately: for the live bug's own turn
+  (`cluster_distribution` + `unclustered_count`), the grouped breakdown is the answer the user
+  asked for and the auxiliary count is supplementary, so the richer, more complete result must win
+  as primary - this is a considered, testable resolution of an apparent tension in the task's
+  abstract priority ordering versus its own concrete worked example, and is pinned by a test.
+
+## 3-4. Semantic focus and semantic anchor rules
+
+- For a `distribution` finding, `activeEntityType`/`activeEntityId` are `null` and
+  `activeMetric`/`activeFindingType` remain populated - the conversation stays neutral across
+  every group until a follow-up resolves one.
+- `semanticAnchorFromSessionContext` needed no change: it already prioritized
+  `semanticFocus.activeFinding`, so fixing the finding's derivation fixes the anchor transitively.
+- `deterministicRendererEligibility`'s anchor guard (T05.8.3: block the fast deterministic path
+  when a prior finding is active, to protect it from being silently replaced) is narrowed to only
+  block when the anchor names a specific entity (`findingType` is `top_rank`/`single_value` **and**
+  `entityId !== null`). A `distribution` anchor names no entity, so a fresh follow-up ranking - e.g.
+  `Cual tiene mas?` right after `Cuantos hay en cada cluster?` - remains eligible for the fast path
+  and does not pay an unnecessary synthesis call, matching Section 9's requirement not to regress
+  the top-rank fast path.
+
+## 5. Evidence bundle preserves distributions
+
+`buildAnalyticalEvidenceBundle`: when a grouped metric has more than one ranked row and no semantic
+anchor matches it, every row is now pushed as its own fact (bounded by the existing 12-fact/
+4000-char caps) instead of collapsing to row 0. The anchored-explanation path (an entity-specific
+anchor found among the rows) is unchanged - it still summarizes to the anchor's fact plus a
+peer-range comparison, which is the correct compact form for "why is Cluster 3 higher" follow-ups.
+A tied ranking (T05.8.3's existing tie test) now correctly preserves both tied rows as facts
+instead of only the first (`evidenceFactCount` 1 -> 2 for that scenario).
+
+## 6. Deterministic fallback preserves distributions
+
+`renderDeterministicEvidenceFallback` no longer truncates at 5 facts; it renders every fact the
+(already bounded) evidence bundle retained. Combined with the Section 5 fix, a synthesis failure
+after a distribution query now renders every cluster the query returned plus any separately
+retained auxiliary count (e.g. unclustered), instead of silently dropping most of the breakdown.
+
+## 7. Primary finding selection audit
+
+`primaryFindingFromDeterministicExecution` (session-service.ts, T05.8.4) was a second,
+independent classifier duplicating what `session-context.ts` now does correctly - exactly the kind
+of divergent-classifier bug this slice fixes elsewhere. It is replaced by
+`primaryFindingDiagnostic(session)`, which reads the finding back from the just-persisted session
+via the same `deriveSemanticFocus`/`selectPrimaryQueryResult` used to build the next turn's
+context, for every response branch (deterministic fast path, synthesis success, both fallback
+paths) - not only the single-execution fast path as in T05.8.4. `distributionRowCount` is included
+when the finding is a distribution.
+
+## 8. Follow-up behavior
+
+Validated end-to-end in tests: `Cuantos hay en cada cluster?` (distribution, no active entity) ->
+`Cual tiene mas?` (resolves Cluster 0 via an explicit top-1 count ranking) -> `Y cual tiene mayor
+ticket promedio?` (a fresh top-1 AOV ranking resolves Cluster 3) -> `Por que?` (the semantic anchor
+carried into the turn is Cluster 3, not Cluster 0).
+
+## 9. Top-rank fast path preserved
+
+T05.8.4's `simple_grouped_ranking` behavior (deterministic renderer eligible, intentional top-K
+truncation safe, zero synthesis for one sufficient ranking query) is unchanged and re-verified by
+the full T05.8.3/T05.8.4 regression suite. Distributions and rankings remain distinct
+`PrimaryFinding` shapes; nothing about ranking classification was broadened to also match
+distributions or vice versa.
+
+## 10. Diagnostics
+
+`CopilotStageLatencyDiagnostic` already had `primaryFindingEntityType`, `primaryFindingEntityId`,
+`primaryFindingMetric`, `primaryFindingType` (T05.8.4); it gains `distributionRowCount` for
+`distribution` findings. All are metadata-only: no raw result rows, no SQL, no PII.
+
+## Test evidence
+
+Tests added: a cluster count breakdown classifies as `distribution` with `entityId: null` and the
+unclustered auxiliary query remains a separate fact (Section 11 A/B/C/G); the evidence bundle
+preserves every cluster row for that turn (E); the deterministic fallback renders every cluster
+plus the unclustered count when synthesis fails (F); a 4-turn conversation resolves `Cual tiene
+mas?` to Cluster 0, a fresh AOV ranking to Cluster 3, and preserves the Cluster 3 anchor through
+`Por que?` (H/I/J); the existing T05.8.3 tie-detection test's evidence-fact-count assertion is
+corrected from 1 to 2 to reflect the Section 5 fix; a semantic-benchmark regression test's
+assertion is corrected from an unlimited 2-row ranking implying `activeEntity: {id: 3}` to the
+now-correct `activeEntity: null` plus `activeComparison` still carrying both cluster ids (that test
+scenario's plan never had `LIMIT 1`, so under the corrected model it is a comparison/distribution,
+not a resolved winner). Ordered `LIMIT 1` rankings still classify `top_rank` and the simple
+top-rank fast path is unchanged, both re-verified by the existing T05.8.3/T05.8.4 tests without
+modification (D/K). T03 provenance (`queryPlanHashes`, snapshot ids) is unchanged and asserted in
+the new tests (L).
+
+Local focused validation:
+
+`npx vitest run tests/unit/customer-intelligence-copilot-session.test.ts tests/unit/customer-intelligence-copilot-semantic-benchmark.test.ts tests/unit/customer-intelligence-copilot-benchmark.test.ts tests/unit/customer-intelligence-copilot-contracts.test.ts`
+
+Result: PASS, 4 files, 81 tests.
+
+Full suite (`npm test` / `npx vitest run`): PASS, 178 files, 1518 tests. `npm run typecheck`,
+`npm run build`, and `npm run lint` all clean.
+
+Live acceptance gate (Section 12, the four-message conversation plus log inspection): NOT_RUN - no
+configured provider credentials or analytics DB access in this environment.
+
+Live validation: NOT_RUN.
+
+## Export/XLSX
+
+Explicitly out of scope for T05.8.5 and not modified. The current generic XLSX export
+(`xlsx-export.ts`, `POST /v1/customer-intelligence/copilot/sessions/:sessionId/export`) remains
+deferred for product redesign. Audience/segment-shaped export will be defined separately under
+MARKETING-R2-A01 Audience Engine.
+
 ## T05.5 Answer Generation Reliability and Latency Observability
 
 Live symptom: in a fresh T05.4 session, `Cual cluster tiene mayor ticket promedio?` completed

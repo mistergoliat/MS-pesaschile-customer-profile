@@ -238,7 +238,15 @@ describe('Customer Intelligence Copilot semantic benchmark', () => {
     await h.service.processSessionTurn({ sessionId, question: 'Cual tiene mayor ticket promedio?' });
     await h.service.processSessionTurn({ sessionId, question: 'Y el 1?' });
     const decisionCalls = h.generateConversationDecision.mock.calls as unknown as [GenerateConversationDecisionInput][];
-    expect(decisionCalls[1]?.[0].sessionContext.semanticFocus.activeEntity).toMatchObject({ id: 3 });
+    // Turn 1 returned both clusters (no LIMIT 1), so it is a distribution/comparison across
+    // clusters 3 and 1, not a resolved single winner (task MARKETING-R1-T05.8.5 Section 2): no
+    // active entity is set, but the comparison set still carries both cluster ids so "Y el 1?"
+    // can resolve against it.
+    expect(decisionCalls[1]?.[0].sessionContext.semanticFocus.activeEntity).toBeNull();
+    expect(decisionCalls[1]?.[0].sessionContext.semanticFocus.activeComparison).toMatchObject({
+      entityType: 'cluster',
+      entityIds: expect.arrayContaining([3, 1]),
+    });
   });
 
   it('answers "Eso es mucho?" from context when retained ranking evidence is enough', async () => {

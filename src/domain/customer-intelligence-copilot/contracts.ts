@@ -207,11 +207,13 @@ export type CopilotAnalyticalReference = {
 // The deterministic, explicit "what actually answered the prior turn" contract (task
 // MARKETING-R1-T05.8.4 Section 2). It is selected structurally from the executed query/result
 // shape, never from position (latest/first) or an arbitrary top row - see
-// selectPrimaryQueryResult in session-context.ts.
+// selectPrimaryQueryResult in session-context.ts. `distribution` (task MARKETING-R1-T05.8.5
+// Section 1) marks a complete grouped breakdown - it always carries entityId: null, since no
+// single group is "active" until a follow-up resolves one.
 export type CopilotPrimaryFinding = {
   readonly sourceQueryId: string;
   readonly sourceTurnId: string;
-  readonly findingType: 'top_rank' | 'single_value';
+  readonly findingType: 'top_rank' | 'single_value' | 'distribution';
   readonly entityType: 'cluster' | 'rfm_segment' | 'audience' | null;
   readonly entityId: string | number | null;
   readonly metric: string | null;
@@ -254,7 +256,7 @@ export type CopilotSemanticAnchor = {
   readonly entityType: 'cluster' | 'rfm_segment' | 'audience' | 'comparison_set' | null;
   readonly entityId: string | number | null;
   readonly metric: string | null;
-  readonly findingType: 'top_rank' | 'single_value' | null;
+  readonly findingType: 'top_rank' | 'single_value' | 'distribution' | null;
   readonly sourceQueryId: string | null;
   readonly sourceTurnId?: string | null;
 };

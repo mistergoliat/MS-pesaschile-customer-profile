@@ -60,6 +60,7 @@ import type {
 import {
   buildCopilotSessionContext,
   deriveAnalyticalReferences,
+  deriveSemanticFocus,
 } from './session-context.js';
 import { buildCopilotXlsxExport, createCopilotExportFilename } from './xlsx-export.js';
 import type {
@@ -250,6 +251,7 @@ export type CopilotStageLatencyDiagnostic = {
   readonly primaryFindingMetric?: string | null;
   readonly primaryFindingType?: string | null;
   readonly primaryFindingSourceQueryId?: string | null;
+  readonly distributionRowCount?: number;
 };
 
 export function createCustomerIntelligenceCopilotSessionService(deps: {
@@ -1430,7 +1432,6 @@ async function processToolRuntimeTurn(args: {
     );
     const updated = appendResults(appendTurn(args.session, response, args.question, queryResults.map((entry) => entry.queryId), [], args.clock.now(), args.limits), queryResults, args.limits);
     await args.store.save(updated, args.clock.now());
-    const primaryFinding = primaryFindingFromDeterministicExecution(executions[0]!, queryResults[0]!.queryId);
     emitTurnLatency(args.onStageLatencyDiagnostic, {
       turnStartedAt: args.turnStartedAt,
       queryCount: executions.length,
@@ -1442,11 +1443,7 @@ async function processToolRuntimeTurn(args: {
         ...semanticAnchorDiagnostic(semanticAnchor),
         deterministicRendererEligible: true,
         deterministicRendererReason: deterministicEligibility.reason,
-        primaryFindingEntityType: primaryFinding?.entityType ?? null,
-        primaryFindingEntityId: primaryFinding?.entityId ?? null,
-        primaryFindingMetric: primaryFinding?.metric ?? null,
-        primaryFindingType: primaryFinding?.findingType ?? null,
-        primaryFindingSourceQueryId: primaryFinding?.sourceQueryId ?? null,
+        ...primaryFindingDiagnostic(updated),
       },
     });
     return { status: 'ok', response, sessionContext: args.sessionContext };
@@ -1520,6 +1517,7 @@ async function processToolRuntimeTurn(args: {
           evidenceBundleChars,
           evidenceFactCount: evidenceBundle.facts.length,
           evidenceComparisonCount: evidenceBundle.comparisons.length,
+          ...primaryFindingDiagnostic(updated),
         },
       });
       return { status: 'ok', response, sessionContext: args.sessionContext };
@@ -1543,6 +1541,7 @@ async function processToolRuntimeTurn(args: {
         evidenceBundleChars,
         evidenceFactCount: evidenceBundle.facts.length,
         evidenceComparisonCount: evidenceBundle.comparisons.length,
+        ...primaryFindingDiagnostic(updated),
       },
     });
     return { status: 'ok', response, sessionContext: args.sessionContext };
@@ -1573,6 +1572,7 @@ async function processToolRuntimeTurn(args: {
           evidenceBundleChars,
           evidenceFactCount: evidenceBundle.facts.length,
           evidenceComparisonCount: evidenceBundle.comparisons.length,
+          ...primaryFindingDiagnostic(updated),
         },
       });
       return { status: 'ok', response, sessionContext: args.sessionContext };
@@ -1772,6 +1772,25 @@ function buildAnalyticalEvidenceBundle(args: {
       const anchorIndex = args.semanticAnchor && args.semanticAnchor.entityType === entity.type
         ? rankedRows.findIndex((row) => sameEntityId(scalarValue(row, entity.resultField), args.semanticAnchor?.entityId ?? null))
         : -1;
+      if (anchorIndex < 0 && rankedRows.length > 1) {
+        // A genuine multi-row grouped distribution with no anchored entity: preserve every group
+        // as its own fact (task MARKETING-R1-T05.8.5 Section 5) instead of collapsing to just the
+        // first row, which silently discarded the rest of the breakdown.
+        for (const row of rankedRows) {
+          const rowEntityId = scalarValue(row, entity.resultField);
+          const rowValue = scalarValue(row, metric.alias);
+          if (!isEvidenceValue(rowValue)) continue;
+          facts.push({
+            queryId: execution.id,
+            metric: metricName,
+            entityType: entity.type,
+            entityId: rowEntityId === null || typeof rowEntityId === 'boolean' ? null : rowEntityId,
+            value: rowValue,
+            comparison: 'observed',
+          });
+        }
+        continue;
+      }
       const selectedIndex = anchorIndex >= 0 ? anchorIndex : 0;
       const selected = rankedRows[selectedIndex];
       if (!selected) continue;
@@ -1831,25 +1850,29 @@ function compactEvidenceBundle(bundle: AnalyticalEvidenceBundle): AnalyticalEvid
 }
 
 // The PrimaryAnalyticalFinding this turn established (task MARKETING-R1-T05.8.4 Section 2),
-// derived from the single execution the deterministic renderer just answered from - never the
-// arbitrary "latest query" or "current audience" reference.
-function primaryFindingFromDeterministicExecution(
-  execution: { readonly plan: AnalyticalQueryPlan; readonly result: AnalyticalQueryResult },
-  sourceQueryId: string,
-): { readonly entityType: string | null; readonly entityId: string | number | null; readonly metric: string | null; readonly findingType: 'top_rank' | 'single_value'; readonly sourceQueryId: string } | null {
-  const metric = primaryDeterministicMetric(execution.plan);
-  if (!metric) return null;
-  const entity = entityDescriptorForPlan(execution.plan);
-  if (!entity) {
-    return { entityType: 'audience', entityId: null, metric: semanticMetricName(metric.field ?? null, metric.alias), findingType: 'single_value', sourceQueryId };
+// read back from the just-persisted session via the same deriveSemanticFocus/
+// selectPrimaryQueryResult classification used for the next turn's semantic anchor (task
+// MARKETING-R1-T05.8.5) - never a second, parallel classifier that could disagree with it.
+function primaryFindingDiagnostic(session: CopilotSession): {
+  readonly primaryFindingEntityType: string | null;
+  readonly primaryFindingEntityId: string | number | null;
+  readonly primaryFindingMetric: string | null;
+  readonly primaryFindingType: string | null;
+  readonly primaryFindingSourceQueryId: string | null;
+  readonly distributionRowCount?: number;
+} {
+  const finding = deriveSemanticFocus(session).activeFinding;
+  if (!finding) {
+    return { primaryFindingEntityType: null, primaryFindingEntityId: null, primaryFindingMetric: null, primaryFindingType: null, primaryFindingSourceQueryId: null };
   }
-  const entityId = scalarValue(execution.result.rows[0], entity.resultField);
+  const sourceEntry = session.analyticalState.results.find((entry) => entry.queryId === finding.sourceQueryId);
   return {
-    entityType: entity.type,
-    entityId: entityId === null || typeof entityId === 'boolean' ? null : entityId,
-    metric: semanticMetricName(metric.field ?? null, metric.alias),
-    findingType: isSimpleTopMetricRankingPlan(execution.plan) ? 'top_rank' : 'single_value',
-    sourceQueryId,
+    primaryFindingEntityType: finding.entityType,
+    primaryFindingEntityId: finding.entityId,
+    primaryFindingMetric: finding.metric,
+    primaryFindingType: finding.findingType,
+    primaryFindingSourceQueryId: finding.sourceQueryId,
+    ...(finding.findingType === 'distribution' && sourceEntry ? { distributionRowCount: sourceEntry.result.rowCount } : {}),
   };
 }
 
@@ -1922,7 +1945,10 @@ function fallbackToolSynthesisResponse(args: {
 
 function renderDeterministicEvidenceFallback(bundle: AnalyticalEvidenceBundle): string {
   const lines = ['El analisis se completo, pero la sintesis avanzada no estuvo disponible.', 'Principales resultados observados:'];
-  for (const fact of bundle.facts.slice(0, 5)) {
+  // Every grouped value the evidence bundle retained must stay represented (task
+  // MARKETING-R1-T05.8.5 Section 6) - the bundle itself is already bounded (max 12 facts, max
+  // 4000 chars via compactEvidenceBundle), so no additional truncation is applied here.
+  for (const fact of bundle.facts) {
     const entity = fact.entityType === 'cluster' && fact.entityId !== null
       ? `cluster ${String(fact.entityId)}`
       : fact.entityType === 'rfm_segment' && fact.entityId !== null
@@ -2466,7 +2492,12 @@ function deterministicRendererEligibility(
   if (executions.length !== 1) return { eligible: false, reason: 'multiple_queries' };
   const execution = executions[0];
   if (!execution) return { eligible: false, reason: 'unexpected_result_shape' };
-  if (semanticAnchor?.findingType !== null && semanticAnchor?.findingType !== undefined) return { eligible: false, reason: 'explanatory_question_requires_synthesis' };
+  // Only an anchor that names a specific entity (top_rank/single_value with a concrete entityId)
+  // must force synthesis, to protect that entity from being silently replaced by a new ranking
+  // (task MARKETING-R1-T05.8.3). A `distribution` anchor names no entity at all (task
+  // MARKETING-R1-T05.8.5 Section 4), so a fresh follow-up ranking - e.g. "Cual tiene mas?" after
+  // "Cuantos hay en cada cluster?" - remains eligible for the fast deterministic path.
+  if (anchorProtectsSpecificEntity(semanticAnchor)) return { eligible: false, reason: 'explanatory_question_requires_synthesis' };
   if (execution.plan.select || !execution.plan.metrics || execution.plan.metrics.length === 0) return { eligible: false, reason: 'unexpected_result_shape' };
   const dimensionCount = semanticDimensionCount(execution.plan);
   if (dimensionCount === 0 && execution.plan.metrics.length !== 1) return { eligible: false, reason: 'multiple_metrics' };
@@ -2487,6 +2518,11 @@ function deterministicRendererEligibility(
 
 function isIntentionalTopKTruncation(plan: AnalyticalQueryPlan, dimensionCount: number): boolean {
   return plan.limit === 1 && dimensionCount === 1 && !!plan.orderBy?.length && isSimpleTopMetricRankingPlan(plan);
+}
+
+function anchorProtectsSpecificEntity(semanticAnchor: CopilotSemanticAnchor | null): boolean {
+  if (!semanticAnchor || semanticAnchor.findingType === null || semanticAnchor.findingType === 'distribution') return false;
+  return semanticAnchor.entityId !== null;
 }
 
 function renderDeterministicSimpleAnswer(

@@ -46,8 +46,12 @@ export function deriveAnalyticalReferences(entries: readonly CopilotSessionQuery
 
 export function deriveSemanticFocus(session: CopilotSession): CopilotSemanticFocus {
   const lastResult = selectPrimaryQueryResult(session.analyticalState.results);
+  const finding = lastResult ? findingFromResult(lastResult) : null;
   const activeComparison = lastResult ? comparisonFromResult(lastResult) : null;
-  const activeEntity = lastResult ? entityFromRow(lastResult.result.rows[0], activeComparison, lastResult.queryId) : null;
+  // A distribution finding has no single active entity by definition (task
+  // MARKETING-R1-T05.8.5 Section 3) - the conversation stays neutral across every group until a
+  // follow-up (e.g. a top-1 ranking) resolves one.
+  const activeEntity = lastResult && finding?.findingType !== 'distribution' ? entityFromRow(lastResult.result.rows[0], activeComparison, lastResult.queryId) : null;
   const activeMetric = lastResult ? metricFromPlan(lastResult.plan, lastResult.queryId) : null;
   const unresolvedClarificationTurn = [...session.turns].reverse().find((turn) => turn.assistantStatus === 'clarification_required');
 
@@ -62,7 +66,7 @@ export function deriveSemanticFocus(session: CopilotSession): CopilotSemanticFoc
           assistantMessage: unresolvedClarificationTurn.assistantAnswer,
         }
       : null,
-    activeFinding: lastResult ? findingFromResult(lastResult) : null,
+    activeFinding: finding,
     lastAnalyticalResult: lastResult
       ? {
           queryId: lastResult.queryId,
@@ -74,37 +78,52 @@ export function deriveSemanticFocus(session: CopilotSession): CopilotSemanticFoc
   };
 }
 
+// Classifies a grouped/aggregate result into the deterministic finding it structurally
+// represents (task MARKETING-R1-T05.8.5 Section 1/2). Never phrase-matches the user's question:
+// a grouped-by-entity query that returned more than one row is a `distribution` across every
+// group - even when the rows happen to arrive ordered or the first row is the largest - because
+// `LIMIT`-driven execution (execute-analytical-query.ts) can only ever return more than one row
+// when the plan did not actually reduce the result to a single winner. Exactly one row means the
+// query (via an explicit LIMIT, a narrowing filter, or a single group in the data) identified one
+// specific entity, so it is safe to treat as `top_rank` (when ordered by the metric) or
+// `single_value` (otherwise).
 function findingFromResult(entry: CopilotSessionQueryResult): CopilotSemanticFocus['activeFinding'] {
-  const row = entry.result.rows[0];
-  if (!row) return null;
+  const rows = entry.result.rows;
+  if (rows.length === 0) return null;
   const metric = metricFromPlan(entry.plan, entry.queryId);
   const metricAlias = entry.plan.metrics?.[0]?.alias ?? null;
-  const value = metricAlias ? row[metricAlias] : null;
-  const normalizedValue = isFactValue(value) ? value : null;
   const dimensions = entry.plan.dimensions ?? [];
-  if (dimensions.includes('cluster.clusterId')) {
+  const entityType = dimensions.includes('cluster.clusterId') ? 'cluster' : dimensions.includes('rfm.segmentCode') ? 'rfm_segment' : null;
+
+  if (entityType) {
+    if (rows.length > 1) {
+      return {
+        sourceQueryId: entry.queryId,
+        sourceTurnId: entry.turnId,
+        findingType: 'distribution',
+        entityType,
+        entityId: null,
+        metric: metric?.name ?? metric?.field ?? null,
+        value: null,
+      };
+    }
+    const row = rows[0]!;
+    const entityIdRaw = entityType === 'cluster' ? row.clusterId : row.segmentCode;
+    const value = metricAlias ? row[metricAlias] : null;
     return {
       sourceQueryId: entry.queryId,
       sourceTurnId: entry.turnId,
       findingType: isTopRankPlan(entry.plan) ? 'top_rank' : 'single_value',
-      entityType: 'cluster',
-      entityId: typeof row.clusterId === 'string' || typeof row.clusterId === 'number' ? row.clusterId : null,
+      entityType,
+      entityId: typeof entityIdRaw === 'string' || typeof entityIdRaw === 'number' ? entityIdRaw : null,
       metric: metric?.name ?? metric?.field ?? null,
-      value: normalizedValue,
+      value: isFactValue(value) ? value : null,
     };
   }
-  if (dimensions.includes('rfm.segmentCode')) {
-    return {
-      sourceQueryId: entry.queryId,
-      sourceTurnId: entry.turnId,
-      findingType: isTopRankPlan(entry.plan) ? 'top_rank' : 'single_value',
-      entityType: 'rfm_segment',
-      entityId: typeof row.segmentCode === 'string' || typeof row.segmentCode === 'number' ? row.segmentCode : null,
-      metric: metric?.name ?? metric?.field ?? null,
-      value: normalizedValue,
-    };
-  }
+
   if ((entry.plan.metrics?.length ?? 0) === 1 && (entry.plan.dimensions?.length ?? 0) === 0) {
+    const row = rows[0]!;
+    const value = metricAlias ? row[metricAlias] : null;
     return {
       sourceQueryId: entry.queryId,
       sourceTurnId: entry.turnId,
@@ -112,7 +131,7 @@ function findingFromResult(entry: CopilotSessionQueryResult): CopilotSemanticFoc
       entityType: 'audience',
       entityId: null,
       metric: metric?.name ?? metric?.field ?? null,
-      value: normalizedValue,
+      value: isFactValue(value) ? value : null,
     };
   }
   return null;
@@ -123,20 +142,20 @@ function isTopRankPlan(plan: AnalyticalQueryPlan): boolean {
   return (plan.dimensions?.length ?? 0) > 0 && !!metricAlias && plan.orderBy?.[0]?.field === metricAlias && plan.orderBy[0]?.direction === 'desc';
 }
 
-function isSingleValuePlan(plan: AnalyticalQueryPlan): boolean {
-  return (plan.metrics?.length ?? 0) === 1 && (plan.dimensions?.length ?? 0) === 0;
-}
-
-// Section 4/5 (task MARKETING-R1-T05.8.4): a turn's tool call is probabilistic and may emit an
-// auxiliary count/distribution/context query alongside the query that actually answers the
-// question. The primary result must be picked structurally - an ordered top-ranking query, then
-// a single-value aggregate - never by array position (latest/first), so an auxiliary query can
-// never silently replace the real answer.
+// Section 4/5 (task MARKETING-R1-T05.8.4) and Section 7 (task MARKETING-R1-T05.8.5): a turn's
+// tool call is probabilistic and may emit an auxiliary query alongside the query that actually
+// answers the question. The primary result is picked by classifying every candidate with the
+// same `findingFromResult` used for the persisted finding - never by array position - so the
+// priority list and the finding itself can never disagree. A grouped distribution (the complete
+// breakdown the user asked for) outranks an auxiliary single-value query (e.g. an unclustered
+// count) because it carries the richer, more complete answer; declaration order is the last
+// resort only when nothing structurally distinguishes the candidates.
 function selectPrimaryQueryResult(entries: readonly CopilotSessionQueryResult[]): CopilotSessionQueryResult | null {
   const group = latestTurnGroup(entries);
   if (group.length === 0) return null;
   if (group.length === 1) return group[0]!;
-  return group.find((entry) => isTopRankPlan(entry.plan)) ?? group.find((entry) => isSingleValuePlan(entry.plan)) ?? group[0]!;
+  const byFindingType = (type: 'top_rank' | 'distribution' | 'single_value') => group.find((entry) => findingFromResult(entry)?.findingType === type);
+  return byFindingType('top_rank') ?? byFindingType('distribution') ?? byFindingType('single_value') ?? group[0]!;
 }
 
 function latestTurnGroup(entries: readonly CopilotSessionQueryResult[]): readonly CopilotSessionQueryResult[] {
