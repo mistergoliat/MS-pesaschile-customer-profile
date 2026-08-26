@@ -6,6 +6,8 @@ import {
   CUSTOMER_INTELLIGENCE_COPILOT_PLAN_REPAIR_ATTEMPTS,
   CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_REPAIR_ATTEMPTS,
   CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
+  CUSTOMER_INTELLIGENCE_CONVERSATION_PLAN_REPAIR_ATTEMPTS,
+  CUSTOMER_INTELLIGENCE_COPILOT_UNIFIED_PLANNER_PROMPT_VERSION,
   CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_PROMPT_VERSION,
   CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_PROMPT_VERSION,
   CUSTOMER_INTELLIGENCE_COPILOT_ANSWER_PROMPT_VERSION,
@@ -15,10 +17,12 @@ import {
   serializeAnalyticalSchemaForCopilot,
   validateCopilotAnalysisPlan,
   validateCopilotConversationDecision,
+  validateCopilotConversationPlan,
   type CopilotAnalysisPlan,
   type CopilotConversationDecisionAction,
   type CopilotConversationDecisionActionConstraints,
   type CopilotConversationDecision,
+  type CopilotConversationPlan,
   type CustomerIntelligenceCopilotResponse,
 } from '../../domain/customer-intelligence-copilot/index.js';
 import { validateAnalyticalQueryPlan, type AnalyticalQueryPlan, type AnalyticalQueryResult } from '../../domain/customer-intelligence-query/index.js';
@@ -78,6 +82,15 @@ type ValidatedConversationDecision =
   | { readonly status: 'decision'; readonly decision: CopilotConversationDecision; readonly metadata: CopilotModelMetadata | null }
   | { readonly status: 'terminal'; readonly response: CustomerIntelligenceCopilotResponse };
 
+type ValidatedConversationPlan =
+  | {
+      readonly status: 'decision';
+      readonly decision: CopilotConversationDecision;
+      readonly metadata: CopilotModelMetadata | null;
+      readonly planning: { readonly status: 'query_plan'; readonly steps: readonly ValidatedStep[]; readonly plannerMetadata: CopilotModelMetadata | null } | null;
+    }
+  | { readonly status: 'terminal'; readonly response: CustomerIntelligenceCopilotResponse };
+
 type AnalyticsUnavailableResponse = {
   readonly status: 'analytics_unavailable';
   readonly message: string;
@@ -126,6 +139,8 @@ type CopilotLatencyStage =
   | 'orchestrator_repair'
   | 'planner'
   | 'planner_repair'
+  | 'unified_planner'
+  | 'unified_planner_repair'
   | 'analytics_execution'
   | 'answerer'
   | 'turn';
@@ -162,6 +177,7 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
   readonly store: CopilotSessionStore;
   readonly clock: Clock;
   readonly limits: CopilotSessionLimits;
+  readonly unifiedPlannerEnabled?: boolean;
   readonly onOrchestratorDiagnostic?: (diagnostic: CopilotOrchestratorDiagnostic) => void;
   readonly onPlannerDiagnostic?: (diagnostic: CopilotPlannerDiagnostic) => void;
   readonly onStageLatencyDiagnostic?: (diagnostic: CopilotStageLatencyDiagnostic) => void;
@@ -226,6 +242,114 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
         const updated = appendTurn(session, response, question, [], [], deps.clock.now(), deps.limits);
         await deps.store.save(updated, deps.clock.now());
         return { status: 'ok', response, sessionContext };
+      }
+
+      if ((deps.unifiedPlannerEnabled ?? false) && deps.model.generateConversationPlan && deps.model.repairConversationPlan) {
+        const schema = serializeAnalyticalSchemaForCopilot(deps.getAnalyticalSchema());
+        const queryContract = serializeAnalyticalQueryContractForCopilot();
+        const unified = await decideAndPlanConversation({
+          question,
+          schema,
+          queryContract,
+          sessionContext,
+          model: deps.model,
+          onPlannerDiagnostic: deps.onPlannerDiagnostic,
+          onStageLatencyDiagnostic: deps.onStageLatencyDiagnostic,
+          turnStartedAt,
+        });
+        if (unified.status === 'terminal') {
+          const response = withSession({ sessionId: session.sessionId, turnId }, unified.response);
+          await deps.store.save(appendTurn(session, response, question, [], [], deps.clock.now(), deps.limits), deps.clock.now());
+          emitTurnLatency(deps.onStageLatencyDiagnostic, {
+            turnStartedAt,
+            queryCount: 0,
+            analyticsExecutionDurationMs,
+            success: false,
+            failureStatus: response.status,
+          });
+          return { status: 'ok', response, sessionContext };
+        }
+
+        if (unified.decision.action === 'respond_directly') {
+          const response = withSession(
+            { sessionId: session.sessionId, turnId },
+            {
+              status: 'responded_directly',
+              answer: unified.decision.message,
+              analysis: {
+                contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION,
+                decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
+                decisionAction: 'respond_directly',
+                orchestratorModel: modelName(unified.metadata),
+              },
+              provenance: session.pinnedContext,
+            },
+          );
+          await deps.store.save(appendTurn(session, response, question, [], [], deps.clock.now(), deps.limits), deps.clock.now());
+          emitTurnLatency(deps.onStageLatencyDiagnostic, { turnStartedAt, queryCount: 0, analyticsExecutionDurationMs, success: true, failureStatus: null, executionMode: 'fast_path' });
+          return { status: 'ok', response, sessionContext };
+        }
+
+        if (unified.decision.action === 'clarification_required') {
+          const response = withSession({ sessionId: session.sessionId, turnId }, terminal('clarification_required', unified.decision.message));
+          await deps.store.save(appendTurn(session, response, question, [], [], deps.clock.now(), deps.limits), deps.clock.now());
+          emitTurnLatency(deps.onStageLatencyDiagnostic, { turnStartedAt, queryCount: 0, analyticsExecutionDurationMs, success: true, failureStatus: null, executionMode: 'fast_path' });
+          return { status: 'ok', response, sessionContext };
+        }
+
+        if (unified.decision.action === 'unsupported') {
+          const response = withSession({ sessionId: session.sessionId, turnId }, terminal('unsupported_operation', unified.decision.message));
+          await deps.store.save(appendTurn(session, response, question, [], [], deps.clock.now(), deps.limits), deps.clock.now());
+          emitTurnLatency(deps.onStageLatencyDiagnostic, { turnStartedAt, queryCount: 0, analyticsExecutionDurationMs, success: true, failureStatus: null, executionMode: 'fast_path' });
+          return { status: 'ok', response, sessionContext };
+        }
+
+        if (unified.decision.action === 'answer_from_context') {
+          const answeredContext = await answerFromSessionContext({
+            session,
+            turnId,
+            question,
+            sourceQueryIds: unified.decision.sourceQueryIds,
+            instruction: unified.decision.instruction,
+            plannerMetadata: unified.metadata,
+            sessionContext,
+            model: deps.model,
+            now: deps.clock.now(),
+            limits: deps.limits,
+            onStageLatencyDiagnostic: deps.onStageLatencyDiagnostic,
+            turnStartedAt,
+          });
+          await deps.store.save(answeredContext.session, deps.clock.now());
+          emitTurnLatency(deps.onStageLatencyDiagnostic, {
+            turnStartedAt,
+            queryCount: answeredContext.response.queryIds.length,
+            analyticsExecutionDurationMs,
+            success: answeredContext.response.status === 'answered_from_context',
+            failureStatus: answeredContext.response.status === 'answered_from_context' ? null : answeredContext.response.status,
+            executionMode: 'fast_path',
+          });
+          return { status: 'ok', response: answeredContext.response, sessionContext };
+        }
+
+        if (!unified.planning) {
+          const response = withSession({ sessionId: session.sessionId, turnId }, orchestratorInvalid(['run_analytics unified plan did not include validated planning output']));
+          await deps.store.save(appendTurn(session, response, question, [], [], deps.clock.now(), deps.limits), deps.clock.now());
+          return { status: 'ok', response, sessionContext };
+        }
+        return executePlannedAnalyticsTurn({
+          session,
+          turnId,
+          question,
+          planning: unified.planning,
+          sessionContext,
+          executeAnalyticalQuery: deps.executeAnalyticalQuery,
+          model: deps.model,
+          store: deps.store,
+          clock: deps.clock,
+          limits: deps.limits,
+          onStageLatencyDiagnostic: deps.onStageLatencyDiagnostic,
+          turnStartedAt,
+        });
       }
 
       const decisionResult = await decideConversation({
@@ -1023,6 +1147,283 @@ async function answerFromSessionContext(args: {
   }
 }
 
+async function decideAndPlanConversation(args: {
+  readonly question: string;
+  readonly schema: ReturnType<typeof serializeAnalyticalSchemaForCopilot>;
+  readonly queryContract: ReturnType<typeof serializeAnalyticalQueryContractForCopilot>;
+  readonly sessionContext: ReturnType<typeof buildCopilotSessionContext>;
+  readonly model: CustomerIntelligenceCopilotModel;
+  readonly onPlannerDiagnostic?: (diagnostic: CopilotPlannerDiagnostic) => void;
+  readonly onStageLatencyDiagnostic?: (diagnostic: CopilotStageLatencyDiagnostic) => void;
+  readonly turnStartedAt: number;
+}): Promise<ValidatedConversationPlan> {
+  const actionConstraints = buildConversationDecisionActionConstraints(args.question, args.sessionContext);
+  if (!args.model.generateConversationPlan || !args.model.repairConversationPlan) {
+    return { status: 'terminal', response: orchestratorInvalid(['unified planner model methods are not configured']) };
+  }
+  try {
+    const output = await timeCopilotStage({
+      stage: 'unified_planner',
+      onDiagnostic: args.onStageLatencyDiagnostic,
+      turnStartedAt: args.turnStartedAt,
+      repairAttempted: false,
+      queryCount: 0,
+      analyticsExecutionDurationMs: 0,
+      queryCountFromOutput: (modelOutput) => queryCountFromRawConversationPlan(modelOutput.conversationPlan),
+      call: () =>
+        args.model.generateConversationPlan!({
+          question: args.question,
+          schema: args.schema,
+          queryContract: args.queryContract,
+          unifiedPlannerPromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_UNIFIED_PLANNER_PROMPT_VERSION,
+          maxQueries: CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES,
+          sessionContext: args.sessionContext,
+          actionConstraints,
+        }),
+    });
+    const first = validateConversationPlanAndQueries(output.conversationPlan, args.question, args.sessionContext);
+    if (first.ok) {
+      emitUnifiedPlannerDiagnostic(args.onPlannerDiagnostic, output.conversationPlan, first, false, false);
+      return {
+        status: 'decision',
+        decision: first.decision,
+        planning: first.planning ? { ...first.planning, plannerMetadata: output.metadata } : null,
+        metadata: output.metadata,
+      };
+    }
+
+    for (let attempt = 0; attempt < CUSTOMER_INTELLIGENCE_CONVERSATION_PLAN_REPAIR_ATTEMPTS; attempt += 1) {
+      const repair = await timeCopilotStage({
+        stage: 'unified_planner_repair',
+        onDiagnostic: args.onStageLatencyDiagnostic,
+        turnStartedAt: args.turnStartedAt,
+        repairAttempted: true,
+        queryCount: 0,
+        analyticsExecutionDurationMs: 0,
+        queryCountFromOutput: (modelOutput) => queryCountFromRawConversationPlan(modelOutput.conversationPlan),
+        call: () =>
+          args.model.repairConversationPlan!({
+            question: args.question,
+            schema: args.schema,
+            queryContract: args.queryContract,
+            unifiedPlannerPromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_UNIFIED_PLANNER_PROMPT_VERSION,
+            maxQueries: CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES,
+            sessionContext: args.sessionContext,
+            actionConstraints,
+            previousConversationPlan: output.conversationPlan,
+            validationErrors: first.errors,
+          }),
+      });
+      const repaired = validateConversationPlanAndQueries(repair.conversationPlan, args.question, args.sessionContext);
+      if (repaired.ok) {
+        emitUnifiedPlannerDiagnostic(args.onPlannerDiagnostic, output.conversationPlan, repaired, true, true, first.errors);
+        return {
+          status: 'decision',
+          decision: repaired.decision,
+          planning: repaired.planning ? { ...repaired.planning, plannerMetadata: repair.metadata } : null,
+          metadata: repair.metadata,
+        };
+      }
+      const validationErrors = [...first.errors, ...repaired.errors];
+      emitPlannerDiagnostic(args.onPlannerDiagnostic, {
+        initialPlan: output.conversationPlan,
+        selectedPlan: null,
+        validationErrors,
+        repairAttempted: true,
+        repairSucceeded: false,
+        queryStepIds: [],
+      });
+      return { status: 'terminal', response: orchestratorInvalid(validationErrors) };
+    }
+
+    emitPlannerDiagnostic(args.onPlannerDiagnostic, {
+      initialPlan: output.conversationPlan,
+      selectedPlan: null,
+      validationErrors: first.errors,
+      repairAttempted: false,
+      repairSucceeded: false,
+      queryStepIds: [],
+    });
+    return { status: 'terminal', response: orchestratorInvalid(first.errors) };
+  } catch (error) {
+    return { status: 'terminal', response: mapProviderError(error) ?? answerGenerationFailed(error) };
+  }
+}
+
+function validateConversationPlanAndQueries(
+  rawPlan: unknown,
+  question: string,
+  sessionContext: ReturnType<typeof buildCopilotSessionContext>,
+):
+  | { readonly ok: true; readonly plan: CopilotConversationPlan; readonly decision: CopilotConversationDecision; readonly planning: ValidatedConversationPlanStatus | null }
+  | { readonly ok: false; readonly errors: readonly string[] } {
+  const envelope = validateCopilotConversationPlan(rawPlan, { question, sessionContext });
+  if (!envelope.ok) return envelope;
+  if (envelope.plan.action !== 'run_analytics') return { ok: true, plan: envelope.plan, decision: envelope.decision, planning: null };
+  const planning = validatePlanEnvelopeAndQueries(envelope.plan.analysisPlan);
+  if (!planning.ok) return { ok: false, errors: planning.errors };
+  if (planning.plan.status !== 'query_plan') return { ok: false, errors: ['run_analytics analysisPlan must have status query_plan'] };
+  return {
+    ok: true,
+    plan: envelope.plan,
+    decision: envelope.decision,
+    planning: { status: 'query_plan', steps: planning.steps, plannerMetadata: null },
+  };
+}
+
+type ValidatedConversationPlanStatus = { readonly status: 'query_plan'; readonly steps: readonly ValidatedStep[]; readonly plannerMetadata: CopilotModelMetadata | null };
+
+function emitUnifiedPlannerDiagnostic(
+  onDiagnostic: ((diagnostic: CopilotPlannerDiagnostic) => void) | undefined,
+  initialPlan: unknown,
+  validation: { readonly plan: CopilotConversationPlan; readonly planning: ValidatedConversationPlanStatus | null },
+  repairAttempted: boolean,
+  repairSucceeded: boolean,
+  validationErrors: readonly string[] = [],
+): void {
+  if (validation.plan.action !== 'run_analytics') return;
+  emitPlannerDiagnostic(onDiagnostic, {
+    initialPlan,
+    selectedPlan: validation.plan.analysisPlan,
+    validationErrors,
+    repairAttempted,
+    repairSucceeded,
+    queryStepIds: validation.planning?.steps.map((step) => step.id) ?? [],
+  });
+}
+
+async function executePlannedAnalyticsTurn(args: {
+  readonly session: CopilotSession;
+  readonly turnId: string;
+  readonly question: string;
+  readonly planning: ValidatedConversationPlanStatus;
+  readonly sessionContext: ReturnType<typeof buildCopilotSessionContext>;
+  readonly executeAnalyticalQuery: ExecuteAnalyticalQueryWithResolvedContext;
+  readonly model: CustomerIntelligenceCopilotModel;
+  readonly store: CopilotSessionStore;
+  readonly clock: Clock;
+  readonly limits: CopilotSessionLimits;
+  readonly onStageLatencyDiagnostic?: (diagnostic: CopilotStageLatencyDiagnostic) => void;
+  readonly turnStartedAt: number;
+}): Promise<ProcessCopilotSessionTurnResult> {
+  let analyticsExecutionDurationMs = 0;
+  const executionMode = executionModeForSteps(args.planning.steps);
+  let executions: readonly { readonly id: string; readonly plan: AnalyticalQueryPlan; readonly result: AnalyticalQueryResult }[] = [];
+  const analyticsStartedAt = Date.now();
+  try {
+    const executionResult = await executeAnalyticalSteps({
+      steps: args.planning.steps,
+      executeAnalyticalQuery: args.executeAnalyticalQuery,
+      context: args.session.pinnedContext,
+      resolvedIds: args.session.resolvedIds,
+    });
+    if (executionResult.status === 'invalid_plan') {
+      emitStageLatency(args.onStageLatencyDiagnostic, {
+        stage: 'analytics_execution',
+        provider: null,
+        model: null,
+        durationMs: durationSince(analyticsStartedAt),
+        success: false,
+        failureStatus: 'planner_invalid',
+        repairAttempted: false,
+        queryCount: args.planning.steps.length,
+        analyticsExecutionDurationMs,
+        totalTurnDurationMs: durationSince(args.turnStartedAt),
+        executionMode,
+      });
+      const response = withSession({ sessionId: args.session.sessionId, turnId: args.turnId }, plannerInvalid(executionResult.errors));
+      await args.store.save(appendTurn(args.session, response, args.question, [], [], args.clock.now(), args.limits), args.clock.now());
+      emitTurnLatency(args.onStageLatencyDiagnostic, { turnStartedAt: args.turnStartedAt, queryCount: args.planning.steps.length, analyticsExecutionDurationMs, success: false, failureStatus: response.status, executionMode });
+      return { status: 'ok', response, sessionContext: args.sessionContext };
+    }
+    executions = executionResult.executions;
+  } catch (error) {
+    analyticsExecutionDurationMs = sumAnalyticsExecutionDurationMs(executions);
+    emitStageLatency(args.onStageLatencyDiagnostic, {
+      stage: 'analytics_execution',
+      provider: null,
+      model: null,
+      durationMs: durationSince(analyticsStartedAt),
+      success: false,
+      failureStatus: analyticsFailureStatus(error),
+      repairAttempted: false,
+      queryCount: args.planning.steps.length,
+      analyticsExecutionDurationMs,
+      totalTurnDurationMs: durationSince(args.turnStartedAt),
+      executionMode,
+    });
+    const response = withSession({ sessionId: args.session.sessionId, turnId: args.turnId }, mapAnalyticsError(error));
+    await args.store.save(appendTurn(args.session, response, args.question, [], [], args.clock.now(), args.limits), args.clock.now());
+    emitTurnLatency(args.onStageLatencyDiagnostic, { turnStartedAt: args.turnStartedAt, queryCount: args.planning.steps.length, analyticsExecutionDurationMs, success: false, failureStatus: response.status, executionMode });
+    return { status: 'ok', response, sessionContext: args.sessionContext };
+  }
+  analyticsExecutionDurationMs = sumAnalyticsExecutionDurationMs(executions);
+  emitStageLatency(args.onStageLatencyDiagnostic, {
+    stage: 'analytics_execution',
+    provider: null,
+    model: null,
+    durationMs: durationSince(analyticsStartedAt),
+    success: true,
+    failureStatus: null,
+    repairAttempted: false,
+    queryCount: args.planning.steps.length,
+    analyticsExecutionDurationMs,
+    totalTurnDurationMs: durationSince(args.turnStartedAt),
+    executionMode,
+  });
+
+  const queryResults = executions.map((execution) => ({
+    queryId: uniqueQueryId(args.session, execution.id),
+    turnId: args.turnId,
+    plan: execution.plan,
+    result: retainedResult(execution.result, args.limits),
+  }));
+  const deterministicAnswer = renderDeterministicSimpleAnswer(executions, args.session.pinnedContext);
+  if (deterministicAnswer) {
+    const response = withSession(
+      { sessionId: args.session.sessionId, turnId: args.turnId, queryIds: queryResults.map((entry) => entry.queryId), sourceQueryIds: [] },
+      answered(executions, deterministicAnswer, args.planning.plannerMetadata, null, args.session.pinnedContext),
+    );
+    const updated = appendResults(appendTurn(args.session, response, args.question, queryResults.map((entry) => entry.queryId), [], args.clock.now(), args.limits), queryResults, args.limits);
+    await args.store.save(updated, args.clock.now());
+    emitTurnLatency(args.onStageLatencyDiagnostic, { turnStartedAt: args.turnStartedAt, queryCount: executions.length, analyticsExecutionDurationMs, success: true, failureStatus: null, executionMode: 'fast_path' });
+    return { status: 'ok', response, sessionContext: args.sessionContext };
+  }
+
+  try {
+    const answerOutput = await timeCopilotStage({
+      stage: 'answerer',
+      onDiagnostic: args.onStageLatencyDiagnostic,
+      turnStartedAt: args.turnStartedAt,
+      repairAttempted: false,
+      queryCount: executions.length,
+      analyticsExecutionDurationMs,
+      executionMode,
+      call: () =>
+        args.model.generateAnswer({
+          question: args.question,
+          answerPromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_ANSWER_PROMPT_VERSION,
+          context: args.session.pinnedContext,
+          sessionContext: args.sessionContext,
+          executions,
+        }),
+    });
+    const response = withSession(
+      { sessionId: args.session.sessionId, turnId: args.turnId, queryIds: queryResults.map((entry) => entry.queryId), sourceQueryIds: [] },
+      answered(executions, answerOutput.answer, args.planning.plannerMetadata, answerOutput.metadata, args.session.pinnedContext),
+    );
+    const updated = appendResults(appendTurn(args.session, response, args.question, queryResults.map((entry) => entry.queryId), [], args.clock.now(), args.limits), queryResults, args.limits);
+    await args.store.save(updated, args.clock.now());
+    emitTurnLatency(args.onStageLatencyDiagnostic, { turnStartedAt: args.turnStartedAt, queryCount: executions.length, analyticsExecutionDurationMs, success: true, failureStatus: null, executionMode });
+    return { status: 'ok', response, sessionContext: args.sessionContext };
+  } catch (error) {
+    const response = withSession({ sessionId: args.session.sessionId, turnId: args.turnId }, answerGenerationFailed(error));
+    await args.store.save(appendTurn(args.session, response, args.question, [], [], args.clock.now(), args.limits), args.clock.now());
+    emitTurnLatency(args.onStageLatencyDiagnostic, { turnStartedAt: args.turnStartedAt, queryCount: executions.length, analyticsExecutionDurationMs, success: false, failureStatus: diagnosticFailureStatus(error) ?? response.status, executionMode });
+    return { status: 'ok', response, sessionContext: args.sessionContext };
+  }
+}
+
 function validatePlanEnvelopeAndQueries(rawPlan: unknown):
   | { readonly ok: true; readonly plan: CopilotAnalysisPlan; readonly steps: readonly ValidatedStep[] }
   | { readonly ok: false; readonly errors: readonly string[] } {
@@ -1281,6 +1682,21 @@ function queryCountFromRawPlan(rawPlan: unknown): number {
   return obj.status === 'query_plan' && Array.isArray(obj.queries) ? obj.queries.length : 0;
 }
 
+function queryCountFromRawConversationPlan(rawPlan: unknown): number {
+  if (rawPlan === null || typeof rawPlan !== 'object' || Array.isArray(rawPlan)) return 0;
+  const analysisPlan = (rawPlan as { readonly analysisPlan?: unknown }).analysisPlan;
+  return queryCountFromRawPlan(analysisPlan);
+}
+
+function retainedResult(result: AnalyticalQueryResult, limits: CopilotSessionLimits): AnalyticalQueryResult {
+  return {
+    ...result,
+    rows: result.rows.slice(0, limits.maxResultRowsRetained),
+    rowCount: Math.min(result.rowCount, limits.maxResultRowsRetained),
+    execution: { ...result.execution, truncated: result.execution.truncated || result.rows.length > limits.maxResultRowsRetained },
+  };
+}
+
 function metadataSize(metadata: CopilotModelMetadata | null): Partial<Pick<
   CopilotStageLatencyDiagnostic,
   'promptCharCount' | 'responseCharCount' | 'promptTokens' | 'completionTokens' | 'totalTokens'
@@ -1306,7 +1722,7 @@ function diagnosticFailureStatus(error: unknown): string | null {
   if (!error || typeof error !== 'object') return null;
   const category = (error as { readonly category?: unknown }).category;
   if (typeof category !== 'string') return null;
-  if (category === 'provider_invalid_response' || category === 'provider_timeout') {
+  if (category.startsWith('provider_')) {
     const stage = providerErrorStage(error);
     if (stage) return `${providerFailureStageName(stage)}_${category}`;
   }
@@ -1322,6 +1738,7 @@ function providerErrorStage(error: unknown): string | null {
 }
 
 function providerFailureStageName(stage: string): string {
+  if (stage.startsWith('unified_planner')) return 'unified_planner';
   if (stage.startsWith('orchestrator')) return 'orchestrator';
   if (stage.startsWith('planner')) return 'planner';
   if (stage === 'answerer') return 'answerer';

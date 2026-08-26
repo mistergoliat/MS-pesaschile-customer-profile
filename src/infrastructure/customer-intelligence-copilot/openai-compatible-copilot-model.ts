@@ -1,5 +1,6 @@
 import type {
   CustomerIntelligenceCopilotModel,
+  GenerateConversationPlanOutput,
   GenerateConversationDecisionOutput,
   GenerateAnalysisPlanOutput,
   GenerateAnswerOutput,
@@ -8,6 +9,7 @@ import {
   CUSTOMER_INTELLIGENCE_COPILOT_ANSWER_INSTRUCTIONS,
   CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_INSTRUCTIONS,
   CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_INSTRUCTIONS,
+  CUSTOMER_INTELLIGENCE_COPILOT_UNIFIED_PLANNER_INSTRUCTIONS,
 } from '../../domain/customer-intelligence-copilot/index.js';
 
 export type OpenAiCompatibleCopilotModelConfig = {
@@ -48,6 +50,8 @@ export type CopilotProviderCallStage =
   | 'orchestrator_repair'
   | 'planner'
   | 'planner_repair'
+  | 'unified_planner'
+  | 'unified_planner_repair'
   | 'answerer';
 
 export class CopilotProviderError extends Error {
@@ -63,6 +67,30 @@ export class CopilotProviderError extends Error {
 
 export function createOpenAiCompatibleCopilotModel(config: OpenAiCompatibleCopilotModelConfig): CustomerIntelligenceCopilotModel {
   return {
+    async generateConversationPlan(input) {
+      const output = await postChatCompletion(config, {
+        messages: [
+          { role: 'system', content: unifiedPlannerSystemPrompt() },
+          { role: 'user', content: serializeUserInput({ task: 'generate_conversation_plan', input }) },
+        ],
+        responseFormat: 'json_object',
+        stage: 'unified_planner',
+      });
+      return conversationPlanOutput(output, 'unified_planner');
+    },
+
+    async repairConversationPlan(input) {
+      const output = await postChatCompletion(config, {
+        messages: [
+          { role: 'system', content: unifiedPlannerSystemPrompt() },
+          { role: 'user', content: serializeUserInput({ task: 'repair_conversation_plan', input }) },
+        ],
+        responseFormat: 'json_object',
+        stage: 'unified_planner_repair',
+      });
+      return conversationPlanOutput(output, 'unified_planner_repair');
+    },
+
     async generateConversationDecision(input) {
       const output = await postChatCompletion(config, {
         messages: [
@@ -181,6 +209,17 @@ async function postChatCompletion(
   }
 }
 
+function conversationPlanOutput(output: ChatCompletionOutput, stage: Extract<CopilotProviderCallStage, 'unified_planner' | 'unified_planner_repair'>): GenerateConversationPlanOutput {
+  try {
+    return {
+      conversationPlan: JSON.parse(output.content),
+      metadata: output.metadata,
+    };
+  } catch (error) {
+    throw providerError({ model: output.metadata.model }, stage, 'provider_invalid_response', `Copilot model provider returned invalid unified planner JSON: ${errorMessage(error)}`, null);
+  }
+}
+
 function decisionOutput(output: ChatCompletionOutput, stage: Extract<CopilotProviderCallStage, 'orchestrator' | 'orchestrator_repair'>): GenerateConversationDecisionOutput {
   try {
     return {
@@ -256,6 +295,10 @@ function plannerSystemPrompt(): string {
     ...CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_INSTRUCTIONS,
     'Return only one valid JSON object that matches the existing CopilotAnalysisPlan contract.',
   ].join('\n');
+}
+
+function unifiedPlannerSystemPrompt(): string {
+  return CUSTOMER_INTELLIGENCE_COPILOT_UNIFIED_PLANNER_INSTRUCTIONS.join('\n');
 }
 
 function answerSystemPrompt(): string {

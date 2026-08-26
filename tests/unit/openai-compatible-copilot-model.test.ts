@@ -1,8 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { GenerateAnalysisPlanInput, GenerateAnswerInput, GenerateConversationDecisionInput } from '../../src/application/customer-intelligence-copilot/index.js';
+import type { GenerateAnalysisPlanInput, GenerateAnswerInput, GenerateConversationDecisionInput, GenerateConversationPlanInput } from '../../src/application/customer-intelligence-copilot/index.js';
 import {
   CUSTOMER_INTELLIGENCE_COPILOT_ANALYSIS_PLAN_VERSION,
   CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_INSTRUCTIONS,
+  CUSTOMER_INTELLIGENCE_COPILOT_SESSION_CONTEXT_VERSION,
+  CUSTOMER_INTELLIGENCE_COPILOT_UNIFIED_PLANNER_INSTRUCTIONS,
+  CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
+  CUSTOMER_INTELLIGENCE_CONVERSATION_PLAN_VERSION,
   serializeAnalyticalQueryContractForCopilot,
 } from '../../src/domain/customer-intelligence-copilot/index.js';
 import { CUSTOMER_INTELLIGENCE_QUERY_SCHEMA_VERSION } from '../../src/domain/customer-intelligence-query/contracts.js';
@@ -90,7 +94,7 @@ function orchestratorInput(): GenerateConversationDecisionInput {
       recentTurns: [],
       analyticalReferences: [],
       recentResults: [],
-      semanticFocus: { activeEntity: null, activeMetric: null, activeComparison: null, unresolvedClarification: null },
+      semanticFocus: { activeEntity: null, activeMetric: null, activeComparison: null, unresolvedClarification: null, lastAnalyticalResult: null },
     },
     actionConstraints: {
       allowedActions: ['run_analytics'],
@@ -103,12 +107,82 @@ function orchestratorInput(): GenerateConversationDecisionInput {
   } as unknown as GenerateConversationDecisionInput;
 }
 
+function unifiedPlannerInput(): GenerateConversationPlanInput {
+  return {
+    question: 'Cuantos clientes hay?',
+    schema: { schemaVersion: CUSTOMER_INTELLIGENCE_QUERY_SCHEMA_VERSION, readModelVersion: 'r', fields: [] },
+    queryContract: serializeAnalyticalQueryContractForCopilot(),
+    unifiedPlannerPromptVersion: 'unified-planner-v1',
+    maxQueries: 3,
+    sessionContext: {
+      contextVersion: CUSTOMER_INTELLIGENCE_COPILOT_SESSION_CONTEXT_VERSION,
+      pinnedContext: answerInput().context,
+      recentTurns: [],
+      analyticalReferences: [],
+      recentResults: [],
+      semanticFocus: { activeEntity: null, activeMetric: null, activeComparison: null, unresolvedClarification: null, lastAnalyticalResult: null },
+    },
+    actionConstraints: {
+      decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
+      allowedActions: ['run_analytics'],
+      answerFromContextAllowed: false,
+      availableSourceQueryIds: [],
+      sessionReferenceCount: 0,
+      sessionResultCount: 0,
+      freshBusinessFactQuestion: true,
+      rules: [],
+      allowedActionEnvelopes: [],
+    },
+  };
+}
+
 function firstPayload(fetchMock: ReturnType<typeof vi.fn>) {
   const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
   return { url, init, payload: JSON.parse(String(init.body)) as Record<string, unknown> };
 }
 
 describe('openai_compatible Customer Intelligence Copilot model adapter', () => {
+  it('serializes unified planner requests as a single structured chat completion', async () => {
+    const conversationPlan = {
+      version: CUSTOMER_INTELLIGENCE_CONVERSATION_PLAN_VERSION,
+      action: 'run_analytics',
+      analyticalQuestion: 'Cuantos clientes hay?',
+      analysisPlan: { planVersion: CUSTOMER_INTELLIGENCE_COPILOT_ANALYSIS_PLAN_VERSION, status: 'query_plan', queries: [] },
+    };
+    const fetchMock = mockFetchJson(chatResponse(JSON.stringify(conversationPlan)));
+    const model = createOpenAiCompatibleCopilotModel(config);
+
+    const result = await model.generateConversationPlan!(unifiedPlannerInput());
+
+    expect(result.conversationPlan).toEqual(conversationPlan);
+    const { payload } = firstPayload(fetchMock);
+    expect(payload.response_format).toEqual({ type: 'json_object' });
+    expect(payload.messages).toEqual([
+      expect.objectContaining({
+        role: 'system',
+        content: expect.stringContaining(CUSTOMER_INTELLIGENCE_COPILOT_UNIFIED_PLANNER_INSTRUCTIONS[0]),
+      }),
+      expect.objectContaining({
+        role: 'user',
+        content: expect.stringContaining('"task": "generate_conversation_plan"'),
+      }),
+    ]);
+    expect(JSON.parse(String((payload.messages as { content: string }[])[1]?.content))).toMatchObject({
+      input: { question: 'Cuantos clientes hay?', maxQueries: 3 },
+      task: 'generate_conversation_plan',
+    });
+  });
+
+  it('classifies malformed unified planner JSON with the unified planner stage', async () => {
+    mockFetchJson(chatResponse('not json'));
+    const model = createOpenAiCompatibleCopilotModel(config);
+
+    await expect(model.generateConversationPlan!(unifiedPlannerInput())).rejects.toMatchObject({
+      category: 'provider_invalid_response',
+      metadata: { provider: 'openai_compatible', model: 'vendor-model', stage: 'unified_planner' },
+    });
+  });
+
   it('serializes planner requests as OpenAI-compatible chat completions', async () => {
     const fetchMock = mockFetchJson(chatResponse(JSON.stringify(plan)));
     const model = createOpenAiCompatibleCopilotModel(config);

@@ -8,3 +8,7 @@ export {
   type CopilotConversationDecisionValidationContext,
   type CopilotConversationDecisionValidationResult,
 } from './conversation-decision-validator.js';
+export {
+  validateCopilotConversationPlan,
+  type CopilotConversationPlanValidationResult,
+} from './conversation-plan-validator.js';

@@ -12,6 +12,7 @@ import type {
   CustomerIntelligenceCopilotModel,
   GenerateAnalysisPlanInput,
   GenerateConversationDecisionInput,
+  GenerateConversationPlanInput,
   RepairConversationDecisionInput,
 } from '../../src/application/customer-intelligence-copilot/index.js';
 import type { ExecuteAnalyticalQueryForExport, ExecuteAnalyticalQueryWithResolvedContext } from '../../src/application/customer-intelligence-query/index.js';
@@ -20,6 +21,7 @@ import type { Clock } from '../../src/application/customer-profile/ports.js';
 import type { AnalyticalQueryResult, AnalyticalSchema } from '../../src/domain/customer-intelligence-query/index.js';
 import {
   CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
+  CUSTOMER_INTELLIGENCE_CONVERSATION_PLAN_VERSION,
   CUSTOMER_INTELLIGENCE_COPILOT_ANALYSIS_PLAN_VERSION,
 } from '../../src/domain/customer-intelligence-copilot/index.js';
 
@@ -96,6 +98,27 @@ function runAnalytics(analyticalQuestion = 'Run analytics') {
   return { decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION, action: 'run_analytics', analyticalQuestion };
 }
 
+function unifiedRunAnalytics(queries: readonly { id: string; plan: unknown }[], analyticalQuestion = 'Run analytics') {
+  return {
+    version: CUSTOMER_INTELLIGENCE_CONVERSATION_PLAN_VERSION,
+    action: 'run_analytics',
+    analyticalQuestion,
+    analysisPlan: queryPlan(queries),
+  };
+}
+
+function unifiedRespondDirectly(message = 'RFM clasifica clientes por recencia, frecuencia y valor monetario.') {
+  return { version: CUSTOMER_INTELLIGENCE_CONVERSATION_PLAN_VERSION, action: 'respond_directly', message };
+}
+
+function unifiedClarificationRequired(message = 'Necesito un criterio concreto para comparar los grupos.') {
+  return { version: CUSTOMER_INTELLIGENCE_CONVERSATION_PLAN_VERSION, action: 'clarification_required', message };
+}
+
+function unifiedAnswerFromContext(sourceQueryIds: readonly string[], instruction = 'Usa el resultado previo.') {
+  return { version: CUSTOMER_INTELLIGENCE_CONVERSATION_PLAN_VERSION, action: 'answer_from_context', sourceQueryIds, instruction };
+}
+
 function conversationAnswerFromContext(sourceQueryIds: readonly string[], instruction = 'Usa el resultado previo.') {
   return { decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION, action: 'answer_from_context', sourceQueryIds, instruction };
 }
@@ -141,6 +164,9 @@ function result(rows: readonly Record<string, unknown>[], hash = 'a'.repeat(64),
 function harness(opts: {
   decisions?: unknown[];
   repairDecision?: unknown;
+  conversationPlans?: unknown[];
+  repairConversationPlan?: unknown;
+  conversationPlanError?: unknown;
   plans?: unknown[];
   repairPlan?: unknown;
   plannerError?: unknown;
@@ -150,11 +176,18 @@ function harness(opts: {
   exportResult?: AnalyticalQueryResult;
   limits?: Partial<CopilotSessionLimits>;
   context?: Extract<ResolveCustomerIntelligenceContextResult, { status: 'available' }>;
+  unifiedPlannerEnabled?: boolean;
 } = {}) {
   const clock = new FakeClock();
   const limits = { ...LIMITS, ...opts.limits };
   const decisions = [...(opts.decisions ?? [runAnalytics()])];
+  const conversationPlans = [...(opts.conversationPlans ?? [unifiedRunAnalytics([{ id: 'q1', plan: bestClusterPlan }])])];
   const plans = [...(opts.plans ?? [queryPlan([{ id: 'q1', plan: bestClusterPlan }])])];
+  const generateConversationPlan = vi.fn(async (_input: GenerateConversationPlanInput) => {
+    if (opts.conversationPlanError) throw opts.conversationPlanError;
+    return { conversationPlan: conversationPlans.shift() ?? unifiedRunAnalytics([{ id: 'q1', plan: bestClusterPlan }]), metadata: { provider: 'fake', model: 'unified' } };
+  });
+  const repairConversationPlan = vi.fn(async () => ({ conversationPlan: opts.repairConversationPlan ?? unifiedRunAnalytics([{ id: 'repaired', plan: bestClusterPlan }]), metadata: { provider: 'fake', model: 'unified' } }));
   const generateConversationDecision = vi.fn(async () => ({ decision: decisions.shift() ?? runAnalytics(), metadata: { provider: 'fake', model: 'orchestrator' } }));
   const repairConversationDecision = vi.fn(async () => ({ decision: opts.repairDecision ?? runAnalytics(), metadata: { provider: 'fake', model: 'orchestrator' } }));
   const generateAnalysisPlan = vi.fn(async (_input: GenerateAnalysisPlanInput) => {
@@ -166,7 +199,7 @@ function harness(opts: {
     if (opts.answerError) throw opts.answerError;
     return { answer: 'Respuesta grounded.', metadata: { provider: 'fake', model: 'answerer' } };
   });
-  const model: CustomerIntelligenceCopilotModel = { generateConversationDecision, repairConversationDecision, generateAnalysisPlan, repairAnalysisPlan, generateAnswer };
+  const model: CustomerIntelligenceCopilotModel = { generateConversationPlan, repairConversationPlan, generateConversationDecision, repairConversationDecision, generateAnalysisPlan, repairAnalysisPlan, generateAnswer };
   const context = opts.context ?? BASE_CONTEXT;
   const resolveCurrent = vi.fn(async () => context);
   const resolveForFeatureSnapshot = vi.fn(async () => context);
@@ -187,11 +220,12 @@ function harness(opts: {
     store,
     clock,
     limits,
+    unifiedPlannerEnabled: opts.unifiedPlannerEnabled ?? false,
     onOrchestratorDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
     onPlannerDiagnostic: (diagnostic) => plannerDiagnostics.push(diagnostic),
     onStageLatencyDiagnostic: (diagnostic) => stageLatencyDiagnostics.push(diagnostic),
   });
-  return { service, clock, generateConversationDecision, repairConversationDecision, generateAnalysisPlan, repairAnalysisPlan, generateAnswer, resolveCurrent, executeAnalyticalQuery, executeAnalyticalQueryForExport, store, diagnostics, plannerDiagnostics, stageLatencyDiagnostics };
+  return { service, clock, generateConversationPlan, repairConversationPlan, generateConversationDecision, repairConversationDecision, generateAnalysisPlan, repairAnalysisPlan, generateAnswer, resolveCurrent, executeAnalyticalQuery, executeAnalyticalQueryForExport, store, diagnostics, plannerDiagnostics, stageLatencyDiagnostics };
 }
 
 async function createSession(h: ReturnType<typeof harness>) {
@@ -232,6 +266,223 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
     expect(created.session.expiresAt).toBe('2026-08-20T13:00:00.000Z');
     expect(created.session.turnCount).toBe(0);
     expect(created.session.resultCount).toBe(0);
+  });
+
+  it('responds directly through the unified planner without legacy orchestrator or planner calls', async () => {
+    const h = harness({ unifiedPlannerEnabled: true, conversationPlans: [unifiedRespondDirectly()] });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Hola' });
+
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') expect(response.response.status).toBe('responded_directly');
+    expect(h.generateConversationPlan).toHaveBeenCalledTimes(1);
+    expect(h.generateConversationDecision).not.toHaveBeenCalled();
+    expect(h.generateAnalysisPlan).not.toHaveBeenCalled();
+  });
+
+  it('asks for clarification through the unified planner', async () => {
+    const h = harness({ unifiedPlannerEnabled: true, conversationPlans: [unifiedClarificationRequired()] });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Cual es el mejor grupo?' });
+
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') expect(response.response.status).toBe('clarification_required');
+    expect(h.generateConversationDecision).not.toHaveBeenCalled();
+    expect(h.generateAnalysisPlan).not.toHaveBeenCalled();
+  });
+
+  it('answers from context through the unified planner only when source ids are feasible', async () => {
+    const h = harness({
+      unifiedPlannerEnabled: true,
+      conversationPlans: [
+        unifiedRunAnalytics([{ id: 'avg_ticket_by_cluster', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'avg', field: 'commercial.averageOrderValueTaxIncl', alias: 'avg_ticket' }], orderBy: [{ field: 'avg_ticket', direction: 'desc' }], limit: 1 } }]),
+        unifiedAnswerFromContext(['avg_ticket_by_cluster']),
+      ],
+      executionResults: [result([{ clusterId: 3, avg_ticket: '150000.000000' }], 'e'.repeat(64), ['clusterId', 'avg_ticket'])],
+    });
+    const sessionId = await createSession(h);
+
+    await h.service.processSessionTurn({ sessionId, question: 'Cual cluster tiene mayor ticket promedio?' });
+    const second = await h.service.processSessionTurn({ sessionId, question: 'Que dijiste antes?' });
+
+    expect(second.status).toBe('ok');
+    if (second.status === 'ok') expect(second.response.status).toBe('answered_from_context');
+    expect(h.generateConversationDecision).not.toHaveBeenCalled();
+    expect(h.generateAnalysisPlan).not.toHaveBeenCalled();
+  });
+
+  it('runs simple unified analytics with one LLM call and deterministic answer rendering', async () => {
+    const h = harness({
+      unifiedPlannerEnabled: true,
+      conversationPlans: [unifiedRunAnalytics([{ id: 'customer_count', plan: { metrics: [{ aggregation: 'count', alias: 'customers' }] } }], 'Cuantos clientes hay en la poblacion actual de Customer Intelligence?')],
+      executionResults: [result([{ customers: 10 }])],
+    });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Cuantos clientes tenemos?' });
+
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') {
+      expect(response.response.status).toBe('answered');
+      expect(response.response.queryIds).toEqual(['customer_count']);
+    }
+    expect(h.generateConversationPlan).toHaveBeenCalledTimes(1);
+    expect(h.generateConversationDecision).not.toHaveBeenCalled();
+    expect(h.generateAnalysisPlan).not.toHaveBeenCalled();
+    expect(h.generateAnswer).not.toHaveBeenCalled();
+    expect(h.stageLatencyDiagnostics.map((diagnostic) => diagnostic.stage)).toEqual(['unified_planner', 'analytics_execution', 'turn']);
+  });
+
+  it('runs deep unified analytics with one planner call plus answerer synthesis', async () => {
+    const h = harness({
+      unifiedPlannerEnabled: true,
+      conversationPlans: [unifiedRunAnalytics([
+        { id: 'cluster_count', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'count', alias: 'customers' }] } },
+        { id: 'ticket_by_cluster', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'avg', field: 'commercial.averageOrderValueTaxIncl', alias: 'avg_ticket' }] } },
+      ])],
+      executionResults: [result([{ clusterId: 1, customers: 5 }], '1'.repeat(64), ['clusterId', 'customers']), result([{ clusterId: 3, avg_ticket: '150000.000000' }], '2'.repeat(64), ['clusterId', 'avg_ticket'])],
+    });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Que ves interesante en mis clientes?' });
+
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') expect(response.response.status).toBe('answered');
+    expect(h.generateConversationPlan).toHaveBeenCalledTimes(1);
+    expect(h.generateConversationDecision).not.toHaveBeenCalled();
+    expect(h.generateAnalysisPlan).not.toHaveBeenCalled();
+    expect(h.generateAnswer).toHaveBeenCalledTimes(1);
+    expect(h.stageLatencyDiagnostics.map((diagnostic) => diagnostic.stage)).toEqual(['unified_planner', 'analytics_execution', 'answerer', 'turn']);
+  });
+
+  it('repairs one malformed unified envelope and fails closed if repair remains invalid', async () => {
+    const repaired = harness({
+      unifiedPlannerEnabled: true,
+      conversationPlans: [{ version: 'bad', action: 'run_analytics' }],
+      repairConversationPlan: unifiedRunAnalytics([{ id: 'customer_count', plan: { metrics: [{ aggregation: 'count', alias: 'customers' }] } }]),
+      executionResults: [result([{ customers: 10 }])],
+    });
+    const repairedSessionId = await createSession(repaired);
+    const repairedResponse = await repaired.service.processSessionTurn({ sessionId: repairedSessionId, question: 'Cuantos clientes hay?' });
+    expect(repairedResponse.status).toBe('ok');
+    if (repairedResponse.status === 'ok') expect(repairedResponse.response.status).toBe('answered');
+    expect(repaired.repairConversationPlan).toHaveBeenCalledTimes(1);
+
+    const failed = harness({
+      unifiedPlannerEnabled: true,
+      conversationPlans: [{ version: 'bad', action: 'run_analytics' }],
+      repairConversationPlan: { version: 'still_bad', action: 'run_analytics' },
+    });
+    const failedSessionId = await createSession(failed);
+    const failedResponse = await failed.service.processSessionTurn({ sessionId: failedSessionId, question: 'Cuantos clientes hay?' });
+    expect(failedResponse.status).toBe('ok');
+    if (failedResponse.status === 'ok') expect(failedResponse.response.status).toBe('orchestrator_invalid');
+  });
+
+  it('fails closed when a unified run_analytics plan contains an invalid embedded AnalyticalQueryPlan', async () => {
+    const h = harness({
+      unifiedPlannerEnabled: true,
+      conversationPlans: [unifiedRunAnalytics([{ id: 'bad_query', plan: { dimensions: ['cluster.clusterId'] } }])],
+      repairConversationPlan: unifiedRunAnalytics([{ id: 'still_bad', plan: { dimensions: ['cluster.clusterId'] } }]),
+    });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Cuantos clientes hay?' });
+
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') {
+      expect(response.response.status).toBe('orchestrator_invalid');
+      if (response.response.status === 'orchestrator_invalid') {
+        expect(response.response.errors.join(' ')).toMatch(/plan must specify either "select".*or "metrics"/);
+      }
+    }
+  });
+
+  it('classifies unified planner provider timeouts with unified planner diagnostics', async () => {
+    const h = harness({ unifiedPlannerEnabled: true, conversationPlanError: providerTimeout('unified_planner') });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Cuantos clientes hay?' });
+
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') expect(response.response.status).toBe('provider_timeout');
+    expect(h.stageLatencyDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: 'unified_planner', success: false, failureStatus: 'unified_planner_provider_timeout' }),
+    ]));
+    expect(h.generateConversationDecision).not.toHaveBeenCalled();
+    expect(h.generateAnalysisPlan).not.toHaveBeenCalled();
+  });
+
+  it('preserves semantic follow-up focus through unified planning', async () => {
+    const h = harness({
+      unifiedPlannerEnabled: true,
+      conversationPlans: [
+        unifiedRunAnalytics([{ id: 'avg_ticket_by_cluster', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'avg', field: 'commercial.averageOrderValueTaxIncl', alias: 'avg_ticket' }], orderBy: [{ field: 'avg_ticket', direction: 'desc' }], limit: 1 } }], 'Which assigned cluster has the highest average ticket?'),
+        unifiedRunAnalytics([
+          { id: 'ticket_units_by_cluster', plan: { dimensions: ['cluster.clusterId'], filters: [{ field: 'cluster.clusterId', operator: 'is_not_null' }], metrics: [{ aggregation: 'avg', field: 'commercial.averageOrderValueTaxIncl', alias: 'avg_ticket' }, { aggregation: 'avg', field: 'commercial.validOrders', alias: 'avg_orders' }] } },
+          { id: 'diversity_by_cluster', plan: { dimensions: ['cluster.clusterId'], filters: [{ field: 'cluster.clusterId', operator: 'is_not_null' }], metrics: [{ aggregation: 'avg', field: 'commercial.effectiveDiversity', alias: 'avg_diversity' }] } },
+        ], 'Compare Cluster 3 against the other assigned clusters using available behavioral and commercial features.'),
+      ],
+      executionResults: [
+        result([{ clusterId: 3, avg_ticket: '150000.000000' }], '3'.repeat(64), ['clusterId', 'avg_ticket']),
+        result([{ clusterId: 3, avg_ticket: '150000.000000', avg_orders: '2.5' }], '4'.repeat(64), ['clusterId', 'avg_ticket', 'avg_orders']),
+        result([{ clusterId: 3, avg_diversity: '4.2' }], '5'.repeat(64), ['clusterId', 'avg_diversity']),
+      ],
+    });
+    const sessionId = await createSession(h);
+
+    await h.service.processSessionTurn({ sessionId, question: 'Cual tiene mayor ticket promedio?' });
+    const second = await h.service.processSessionTurn({ sessionId, question: 'Por que?' });
+
+    expect(second.status).toBe('ok');
+    if (second.status === 'ok') expect(second.response.status).toBe('answered');
+    const calls = h.generateConversationPlan.mock.calls as unknown as [GenerateConversationPlanInput][];
+    expect(calls[1]?.[0].sessionContext.semanticFocus.activeEntity).toMatchObject({ id: 3 });
+    expect(calls[1]?.[0].question).toBe('Por que?');
+    expect(h.generateAnalysisPlan).not.toHaveBeenCalled();
+  });
+
+  it('resolves clarification continuation through unified planning and excludes null clusters', async () => {
+    const h = harness({
+      unifiedPlannerEnabled: true,
+      conversationPlans: [
+        unifiedClarificationRequired(),
+        unifiedRunAnalytics([{ id: 'cluster_total_spend', plan: { dimensions: ['cluster.clusterId'], filters: [{ field: 'cluster.clusterId', operator: 'is_not_null' }], metrics: [{ aggregation: 'sum', field: 'commercial.totalSpentTaxIncl', alias: 'total_spent' }], orderBy: [{ field: 'total_spent', direction: 'desc' }], limit: 1 } }], 'Which assigned cluster has the highest totalSpentTaxIncl? Exclude customers with no cluster assignment.'),
+      ],
+      executionResults: [result([{ clusterId: 2, total_spent: '900000.000000' }], '6'.repeat(64), ['clusterId', 'total_spent'])],
+    });
+    const sessionId = await createSession(h);
+
+    const first = await h.service.processSessionTurn({ sessionId, question: 'Cual es el mejor grupo?' });
+    const second = await h.service.processSessionTurn({ sessionId, question: 'Por gasto total' });
+
+    expect(first.status).toBe('ok');
+    if (first.status === 'ok') expect(first.response.status).toBe('clarification_required');
+    expect(second.status).toBe('ok');
+    if (second.status === 'ok') expect(second.response.status).toBe('answered');
+    expect(h.executeAnalyticalQuery).toHaveBeenCalledWith(expect.objectContaining({
+      plan: expect.objectContaining({ filters: [{ field: 'cluster.clusterId', operator: 'is_not_null' }] }),
+    }));
+  });
+
+  it('preserves profitability limitation through unified planning', async () => {
+    const h = harness({
+      unifiedPlannerEnabled: true,
+      conversationPlans: [{ version: CUSTOMER_INTELLIGENCE_CONVERSATION_PLAN_VERSION, action: 'unsupported', message: 'No hay campos de margen, costo o rentabilidad disponibles.' }],
+    });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Cual segmento es mas rentable?' });
+
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') {
+      expect(response.response.status).toBe('unsupported_operation');
+      if (response.response.status === 'unsupported_operation') {
+        expect(response.response.message).toMatch(/margen|costo|rentabilidad/);
+      }
+    }
   });
 
   it('routes a fresh customer count question to analytics with no context answer available', async () => {

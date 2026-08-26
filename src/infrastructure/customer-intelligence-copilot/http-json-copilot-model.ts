@@ -1,5 +1,6 @@
 import type {
   CustomerIntelligenceCopilotModel,
+  GenerateConversationPlanOutput,
   GenerateConversationDecisionOutput,
   GenerateAnalysisPlanOutput,
   GenerateAnswerOutput,
@@ -8,6 +9,7 @@ import {
   CUSTOMER_INTELLIGENCE_COPILOT_ANSWER_INSTRUCTIONS,
   CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_INSTRUCTIONS,
   CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_INSTRUCTIONS,
+  CUSTOMER_INTELLIGENCE_COPILOT_UNIFIED_PLANNER_INSTRUCTIONS,
 } from '../../domain/customer-intelligence-copilot/index.js';
 
 export type HttpJsonCopilotModelConfig = {
@@ -30,6 +32,8 @@ type HttpJsonProviderCallStage =
   | 'orchestrator_repair'
   | 'planner'
   | 'planner_repair'
+  | 'unified_planner'
+  | 'unified_planner_repair'
   | 'answerer';
 
 type HttpJsonProviderOutput = {
@@ -51,6 +55,26 @@ class HttpJsonCopilotProviderError extends Error {
 
 export function createHttpJsonCopilotModel(config: HttpJsonCopilotModelConfig): CustomerIntelligenceCopilotModel {
   return {
+    async generateConversationPlan(input) {
+      const response = await postJson(config, {
+        task: 'generate_conversation_plan',
+        model: config.model,
+        instructions: CUSTOMER_INTELLIGENCE_COPILOT_UNIFIED_PLANNER_INSTRUCTIONS,
+        input,
+      }, 'unified_planner');
+      return conversationPlanOutput(response, config.model, 'unified_planner');
+    },
+
+    async repairConversationPlan(input) {
+      const response = await postJson(config, {
+        task: 'repair_conversation_plan',
+        model: config.model,
+        instructions: CUSTOMER_INTELLIGENCE_COPILOT_UNIFIED_PLANNER_INSTRUCTIONS,
+        input,
+      }, 'unified_planner_repair');
+      return conversationPlanOutput(response, config.model, 'unified_planner_repair');
+    },
+
     async generateConversationDecision(input) {
       const response = await postJson(config, {
         task: 'generate_conversation_decision',
@@ -136,6 +160,14 @@ async function postJson(config: HttpJsonCopilotModelConfig, body: unknown, stage
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function conversationPlanOutput(output: HttpJsonProviderOutput, fallbackModel: string, stage: Extract<HttpJsonProviderCallStage, 'unified_planner' | 'unified_planner_repair'>): GenerateConversationPlanOutput {
+  const obj = expectObject(output.raw, fallbackModel, stage);
+  return {
+    conversationPlan: obj.conversationPlan ?? obj.plan ?? obj.output ?? obj,
+    metadata: metadataFromObject(obj, fallbackModel, output),
+  };
 }
 
 function decisionOutput(output: HttpJsonProviderOutput, fallbackModel: string, stage: Extract<HttpJsonProviderCallStage, 'orchestrator' | 'orchestrator_repair'>): GenerateConversationDecisionOutput {

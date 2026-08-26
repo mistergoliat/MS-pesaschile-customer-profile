@@ -69,6 +69,14 @@ function createStageRoutedModel(models: {
   readonly answerer: CustomerIntelligenceCopilotModel;
 }): CustomerIntelligenceCopilotModel {
   return {
+    generateConversationPlan: (input) => {
+      if (!models.planner.generateConversationPlan) throw new Error('planner model does not support unified conversation planning');
+      return models.planner.generateConversationPlan(input);
+    },
+    repairConversationPlan: (input) => {
+      if (!models.planner.repairConversationPlan) throw new Error('planner model does not support unified conversation plan repair');
+      return models.planner.repairConversationPlan(input);
+    },
     generateConversationDecision: (input) => models.orchestrator.generateConversationDecision(input),
     repairConversationDecision: (input) => models.orchestrator.repairConversationDecision(input),
     generateAnalysisPlan: (input) => models.planner.generateAnalysisPlan(input),

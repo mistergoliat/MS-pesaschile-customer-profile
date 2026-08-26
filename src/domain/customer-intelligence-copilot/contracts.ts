@@ -7,9 +7,11 @@ export const CUSTOMER_INTELLIGENCE_COPILOT_SESSION_VERSION = 'customer-intellige
 export const CUSTOMER_INTELLIGENCE_COPILOT_SESSION_CONTEXT_VERSION = 'customer-intelligence-copilot-session-context-v1';
 export const CUSTOMER_INTELLIGENCE_COPILOT_XLSX_EXPORT_VERSION = 'customer-intelligence-xlsx-export-v1';
 export const CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION = 'customer-intelligence-conversation-decision-v1';
+export const CUSTOMER_INTELLIGENCE_CONVERSATION_PLAN_VERSION = 'customer-intelligence-conversation-plan-v1';
 export const CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES = 3;
 export const CUSTOMER_INTELLIGENCE_COPILOT_PLAN_REPAIR_ATTEMPTS = 1;
 export const CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_REPAIR_ATTEMPTS = 1;
+export const CUSTOMER_INTELLIGENCE_CONVERSATION_PLAN_REPAIR_ATTEMPTS = 1;
 
 export type CopilotPlanStatus = 'query_plan' | 'answer_from_context' | 'unsupported_data' | 'unsupported_operation' | 'clarification_required';
 
@@ -78,6 +80,35 @@ export type CopilotConversationDecision =
     }
   | {
       readonly decisionVersion: typeof CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION;
+      readonly action: 'unsupported';
+      readonly message: string;
+    };
+
+export type CopilotConversationPlan =
+  | {
+      readonly version: typeof CUSTOMER_INTELLIGENCE_CONVERSATION_PLAN_VERSION;
+      readonly action: 'respond_directly';
+      readonly message: string;
+    }
+  | {
+      readonly version: typeof CUSTOMER_INTELLIGENCE_CONVERSATION_PLAN_VERSION;
+      readonly action: 'clarification_required';
+      readonly message: string;
+    }
+  | {
+      readonly version: typeof CUSTOMER_INTELLIGENCE_CONVERSATION_PLAN_VERSION;
+      readonly action: 'answer_from_context';
+      readonly sourceQueryIds: readonly string[];
+      readonly instruction: string;
+    }
+  | {
+      readonly version: typeof CUSTOMER_INTELLIGENCE_CONVERSATION_PLAN_VERSION;
+      readonly action: 'run_analytics';
+      readonly analyticalQuestion: string;
+      readonly analysisPlan: CopilotAnalysisPlan;
+    }
+  | {
+      readonly version: typeof CUSTOMER_INTELLIGENCE_CONVERSATION_PLAN_VERSION;
       readonly action: 'unsupported';
       readonly message: string;
     };

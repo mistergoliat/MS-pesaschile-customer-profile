@@ -391,6 +391,60 @@ Result: PASS, 7 files, 131 tests.
 
 Live validation: NOT_RUN.
 
+## T05.7 Unified Analytical Decision and Planning
+
+Motivation: T05.6 showed that analytical turns still paid two serial model calls before analytics:
+conversation routing and analytical planning. T05.7 introduces a guarded unified path that decides
+the conversational action and, for `run_analytics`, returns the validated analytical plan in the same
+structured provider response.
+
+Contract:
+
+- New internal contract: `customer-intelligence-conversation-plan-v1`.
+- Supported actions remain `respond_directly`, `clarification_required`, `answer_from_context`,
+  `run_analytics` and `unsupported`.
+- `run_analytics` requires `analyticalQuestion` plus a complete embedded `CopilotAnalysisPlan`
+  `query_plan`.
+- Non-analytical actions must not include `analysisPlan`.
+- The answerer contract is unchanged: answer generation is plain text and is not parsed as JSON.
+
+Runtime behavior:
+
+- The session service uses the unified path when
+  `CUSTOMER_INTELLIGENCE_COPILOT_UNIFIED_PLANNER_ENABLED=true` and the configured model exposes
+  unified planner methods.
+- The unified path does not call legacy `generateConversationDecision()` followed by
+  `generateAnalysisPlan()`.
+- One bounded repair call is available through `unified_planner_repair`.
+- Invalid unified envelopes and invalid embedded `AnalyticalQueryPlan` objects fail closed after
+  repair, using the same deterministic validators as the legacy orchestrator and planner.
+- No automatic fallback to the legacy two-call route is performed for unified provider timeout or
+  invalid-response failures.
+
+Observability:
+
+- Stage latency diagnostics now include `unified_planner` and `unified_planner_repair`.
+- Existing safe stage fields remain: stage, provider, model, duration, success/failure,
+  repairAttempted, queryCount, analyticsExecutionDurationMs and totalTurnDurationMs.
+- Diagnostics continue to exclude raw provider payloads, prompts, SQL, credentials, result rows,
+  PII and chain-of-thought.
+
+Benchmark harness:
+
+- Benchmark runs now pass through the production unified planner flag.
+- Progress is logged per model/scenario/run.
+- Optional `--output=` or `CUSTOMER_INTELLIGENCE_COPILOT_BENCHMARK_OUTPUT` writes JSONL records as
+  each run completes.
+- Unified planner latency is included in the benchmark planning bucket.
+
+Local focused validation:
+
+`npm test -- --run tests/unit/customer-intelligence-copilot-contracts.test.ts tests/unit/openai-compatible-copilot-model.test.ts tests/unit/http-json-copilot-model.test.ts tests/unit/customer-intelligence-copilot-session.test.ts tests/unit/customer-intelligence-copilot-semantic-benchmark.test.ts tests/unit/customer-intelligence-copilot-benchmark.test.ts tests/unit/customer-intelligence-query-planner-contract.test.ts tests/unit/customer-intelligence-query-validator.test.ts`
+
+Result: PASS, 8 files, 156 tests.
+
+Live validation: NOT_RUN.
+
 ## T05.5 Answer Generation Reliability and Latency Observability
 
 Live symptom: in a fresh T05.4 session, `Cual cluster tiene mayor ticket promedio?` completed

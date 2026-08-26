@@ -1,4 +1,6 @@
 import 'dotenv/config';
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import mysql from 'mysql2/promise';
 import { config } from '../../src/config.js';
@@ -68,6 +70,7 @@ const SCENARIOS: readonly CopilotBenchmarkScenario[] = [
     turns: ['Cual segmento es mas rentable?'],
     semanticPass: ({ finalResponse }) =>
       finalResponse.status === 'unsupported_data' ||
+      finalResponse.status === 'unsupported_operation' ||
       (finalResponse.status === 'answered' && /rentabilidad|margen|costo|profit/i.test(finalResponse.answer)),
   },
 ] as const;
@@ -77,6 +80,7 @@ async function main(): Promise<void> {
   const models = splitCsv(args.models ?? process.env.CUSTOMER_INTELLIGENCE_COPILOT_BENCHMARK_MODELS ?? 'deepseek-v4-flash,deepseek-v4-pro');
   const runs = positiveInt(args.runs ?? process.env.CUSTOMER_INTELLIGENCE_COPILOT_BENCHMARK_RUNS, 3);
   const featureSnapshotId = args['feature-snapshot-id'] ?? process.env.CUSTOMER_INTELLIGENCE_COPILOT_BENCHMARK_FEATURE_SNAPSHOT_ID ?? null;
+  const outputPath = args.output ?? process.env.CUSTOMER_INTELLIGENCE_COPILOT_BENCHMARK_OUTPUT ?? null;
   const scenarioFilter = args.scenarios ? new Set(splitCsv(args.scenarios)) : null;
   const scenarios = scenarioFilter ? SCENARIOS.filter((scenario) => scenarioFilter.has(scenario.id)) : SCENARIOS;
   if (scenarios.length === 0) throw new Error('No benchmark scenarios selected');
@@ -95,11 +99,18 @@ async function main(): Promise<void> {
   });
 
   const records: CopilotBenchmarkRecord[] = [];
+  const totalRuns = models.length * scenarios.length * runs;
+  let runIndex = 0;
   try {
     for (const model of models) {
       for (const scenario of scenarios) {
         for (let run = 1; run <= runs; run += 1) {
-          records.push(await runScenario({ model, scenario, run, featureSnapshotId, pool }));
+          runIndex += 1;
+          console.info(`[${runIndex}/${totalRuns}] ${model} ${scenario.id} run=${run} START`);
+          const record = await runScenario({ model, scenario, run, featureSnapshotId, pool });
+          records.push(record);
+          if (outputPath) appendJsonLine(outputPath, record);
+          console.info(`[${runIndex}/${totalRuns}] ${record.semanticPass ? 'PASS' : 'FAIL'} total=${record.totalMs} status=${record.status}`);
         }
       }
     }
@@ -142,6 +153,7 @@ async function runScenario(args: {
     store: createInMemoryCopilotSessionStore(config.marketingCopilot.session),
     clock: new SystemClock(),
     limits: config.marketingCopilot.session,
+    unifiedPlannerEnabled: config.marketingCopilot.unifiedPlannerEnabled,
     onPlannerDiagnostic: (diagnostic) => plannerDiagnostics.push(diagnostic),
     onStageLatencyDiagnostic: (diagnostic) => stageDiagnostics.push(diagnostic),
   });
@@ -180,7 +192,7 @@ function recordFromDiagnostics(args: {
     scenarioId: args.scenarioId,
     run: args.run,
     orchestratorMs: sumStage(args.diagnostics, 'orchestrator') + sumStage(args.diagnostics, 'orchestrator_repair'),
-    plannerMs: sumStage(args.diagnostics, 'planner') + sumStage(args.diagnostics, 'planner_repair'),
+    plannerMs: sumStage(args.diagnostics, 'planner') + sumStage(args.diagnostics, 'planner_repair') + sumStage(args.diagnostics, 'unified_planner') + sumStage(args.diagnostics, 'unified_planner_repair'),
     analyticsMs: sumStage(args.diagnostics, 'analytics_execution'),
     answererMs: sumStage(args.diagnostics, 'answerer'),
     totalMs: sumStage(args.diagnostics, 'turn'),
@@ -222,6 +234,11 @@ function splitCsv(value: string): readonly string[] {
 function positiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function appendJsonLine(path: string, record: CopilotBenchmarkRecord): void {
+  mkdirSync(dirname(path), { recursive: true });
+  appendFileSync(path, `${JSON.stringify(record)}\n`, 'utf8');
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

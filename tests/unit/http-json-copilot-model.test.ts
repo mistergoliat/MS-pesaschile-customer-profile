@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { serializeAnalyticalQueryContractForCopilot } from '../../src/domain/customer-intelligence-copilot/index.js';
+import {
+  CUSTOMER_INTELLIGENCE_COPILOT_ANALYSIS_PLAN_VERSION,
+  CUSTOMER_INTELLIGENCE_COPILOT_SESSION_CONTEXT_VERSION,
+  CUSTOMER_INTELLIGENCE_COPILOT_UNIFIED_PLANNER_INSTRUCTIONS,
+  CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
+  CUSTOMER_INTELLIGENCE_CONVERSATION_PLAN_VERSION,
+  serializeAnalyticalQueryContractForCopilot,
+} from '../../src/domain/customer-intelligence-copilot/index.js';
 import { CUSTOMER_INTELLIGENCE_QUERY_SCHEMA_VERSION } from '../../src/domain/customer-intelligence-query/contracts.js';
 import { createHttpJsonCopilotModel } from '../../src/infrastructure/customer-intelligence-copilot/index.js';
 
@@ -25,6 +32,56 @@ function mockFetchJson(body: unknown, ok = true, status = 200) {
 }
 
 describe('http_json Customer Intelligence Copilot model adapter', () => {
+  it('serializes unified planner requests with the unified instructions', async () => {
+    const conversationPlan = {
+      version: CUSTOMER_INTELLIGENCE_CONVERSATION_PLAN_VERSION,
+      action: 'run_analytics',
+      analyticalQuestion: 'Cuantos clientes hay?',
+      analysisPlan: { planVersion: CUSTOMER_INTELLIGENCE_COPILOT_ANALYSIS_PLAN_VERSION, status: 'query_plan', queries: [] },
+    };
+    const fetchMock = mockFetchJson({ conversationPlan, provider: 'test', model: 'unified' });
+    const model = createHttpJsonCopilotModel(config);
+
+    const result = await model.generateConversationPlan!({
+      question: 'Cuantos clientes hay?',
+      schema: { schemaVersion: CUSTOMER_INTELLIGENCE_QUERY_SCHEMA_VERSION, readModelVersion: 'r', fields: [] },
+      queryContract: serializeAnalyticalQueryContractForCopilot(),
+      unifiedPlannerPromptVersion: 'unified-planner-v1',
+      maxQueries: 3,
+      sessionContext: {
+        contextVersion: CUSTOMER_INTELLIGENCE_COPILOT_SESSION_CONTEXT_VERSION,
+        pinnedContext: {
+          featureSnapshot: { snapshotId: '1', referenceTime: '2026-01-01T00:00:00.000Z', featureVersion: 'f', populationPolicyVersion: 'p' },
+          rfmSnapshot: null,
+          clusterSnapshot: null,
+          population: { featurePopulation: 1, rfmMatched: 0, clusterMatched: 0, bothMatched: 0, neitherMatched: 1, rfmCoveragePct: 0, clusterCoveragePct: 0 },
+          contractVersion: 'customer-intelligence-read-model-v1',
+        },
+        recentTurns: [],
+        analyticalReferences: [],
+        recentResults: [],
+        semanticFocus: { activeEntity: null, activeMetric: null, activeComparison: null, unresolvedClarification: null, lastAnalyticalResult: null },
+      },
+      actionConstraints: {
+        decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
+        allowedActions: ['run_analytics'],
+        answerFromContextAllowed: false,
+        availableSourceQueryIds: [],
+        sessionReferenceCount: 0,
+        sessionResultCount: 0,
+        freshBusinessFactQuestion: true,
+        rules: [],
+        allowedActionEnvelopes: [],
+      },
+    });
+
+    expect(result.conversationPlan).toEqual(conversationPlan);
+    const payload = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body));
+    expect(payload.task).toBe('generate_conversation_plan');
+    expect(payload.instructions).toEqual(CUSTOMER_INTELLIGENCE_COPILOT_UNIFIED_PLANNER_INSTRUCTIONS);
+    expect(payload.input.queryContract.metricSchema.alias.pattern).toBe('^[A-Za-z_][A-Za-z0-9_]*$');
+  });
+
   it('serializes planner requests with instructions, model, and authorization', async () => {
     const fetchMock = mockFetchJson({ plan: { status: 'unsupported_data' }, provider: 'test', model: 'm1' });
     const model = createHttpJsonCopilotModel(config);

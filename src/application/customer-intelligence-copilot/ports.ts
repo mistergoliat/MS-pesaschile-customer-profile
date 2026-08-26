@@ -45,6 +45,26 @@ export type GenerateConversationDecisionInput = {
   readonly actionConstraints: CopilotConversationDecisionActionConstraints;
 };
 
+export type GenerateConversationPlanInput = {
+  readonly question: string;
+  readonly schema: CompactAnalyticalSchema;
+  readonly queryContract: CompactAnalyticalQueryContract;
+  readonly unifiedPlannerPromptVersion: string;
+  readonly maxQueries: number;
+  readonly sessionContext: CopilotSessionContext;
+  readonly actionConstraints: CopilotConversationDecisionActionConstraints;
+};
+
+export type RepairConversationPlanInput = GenerateConversationPlanInput & {
+  readonly previousConversationPlan: unknown;
+  readonly validationErrors: readonly string[];
+};
+
+export type GenerateConversationPlanOutput = {
+  readonly conversationPlan: unknown;
+  readonly metadata: CopilotModelMetadata | null;
+};
+
 export type RepairConversationDecisionInput = GenerateConversationDecisionInput & {
   readonly previousDecision: unknown;
   readonly validationErrors: readonly string[];
@@ -73,6 +93,8 @@ export type GenerateAnswerOutput = {
 };
 
 export type CustomerIntelligenceCopilotModel = {
+  generateConversationPlan?(input: GenerateConversationPlanInput): Promise<GenerateConversationPlanOutput>;
+  repairConversationPlan?(input: RepairConversationPlanInput): Promise<GenerateConversationPlanOutput>;
   generateConversationDecision(input: GenerateConversationDecisionInput): Promise<GenerateConversationDecisionOutput>;
   repairConversationDecision(input: RepairConversationDecisionInput): Promise<GenerateConversationDecisionOutput>;
   generateAnalysisPlan(input: GenerateAnalysisPlanInput): Promise<GenerateAnalysisPlanOutput>;
