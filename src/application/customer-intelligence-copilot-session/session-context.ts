@@ -62,6 +62,7 @@ export function deriveSemanticFocus(session: CopilotSession): CopilotSemanticFoc
           assistantMessage: unresolvedClarificationTurn.assistantAnswer,
         }
       : null,
+    activeFinding: lastResult ? findingFromResult(lastResult) : null,
     lastAnalyticalResult: lastResult
       ? {
           queryId: lastResult.queryId,
@@ -71,6 +72,52 @@ export function deriveSemanticFocus(session: CopilotSession): CopilotSemanticFoc
         }
       : null,
   };
+}
+
+function findingFromResult(entry: CopilotSessionQueryResult): CopilotSemanticFocus['activeFinding'] {
+  const row = entry.result.rows[0];
+  if (!row) return null;
+  const metric = metricFromPlan(entry.plan, entry.queryId);
+  const metricAlias = entry.plan.metrics?.[0]?.alias ?? null;
+  const value = metricAlias ? row[metricAlias] : null;
+  const normalizedValue = isFactValue(value) ? value : null;
+  const dimensions = entry.plan.dimensions ?? [];
+  if (dimensions.includes('cluster.clusterId')) {
+    return {
+      sourceQueryId: entry.queryId,
+      findingType: isTopRankPlan(entry.plan) ? 'top_rank' : 'single_value',
+      entityType: 'cluster',
+      entityId: typeof row.clusterId === 'string' || typeof row.clusterId === 'number' ? row.clusterId : null,
+      metric: metric?.field ?? metric?.name ?? null,
+      value: normalizedValue,
+    };
+  }
+  if (dimensions.includes('rfm.segmentCode')) {
+    return {
+      sourceQueryId: entry.queryId,
+      findingType: isTopRankPlan(entry.plan) ? 'top_rank' : 'single_value',
+      entityType: 'rfm_segment',
+      entityId: typeof row.segmentCode === 'string' || typeof row.segmentCode === 'number' ? row.segmentCode : null,
+      metric: metric?.field ?? metric?.name ?? null,
+      value: normalizedValue,
+    };
+  }
+  if ((entry.plan.metrics?.length ?? 0) === 1 && (entry.plan.dimensions?.length ?? 0) === 0) {
+    return {
+      sourceQueryId: entry.queryId,
+      findingType: 'single_value',
+      entityType: 'audience',
+      entityId: null,
+      metric: metric?.field ?? metric?.name ?? null,
+      value: normalizedValue,
+    };
+  }
+  return null;
+}
+
+function isTopRankPlan(plan: AnalyticalQueryPlan): boolean {
+  const metricAlias = plan.metrics?.[0]?.alias;
+  return (plan.dimensions?.length ?? 0) > 0 && plan.limit === 1 && !!metricAlias && plan.orderBy?.[0]?.field === metricAlias && plan.orderBy[0]?.direction === 'desc';
 }
 
 function latestResult(entries: readonly CopilotSessionQueryResult[]): CopilotSessionQueryResult | null {

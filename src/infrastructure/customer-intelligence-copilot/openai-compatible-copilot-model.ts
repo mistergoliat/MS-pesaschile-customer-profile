@@ -1,9 +1,12 @@
 import type {
   CustomerIntelligenceCopilotModel,
+  GenerateConversationalTurnOutput,
   GenerateConversationPlanOutput,
   GenerateConversationDecisionOutput,
   GenerateAnalysisPlanOutput,
   GenerateAnswerOutput,
+  CopilotConversationalMessage,
+  CopilotToolDefinition,
 } from '../../application/customer-intelligence-copilot/index.js';
 import {
   CUSTOMER_INTELLIGENCE_COPILOT_ANSWER_INSTRUCTIONS,
@@ -26,6 +29,12 @@ type ChatMessage = {
 
 type ChatCompletionOutput = {
   readonly content: string;
+  readonly toolCalls: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly arguments: unknown;
+    readonly argumentsParseError?: string;
+  }[];
   readonly metadata: {
     readonly provider: 'openai_compatible';
     readonly model: string;
@@ -34,6 +43,8 @@ type ChatCompletionOutput = {
     readonly promptTokens?: number;
     readonly completionTokens?: number;
     readonly totalTokens?: number;
+    readonly promptCacheHitTokens?: number;
+    readonly promptCacheMissTokens?: number;
   };
 };
 
@@ -46,6 +57,8 @@ export type CopilotProviderErrorCategory =
   | 'provider_invalid_response';
 
 export type CopilotProviderCallStage =
+  | 'tool_selection'
+  | 'tool_synthesis'
   | 'orchestrator'
   | 'orchestrator_repair'
   | 'planner'
@@ -67,6 +80,16 @@ export class CopilotProviderError extends Error {
 
 export function createOpenAiCompatibleCopilotModel(config: OpenAiCompatibleCopilotModelConfig): CustomerIntelligenceCopilotModel {
   return {
+    async generateConversationalTurn(input) {
+      const output = await postChatCompletion(config, {
+        messages: input.messages,
+        tools: input.tools,
+        toolChoice: input.toolChoice,
+        stage: input.stage,
+      });
+      return conversationalTurnOutput(output, input.stage);
+    },
+
     async generateConversationPlan(input) {
       const output = await postChatCompletion(config, {
         messages: [
@@ -154,21 +177,29 @@ export function createOpenAiCompatibleCopilotModel(config: OpenAiCompatibleCopil
 
 async function postChatCompletion(
   config: OpenAiCompatibleCopilotModelConfig,
-  request: { readonly messages: readonly ChatMessage[]; readonly responseFormat?: 'json_object'; readonly stage: CopilotProviderCallStage },
+  request: {
+    readonly messages: readonly (ChatMessage | CopilotConversationalMessage)[];
+    readonly responseFormat?: 'json_object';
+    readonly tools?: readonly CopilotToolDefinition[];
+    readonly toolChoice?: 'auto' | 'none';
+    readonly stage: CopilotProviderCallStage;
+  },
 ): Promise<ChatCompletionOutput> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
-  const promptCharCount = request.messages.reduce((sum, message) => sum + message.content.length, 0);
+  const promptCharCount = request.messages.reduce((sum, message) => sum + messageCharCount(message), 0);
   try {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`;
 
     const body: Record<string, unknown> = {
       model: config.model,
-      messages: request.messages,
+      messages: request.messages.map(openAiMessage),
       stream: false,
     };
     if (request.responseFormat) body.response_format = { type: request.responseFormat };
+    if (request.tools) body.tools = request.tools;
+    if (request.toolChoice) body.tool_choice = request.toolChoice;
 
     const response = await fetch(config.endpoint, {
       method: 'POST',
@@ -193,9 +224,11 @@ async function postChatCompletion(
       }
       throw providerError(config, request.stage, 'provider_invalid_response', 'Copilot model provider returned malformed JSON', response.status);
     }
-    const content = extractMessageContent(raw, config, request.stage);
+    const message = extractMessage(raw, config, request.stage);
+    const content = typeof message.content === 'string' ? message.content : '';
     return {
       content,
+      toolCalls: extractToolCalls(message, config, request.stage),
       metadata: {
         provider: 'openai_compatible',
         model: config.model,
@@ -207,6 +240,24 @@ async function postChatCompletion(
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function conversationalTurnOutput(output: ChatCompletionOutput, stage: Extract<CopilotProviderCallStage, 'tool_selection' | 'tool_synthesis'>): GenerateConversationalTurnOutput {
+  if (output.content.trim().length === 0 && output.toolCalls.length === 0) {
+    throw providerError({ model: output.metadata.model }, stage, 'provider_invalid_response', 'Copilot model provider returned neither content nor tool calls', null);
+  }
+  return {
+    content: output.content.trim().length > 0 ? output.content : null,
+    toolCalls: output.toolCalls,
+    metadata: output.metadata,
+  };
+}
+
+function messageCharCount(message: ChatMessage | CopilotConversationalMessage): number {
+  if (message.role === 'assistant') {
+    return (message.content ?? '').length + (message.toolCalls ? JSON.stringify(message.toolCalls).length : 0);
+  }
+  return message.content.length;
 }
 
 function conversationPlanOutput(output: ChatCompletionOutput, stage: Extract<CopilotProviderCallStage, 'unified_planner' | 'unified_planner_repair'>): GenerateConversationPlanOutput {
@@ -249,7 +300,7 @@ function answerOutput(output: ChatCompletionOutput): GenerateAnswerOutput {
   };
 }
 
-function extractMessageContent(raw: unknown, config: OpenAiCompatibleCopilotModelConfig, stage: CopilotProviderCallStage): string {
+function extractMessage(raw: unknown, config: OpenAiCompatibleCopilotModelConfig, stage: CopilotProviderCallStage): Record<string, unknown> {
   const obj = expectObject(raw, 'Copilot model provider returned a non-object response', config, stage);
   if (!Array.isArray(obj.choices) || obj.choices.length === 0) {
     throw providerError(config, stage, 'provider_invalid_response', 'Copilot model provider returned no choices', null);
@@ -257,10 +308,57 @@ function extractMessageContent(raw: unknown, config: OpenAiCompatibleCopilotMode
   const [firstChoice] = obj.choices;
   const choice = expectObject(firstChoice, 'Copilot model provider returned a malformed choice', config, stage);
   const message = expectObject(choice.message, 'Copilot model provider returned a malformed message', config, stage);
-  if (typeof message.content !== 'string' || message.content.trim().length === 0) {
+  if (message.content !== null && message.content !== undefined && typeof message.content !== 'string') {
+    throw providerError(config, stage, 'provider_invalid_response', 'Copilot model provider returned non-string message content', null);
+  }
+  if ((message.content === null || message.content === undefined || message.content.trim().length === 0) && !Array.isArray(message.tool_calls)) {
     throw providerError(config, stage, 'provider_invalid_response', 'Copilot model provider returned empty message content', null);
   }
-  return message.content;
+  return message;
+}
+
+function extractToolCalls(message: Record<string, unknown>, config: OpenAiCompatibleCopilotModelConfig, stage: CopilotProviderCallStage): GenerateConversationalTurnOutput['toolCalls'] {
+  if (message.tool_calls === undefined) return [];
+  if (!Array.isArray(message.tool_calls)) {
+    throw providerError(config, stage, 'provider_invalid_response', 'Copilot model provider returned malformed tool_calls', null);
+  }
+  return message.tool_calls.map((rawCall) => {
+    const call = expectObject(rawCall, 'Copilot model provider returned malformed tool call', config, stage);
+    const fn = expectObject(call.function, 'Copilot model provider returned malformed tool function', config, stage);
+    const id = typeof call.id === 'string' && call.id.trim().length > 0 ? call.id : null;
+    const name = typeof fn.name === 'string' && fn.name.trim().length > 0 ? fn.name : null;
+    const rawArguments = typeof fn.arguments === 'string' ? fn.arguments : null;
+    if (!id || !name || rawArguments === null) {
+      throw providerError(config, stage, 'provider_invalid_response', 'Copilot model provider returned incomplete tool call', null);
+    }
+    try {
+      return { id, name, arguments: JSON.parse(rawArguments) };
+    } catch (error) {
+      return { id, name, arguments: null, argumentsParseError: errorMessage(error) };
+    }
+  });
+}
+
+function openAiMessage(message: ChatMessage | CopilotConversationalMessage): Record<string, unknown> {
+  if (message.role === 'assistant') {
+    return {
+      role: 'assistant',
+      content: message.content ?? null,
+      ...(message.toolCalls
+        ? {
+            tool_calls: message.toolCalls.map((call) => ({
+              id: call.id,
+              type: 'function',
+              function: { name: call.name, arguments: JSON.stringify(call.arguments) },
+            })),
+          }
+        : {}),
+    };
+  }
+  if (message.role === 'tool') {
+    return { role: 'tool', tool_call_id: message.toolCallId, content: message.content };
+  }
+  return { role: message.role, content: message.content };
 }
 
 function expectObject(value: unknown, message: string, config: Pick<OpenAiCompatibleCopilotModelConfig, 'model'>, stage: CopilotProviderCallStage): Record<string, unknown> {
@@ -270,7 +368,13 @@ function expectObject(value: unknown, message: string, config: Pick<OpenAiCompat
   return value as Record<string, unknown>;
 }
 
-function usageMetadata(raw: unknown): { readonly promptTokens?: number; readonly completionTokens?: number; readonly totalTokens?: number } {
+function usageMetadata(raw: unknown): {
+  readonly promptTokens?: number;
+  readonly completionTokens?: number;
+  readonly totalTokens?: number;
+  readonly promptCacheHitTokens?: number;
+  readonly promptCacheMissTokens?: number;
+} {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {};
   const usage = (raw as { readonly usage?: unknown }).usage;
   if (usage === null || typeof usage !== 'object' || Array.isArray(usage)) return {};
@@ -278,10 +382,12 @@ function usageMetadata(raw: unknown): { readonly promptTokens?: number; readonly
     ...positiveIntegerField(usage, 'prompt_tokens', 'promptTokens'),
     ...positiveIntegerField(usage, 'completion_tokens', 'completionTokens'),
     ...positiveIntegerField(usage, 'total_tokens', 'totalTokens'),
+    ...positiveIntegerField(usage, 'prompt_cache_hit_tokens', 'promptCacheHitTokens'),
+    ...positiveIntegerField(usage, 'prompt_cache_miss_tokens', 'promptCacheMissTokens'),
   };
 }
 
-function positiveIntegerField(source: unknown, sourceKey: string, targetKey: 'promptTokens' | 'completionTokens' | 'totalTokens'): Record<typeof targetKey, number> | Record<string, never> {
+function positiveIntegerField(source: unknown, sourceKey: string, targetKey: 'promptTokens' | 'completionTokens' | 'totalTokens' | 'promptCacheHitTokens' | 'promptCacheMissTokens'): Record<typeof targetKey, number> | Record<string, never> {
   const value = (source as Record<string, unknown>)[sourceKey];
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? { [targetKey]: value } as Record<typeof targetKey, number> : {};
 }

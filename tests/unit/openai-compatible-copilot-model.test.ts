@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { GenerateAnalysisPlanInput, GenerateAnswerInput, GenerateConversationDecisionInput, GenerateConversationPlanInput } from '../../src/application/customer-intelligence-copilot/index.js';
+import type { GenerateAnalysisPlanInput, GenerateAnswerInput, GenerateConversationalTurnInput, GenerateConversationDecisionInput, GenerateConversationPlanInput } from '../../src/application/customer-intelligence-copilot/index.js';
 import {
   CUSTOMER_INTELLIGENCE_COPILOT_ANALYSIS_PLAN_VERSION,
   CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_INSTRUCTIONS,
   CUSTOMER_INTELLIGENCE_COPILOT_SESSION_CONTEXT_VERSION,
+  CUSTOMER_INTELLIGENCE_COPILOT_RUN_ANALYTICAL_QUERIES_TOOL,
   CUSTOMER_INTELLIGENCE_COPILOT_UNIFIED_PLANNER_INSTRUCTIONS,
   CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
   CUSTOMER_INTELLIGENCE_CONVERSATION_PLAN_VERSION,
@@ -47,6 +48,29 @@ function chatResponseWithUsage(content: string) {
   return {
     ...chatResponse(content),
     usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 },
+  };
+}
+
+function chatToolResponse() {
+  return {
+    choices: [
+      {
+        message: {
+          content: null,
+          tool_calls: [
+            {
+              id: 'call_1',
+              type: 'function',
+              function: {
+                name: CUSTOMER_INTELLIGENCE_COPILOT_RUN_ANALYTICAL_QUERIES_TOOL,
+                arguments: JSON.stringify({ queries: [{ id: 'q1', plan: { metrics: [{ aggregation: 'count', alias: 'customers' }] } }] }),
+              },
+            },
+          ],
+        },
+      },
+    ],
+    usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120, prompt_cache_hit_tokens: 60, prompt_cache_miss_tokens: 40 },
   };
 }
 
@@ -136,12 +160,113 @@ function unifiedPlannerInput(): GenerateConversationPlanInput {
   };
 }
 
+function conversationalTurnInput(stage: 'tool_selection' | 'tool_synthesis' = 'tool_selection'): GenerateConversationalTurnInput {
+  return {
+    stage,
+    toolChoice: stage === 'tool_selection' ? 'auto' : 'none',
+    tools: [
+      {
+        type: 'function',
+        function: {
+          name: CUSTOMER_INTELLIGENCE_COPILOT_RUN_ANALYTICAL_QUERIES_TOOL,
+          description: 'Run analytics',
+          parameters: { type: 'object' },
+        },
+      },
+    ],
+    messages: [
+      { role: 'system', content: 'Use tools when analytics is needed.' },
+      { role: 'user', content: '{"currentQuestion":"Cuantos clientes hay?"}' },
+    ],
+  };
+}
+
 function firstPayload(fetchMock: ReturnType<typeof vi.fn>) {
   const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
   return { url, init, payload: JSON.parse(String(init.body)) as Record<string, unknown> };
 }
 
 describe('openai_compatible Customer Intelligence Copilot model adapter', () => {
+  it('serializes native tool selection and parses tool calls plus cache usage', async () => {
+    const fetchMock = mockFetchJson(chatToolResponse());
+    const model = createOpenAiCompatibleCopilotModel(config);
+
+    const result = await model.generateConversationalTurn!(conversationalTurnInput());
+
+    expect(result).toEqual({
+      content: null,
+      toolCalls: [
+        {
+          id: 'call_1',
+          name: CUSTOMER_INTELLIGENCE_COPILOT_RUN_ANALYTICAL_QUERIES_TOOL,
+          arguments: { queries: [{ id: 'q1', plan: { metrics: [{ aggregation: 'count', alias: 'customers' }] } }] },
+        },
+      ],
+      metadata: expect.objectContaining({
+        provider: 'openai_compatible',
+        model: 'vendor-model',
+        promptTokens: 100,
+        completionTokens: 20,
+        totalTokens: 120,
+        promptCacheHitTokens: 60,
+        promptCacheMissTokens: 40,
+      }),
+    });
+    const { payload } = firstPayload(fetchMock);
+    expect(payload.tools).toEqual(conversationalTurnInput().tools);
+    expect(payload.tool_choice).toBe('auto');
+    expect(payload.response_format).toBeUndefined();
+  });
+
+  it('serializes tool result messages for native synthesis without allowing a second tool round', async () => {
+    const fetchMock = mockFetchJson(chatResponse('Respuesta final.'));
+    const model = createOpenAiCompatibleCopilotModel(config);
+
+    await model.generateConversationalTurn!({
+      ...conversationalTurnInput('tool_synthesis'),
+      messages: [
+        ...conversationalTurnInput('tool_synthesis').messages,
+        {
+          role: 'assistant',
+          content: null,
+          toolCalls: [{ id: 'call_1', name: CUSTOMER_INTELLIGENCE_COPILOT_RUN_ANALYTICAL_QUERIES_TOOL, arguments: { queries: [] } }],
+        },
+        { role: 'tool', toolCallId: 'call_1', content: '{"queries":[]}' },
+      ],
+    });
+
+    const { payload } = firstPayload(fetchMock);
+    expect(payload.tool_choice).toBe('none');
+    expect(payload.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'tool', tool_call_id: 'call_1', content: '{"queries":[]}' }),
+    ]));
+  });
+
+  it('reports malformed tool arguments as parsed tool-call data for application validation', async () => {
+    mockFetchJson({
+      choices: [
+        {
+          message: {
+            content: null,
+            tool_calls: [
+              { id: 'call_1', type: 'function', function: { name: CUSTOMER_INTELLIGENCE_COPILOT_RUN_ANALYTICAL_QUERIES_TOOL, arguments: '{bad' } },
+            ],
+          },
+        },
+      ],
+    });
+    const model = createOpenAiCompatibleCopilotModel(config);
+
+    const result = await model.generateConversationalTurn!(conversationalTurnInput());
+
+    expect(result.toolCalls[0]).toMatchObject({
+      id: 'call_1',
+      name: CUSTOMER_INTELLIGENCE_COPILOT_RUN_ANALYTICAL_QUERIES_TOOL,
+      arguments: null,
+      argumentsParseError: expect.any(String),
+    });
+  });
+
   it('serializes unified planner requests as a single structured chat completion', async () => {
     const conversationPlan = {
       version: CUSTOMER_INTELLIGENCE_CONVERSATION_PLAN_VERSION,

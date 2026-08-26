@@ -31,6 +31,8 @@ type CopilotBenchmarkScenario = {
   }) => boolean;
 };
 
+type CopilotBenchmarkRuntime = 'legacy' | 'unified' | 'tools' | 'config';
+
 const SCENARIOS: readonly CopilotBenchmarkScenario[] = [
   {
     id: 'simple_fact',
@@ -81,6 +83,7 @@ async function main(): Promise<void> {
   const runs = positiveInt(args.runs ?? process.env.CUSTOMER_INTELLIGENCE_COPILOT_BENCHMARK_RUNS, 3);
   const featureSnapshotId = args['feature-snapshot-id'] ?? process.env.CUSTOMER_INTELLIGENCE_COPILOT_BENCHMARK_FEATURE_SNAPSHOT_ID ?? null;
   const outputPath = args.output ?? process.env.CUSTOMER_INTELLIGENCE_COPILOT_BENCHMARK_OUTPUT ?? null;
+  const runtime = parseRuntime(args.runtime ?? process.env.CUSTOMER_INTELLIGENCE_COPILOT_BENCHMARK_RUNTIME);
   const scenarioFilter = args.scenarios ? new Set(splitCsv(args.scenarios)) : null;
   const scenarios = scenarioFilter ? SCENARIOS.filter((scenario) => scenarioFilter.has(scenario.id)) : SCENARIOS;
   if (scenarios.length === 0) throw new Error('No benchmark scenarios selected');
@@ -107,7 +110,7 @@ async function main(): Promise<void> {
         for (let run = 1; run <= runs; run += 1) {
           runIndex += 1;
           console.info(`[${runIndex}/${totalRuns}] ${model} ${scenario.id} run=${run} START`);
-          const record = await runScenario({ model, scenario, run, featureSnapshotId, pool });
+          const record = await runScenario({ model, runtime, scenario, run, featureSnapshotId, pool });
           records.push(record);
           if (outputPath) appendJsonLine(outputPath, record);
           console.info(`[${runIndex}/${totalRuns}] ${record.semanticPass ? 'PASS' : 'FAIL'} total=${record.totalMs} status=${record.status}`);
@@ -123,6 +126,7 @@ async function main(): Promise<void> {
 
 async function runScenario(args: {
   readonly model: string;
+  readonly runtime: CopilotBenchmarkRuntime;
   readonly scenario: CopilotBenchmarkScenario;
   readonly run: number;
   readonly featureSnapshotId: string | null;
@@ -153,7 +157,8 @@ async function runScenario(args: {
     store: createInMemoryCopilotSessionStore(config.marketingCopilot.session),
     clock: new SystemClock(),
     limits: config.marketingCopilot.session,
-    unifiedPlannerEnabled: config.marketingCopilot.unifiedPlannerEnabled,
+    toolRuntimeEnabled: args.runtime === 'config' ? config.marketingCopilot.toolRuntimeEnabled : args.runtime === 'tools',
+    unifiedPlannerEnabled: args.runtime === 'config' ? config.marketingCopilot.unifiedPlannerEnabled : args.runtime === 'unified',
     onPlannerDiagnostic: (diagnostic) => plannerDiagnostics.push(diagnostic),
     onStageLatencyDiagnostic: (diagnostic) => stageDiagnostics.push(diagnostic),
   });
@@ -171,6 +176,7 @@ async function runScenario(args: {
   if (!finalResponse) return emptyRecord(args, 'no_turns', false, stageDiagnostics);
   return recordFromDiagnostics({
     model: args.model,
+    runtime: args.runtime,
     scenarioId: args.scenario.id,
     run: args.run,
     status: finalResponse.status,
@@ -181,6 +187,7 @@ async function runScenario(args: {
 
 function recordFromDiagnostics(args: {
   readonly model: string;
+  readonly runtime: CopilotBenchmarkRuntime;
   readonly scenarioId: string;
   readonly run: number;
   readonly status: string;
@@ -189,24 +196,31 @@ function recordFromDiagnostics(args: {
 }): CopilotBenchmarkRecord {
   return {
     model: args.model,
+    runtime: args.runtime,
     scenarioId: args.scenarioId,
     run: args.run,
+    toolSelectionMs: sumStage(args.diagnostics, 'tool_selection'),
     orchestratorMs: sumStage(args.diagnostics, 'orchestrator') + sumStage(args.diagnostics, 'orchestrator_repair'),
     plannerMs: sumStage(args.diagnostics, 'planner') + sumStage(args.diagnostics, 'planner_repair') + sumStage(args.diagnostics, 'unified_planner') + sumStage(args.diagnostics, 'unified_planner_repair'),
     analyticsMs: sumStage(args.diagnostics, 'analytics_execution'),
+    toolSynthesisMs: sumStage(args.diagnostics, 'tool_synthesis'),
     answererMs: sumStage(args.diagnostics, 'answerer'),
     totalMs: sumStage(args.diagnostics, 'turn'),
     queryCount: args.diagnostics.filter((diagnostic) => diagnostic.stage === 'analytics_execution').reduce((sum, diagnostic) => sum + diagnostic.queryCount, 0),
+    toolCallCount: args.diagnostics.filter((diagnostic) => diagnostic.stage === 'tool_selection' && diagnostic.queryCount > 0).length,
     repairCount: args.diagnostics.filter((diagnostic) => diagnostic.repairAttempted).length,
     status: args.status,
     timeoutStage: failureStage(args.diagnostics, 'provider_timeout'),
     invalidResponseStage: failureStage(args.diagnostics, 'provider_invalid_response'),
+    cacheHitTokens: sumCacheTokens(args.diagnostics, 'promptCacheHitTokens'),
+    cacheMissTokens: sumCacheTokens(args.diagnostics, 'promptCacheMissTokens'),
+    cacheHitRatio: cacheHitRatio(args.diagnostics),
     semanticPass: args.semanticPass,
   };
 }
 
-function emptyRecord(args: { readonly model: string; readonly scenario: CopilotBenchmarkScenario; readonly run: number }, status: string, semanticPass: boolean, diagnostics: readonly CopilotStageLatencyDiagnostic[]): CopilotBenchmarkRecord {
-  return recordFromDiagnostics({ model: args.model, scenarioId: args.scenario.id, run: args.run, status, semanticPass, diagnostics });
+function emptyRecord(args: { readonly model: string; readonly runtime: CopilotBenchmarkRuntime; readonly scenario: CopilotBenchmarkScenario; readonly run: number }, status: string, semanticPass: boolean, diagnostics: readonly CopilotStageLatencyDiagnostic[]): CopilotBenchmarkRecord {
+  return recordFromDiagnostics({ model: args.model, runtime: args.runtime, scenarioId: args.scenario.id, run: args.run, status, semanticPass, diagnostics });
 }
 
 function sumStage(diagnostics: readonly CopilotStageLatencyDiagnostic[], stage: CopilotStageLatencyDiagnostic['stage']): number {
@@ -215,6 +229,16 @@ function sumStage(diagnostics: readonly CopilotStageLatencyDiagnostic[], stage: 
 
 function failureStage(diagnostics: readonly CopilotStageLatencyDiagnostic[], suffix: string): string | null {
   return diagnostics.find((diagnostic) => diagnostic.failureStatus?.endsWith(suffix))?.stage ?? null;
+}
+
+function sumCacheTokens(diagnostics: readonly CopilotStageLatencyDiagnostic[], key: 'promptCacheHitTokens' | 'promptCacheMissTokens'): number {
+  return diagnostics.reduce((sum, diagnostic) => sum + (diagnostic[key] ?? 0), 0);
+}
+
+function cacheHitRatio(diagnostics: readonly CopilotStageLatencyDiagnostic[]): number | null {
+  const hit = sumCacheTokens(diagnostics, 'promptCacheHitTokens');
+  const miss = sumCacheTokens(diagnostics, 'promptCacheMissTokens');
+  return hit + miss > 0 ? hit / (hit + miss) : null;
 }
 
 function parseArgs(args: readonly string[]): Record<string, string> {
@@ -234,6 +258,11 @@ function splitCsv(value: string): readonly string[] {
 function positiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseRuntime(value: string | undefined): CopilotBenchmarkRuntime {
+  if (value === 'legacy' || value === 'unified' || value === 'tools') return value;
+  return 'config';
 }
 
 function appendJsonLine(path: string, record: CopilotBenchmarkRecord): void {

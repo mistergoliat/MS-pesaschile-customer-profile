@@ -8,6 +8,7 @@ export const CUSTOMER_INTELLIGENCE_COPILOT_SESSION_CONTEXT_VERSION = 'customer-i
 export const CUSTOMER_INTELLIGENCE_COPILOT_XLSX_EXPORT_VERSION = 'customer-intelligence-xlsx-export-v1';
 export const CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION = 'customer-intelligence-conversation-decision-v1';
 export const CUSTOMER_INTELLIGENCE_CONVERSATION_PLAN_VERSION = 'customer-intelligence-conversation-plan-v1';
+export const CUSTOMER_INTELLIGENCE_COPILOT_RUN_ANALYTICAL_QUERIES_TOOL = 'run_analytical_queries';
 export const CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES = 3;
 export const CUSTOMER_INTELLIGENCE_COPILOT_PLAN_REPAIR_ATTEMPTS = 1;
 export const CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_REPAIR_ATTEMPTS = 1;
@@ -241,6 +242,14 @@ export type CopilotSemanticFocus = {
     readonly turnId: string;
     readonly originalQuestion: string;
     readonly assistantMessage: string | null;
+  } | null;
+  readonly activeFinding?: {
+    readonly sourceQueryId: string;
+    readonly findingType: 'top_rank' | 'single_value';
+    readonly entityType: 'cluster' | 'rfm_segment' | 'audience' | null;
+    readonly entityId: string | number | null;
+    readonly metric: string | null;
+    readonly value: string | number | boolean | null;
   } | null;
   readonly lastAnalyticalResult: {
     readonly queryId: string;

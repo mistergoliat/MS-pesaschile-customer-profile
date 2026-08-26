@@ -11,6 +11,7 @@ import {
 import type {
   CustomerIntelligenceCopilotModel,
   GenerateAnalysisPlanInput,
+  GenerateConversationalTurnInput,
   GenerateConversationDecisionInput,
   GenerateConversationPlanInput,
   RepairConversationDecisionInput,
@@ -23,6 +24,7 @@ import {
   CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
   CUSTOMER_INTELLIGENCE_CONVERSATION_PLAN_VERSION,
   CUSTOMER_INTELLIGENCE_COPILOT_ANALYSIS_PLAN_VERSION,
+  CUSTOMER_INTELLIGENCE_COPILOT_RUN_ANALYTICAL_QUERIES_TOOL,
 } from '../../src/domain/customer-intelligence-copilot/index.js';
 
 const SCHEMA: AnalyticalSchema = {
@@ -92,6 +94,18 @@ function queryPlan(queries: readonly { id: string; plan: unknown }[]) {
 
 function answerFromContext(sourceQueryIds: readonly string[]) {
   return { planVersion: CUSTOMER_INTELLIGENCE_COPILOT_ANALYSIS_PLAN_VERSION, status: 'answer_from_context', sourceQueryIds };
+}
+
+function toolRuntimeContent(content: string) {
+  return { content, toolCalls: [], metadata: { provider: 'fake', model: 'tool' } };
+}
+
+function toolRuntimeCall(queries: readonly { id: string; plan: unknown }[], id = 'call_1') {
+  return {
+    content: null,
+    toolCalls: [{ id, name: CUSTOMER_INTELLIGENCE_COPILOT_RUN_ANALYTICAL_QUERIES_TOOL, arguments: { queries } }],
+    metadata: { provider: 'fake', model: 'tool', promptCacheHitTokens: 20, promptCacheMissTokens: 80 },
+  };
 }
 
 function runAnalytics(analyticalQuestion = 'Run analytics') {
@@ -167,6 +181,8 @@ function harness(opts: {
   conversationPlans?: unknown[];
   repairConversationPlan?: unknown;
   conversationPlanError?: unknown;
+  conversationalTurns?: { content: string | null; toolCalls: readonly { id: string; name: string; arguments: unknown; argumentsParseError?: string }[]; metadata: { provider: string; model: string; promptCacheHitTokens?: number; promptCacheMissTokens?: number } | null }[];
+  conversationalTurnError?: unknown;
   plans?: unknown[];
   repairPlan?: unknown;
   plannerError?: unknown;
@@ -176,6 +192,7 @@ function harness(opts: {
   exportResult?: AnalyticalQueryResult;
   limits?: Partial<CopilotSessionLimits>;
   context?: Extract<ResolveCustomerIntelligenceContextResult, { status: 'available' }>;
+  toolRuntimeEnabled?: boolean;
   unifiedPlannerEnabled?: boolean;
 } = {}) {
   const clock = new FakeClock();
@@ -183,6 +200,11 @@ function harness(opts: {
   const decisions = [...(opts.decisions ?? [runAnalytics()])];
   const conversationPlans = [...(opts.conversationPlans ?? [unifiedRunAnalytics([{ id: 'q1', plan: bestClusterPlan }])])];
   const plans = [...(opts.plans ?? [queryPlan([{ id: 'q1', plan: bestClusterPlan }])])];
+  const conversationalTurns = [...(opts.conversationalTurns ?? [toolRuntimeCall([{ id: 'q1', plan: bestClusterPlan }]), toolRuntimeContent('Respuesta grounded.')])];
+  const generateConversationalTurn = vi.fn(async (_input: GenerateConversationalTurnInput) => {
+    if (opts.conversationalTurnError) throw opts.conversationalTurnError;
+    return conversationalTurns.shift() ?? toolRuntimeContent('Respuesta grounded.');
+  });
   const generateConversationPlan = vi.fn(async (_input: GenerateConversationPlanInput) => {
     if (opts.conversationPlanError) throw opts.conversationPlanError;
     return { conversationPlan: conversationPlans.shift() ?? unifiedRunAnalytics([{ id: 'q1', plan: bestClusterPlan }]), metadata: { provider: 'fake', model: 'unified' } };
@@ -199,7 +221,7 @@ function harness(opts: {
     if (opts.answerError) throw opts.answerError;
     return { answer: 'Respuesta grounded.', metadata: { provider: 'fake', model: 'answerer' } };
   });
-  const model: CustomerIntelligenceCopilotModel = { generateConversationPlan, repairConversationPlan, generateConversationDecision, repairConversationDecision, generateAnalysisPlan, repairAnalysisPlan, generateAnswer };
+  const model: CustomerIntelligenceCopilotModel = { generateConversationalTurn, generateConversationPlan, repairConversationPlan, generateConversationDecision, repairConversationDecision, generateAnalysisPlan, repairAnalysisPlan, generateAnswer };
   const context = opts.context ?? BASE_CONTEXT;
   const resolveCurrent = vi.fn(async () => context);
   const resolveForFeatureSnapshot = vi.fn(async () => context);
@@ -220,12 +242,13 @@ function harness(opts: {
     store,
     clock,
     limits,
+    toolRuntimeEnabled: opts.toolRuntimeEnabled ?? false,
     unifiedPlannerEnabled: opts.unifiedPlannerEnabled ?? false,
     onOrchestratorDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
     onPlannerDiagnostic: (diagnostic) => plannerDiagnostics.push(diagnostic),
     onStageLatencyDiagnostic: (diagnostic) => stageLatencyDiagnostics.push(diagnostic),
   });
-  return { service, clock, generateConversationPlan, repairConversationPlan, generateConversationDecision, repairConversationDecision, generateAnalysisPlan, repairAnalysisPlan, generateAnswer, resolveCurrent, executeAnalyticalQuery, executeAnalyticalQueryForExport, store, diagnostics, plannerDiagnostics, stageLatencyDiagnostics };
+  return { service, clock, generateConversationalTurn, generateConversationPlan, repairConversationPlan, generateConversationDecision, repairConversationDecision, generateAnalysisPlan, repairAnalysisPlan, generateAnswer, resolveCurrent, executeAnalyticalQuery, executeAnalyticalQueryForExport, store, diagnostics, plannerDiagnostics, stageLatencyDiagnostics };
 }
 
 async function createSession(h: ReturnType<typeof harness>) {
@@ -266,6 +289,232 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
     expect(created.session.expiresAt).toBe('2026-08-20T13:00:00.000Z');
     expect(created.session.turnCount).toBe(0);
     expect(created.session.resultCount).toBe(0);
+  });
+
+  it('uses native tool runtime for direct conversational answers without legacy calls', async () => {
+    const h = harness({ toolRuntimeEnabled: true, conversationalTurns: [toolRuntimeContent('RFM clasifica clientes por recencia, frecuencia y valor monetario.')] });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Que significa RFM?' });
+
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') expect(response.response.status).toBe('responded_directly');
+    expect(h.generateConversationalTurn).toHaveBeenCalledTimes(1);
+    expect(h.generateConversationDecision).not.toHaveBeenCalled();
+    expect(h.generateAnalysisPlan).not.toHaveBeenCalled();
+    expect(h.stageLatencyDiagnostics.map((diagnostic) => diagnostic.stage)).toEqual(['tool_selection', 'turn']);
+    expect(h.stageLatencyDiagnostics.at(-1)).toMatchObject({ executionMode: 'direct_response' });
+  });
+
+  it('runs simple analytics from a native tool call and skips synthesis via deterministic rendering', async () => {
+    const h = harness({
+      toolRuntimeEnabled: true,
+      conversationalTurns: [toolRuntimeCall([{ id: 'customer_count', plan: { metrics: [{ aggregation: 'count', alias: 'customers' }] } }])],
+      executionResults: [result([{ customers: 10 }])],
+    });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Cuantos clientes tenemos?' });
+
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') {
+      expect(response.response.status).toBe('answered');
+      expect(response.response.queryIds).toEqual(['customer_count']);
+    }
+    expect(h.generateConversationalTurn).toHaveBeenCalledTimes(1);
+    expect(h.generateAnswer).not.toHaveBeenCalled();
+    expect(h.generateConversationDecision).not.toHaveBeenCalled();
+    expect(h.generateAnalysisPlan).not.toHaveBeenCalled();
+    expect(h.stageLatencyDiagnostics.map((diagnostic) => diagnostic.stage)).toEqual(['tool_selection', 'analytics_execution', 'turn']);
+    expect(h.stageLatencyDiagnostics[0]).toMatchObject({ queryCount: 1, promptCacheHitTokens: 20, promptCacheMissTokens: 80 });
+    expect(h.stageLatencyDiagnostics.at(-1)).toMatchObject({ executionMode: 'simple_analysis' });
+  });
+
+  it('runs multiple native tool queries concurrently and synthesizes exactly once', async () => {
+    let started = 0;
+    let releaseQueries!: () => void;
+    let bothStarted!: () => void;
+    const releasePromise = new Promise<void>((resolve) => {
+      releaseQueries = resolve;
+    });
+    const bothStartedPromise = new Promise<void>((resolve) => {
+      bothStarted = resolve;
+    });
+    const executeAnalyticalQuery = vi.fn(async () => {
+      started += 1;
+      if (started === 2) bothStarted();
+      await releasePromise;
+      return { status: 'ok', result: started === 1 ? result([{ clusterId: 3, avg_ticket: '150000.000000' }], '1'.repeat(64), ['clusterId', 'avg_ticket']) : result([{ clusterId: 3, avg_spend: '250000.000000' }], '2'.repeat(64), ['clusterId', 'avg_spend']) };
+    }) as unknown as ExecuteAnalyticalQueryWithResolvedContext;
+    const h = harness({
+      toolRuntimeEnabled: true,
+      conversationalTurns: [
+        toolRuntimeCall([
+          { id: 'ticket_by_cluster', plan: { dimensions: ['cluster.clusterId'], filters: [{ field: 'cluster.clusterId', operator: 'is_not_null' }], metrics: [{ aggregation: 'avg', field: 'commercial.averageOrderValueTaxIncl', alias: 'avg_ticket' }] } },
+          { id: 'spend_by_cluster', plan: { dimensions: ['cluster.clusterId'], filters: [{ field: 'cluster.clusterId', operator: 'is_not_null' }], metrics: [{ aggregation: 'avg', field: 'commercial.totalSpentTaxIncl', alias: 'avg_spend' }] } },
+        ]),
+        toolRuntimeContent('Cluster 3 lidera en ticket promedio; la frecuencia observada ayuda a contextualizarlo sin probar causalidad.'),
+      ],
+      executeAnalyticalQuery,
+    });
+    const sessionId = await createSession(h);
+
+    const turnPromise = h.service.processSessionTurn({ sessionId, question: 'Por que el cluster 3 tiene mayor ticket promedio?' });
+    await Promise.race([
+      bothStartedPromise,
+      new Promise((_resolve, reject) => setTimeout(() => reject(new Error('queries did not start concurrently')), 100)),
+    ]);
+    releaseQueries();
+    const response = await turnPromise;
+
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') expect(response.response.status).toBe('answered');
+    expect(h.generateConversationalTurn).toHaveBeenCalledTimes(2);
+    expect(h.generateConversationalTurn.mock.calls[1]?.[0]).toMatchObject({ toolChoice: 'none', stage: 'tool_synthesis' });
+    expect(h.generateAnswer).not.toHaveBeenCalled();
+    expect(executeAnalyticalQuery).toHaveBeenCalledTimes(2);
+    expect(h.stageLatencyDiagnostics.map((diagnostic) => diagnostic.stage)).toEqual(['tool_selection', 'analytics_execution', 'tool_synthesis', 'turn']);
+  });
+
+  it('fails closed for malformed, unknown, over-budget, duplicate, and invalid native tool calls', async () => {
+    const cases = [
+      {
+        turn: { content: null, toolCalls: [{ id: 'call_1', name: CUSTOMER_INTELLIGENCE_COPILOT_RUN_ANALYTICAL_QUERIES_TOOL, arguments: null, argumentsParseError: 'bad json' }], metadata: { provider: 'fake', model: 'tool' } },
+        failureStatus: 'tool_call_invalid_arguments',
+      },
+      {
+        turn: { content: null, toolCalls: [{ id: 'call_1', name: 'drop_database', arguments: {} }], metadata: { provider: 'fake', model: 'tool' } },
+        failureStatus: 'tool_call_unknown_tool',
+      },
+      {
+        turn: toolRuntimeCall([
+          { id: 'q1', plan: { metrics: [{ aggregation: 'count', alias: 'c1' }] } },
+          { id: 'q2', plan: { metrics: [{ aggregation: 'count', alias: 'c2' }] } },
+          { id: 'q3', plan: { metrics: [{ aggregation: 'count', alias: 'c3' }] } },
+          { id: 'q4', plan: { metrics: [{ aggregation: 'count', alias: 'c4' }] } },
+        ]),
+        failureStatus: 'tool_call_invalid_arguments',
+      },
+      {
+        turn: toolRuntimeCall([{ id: 'q1', plan: { metrics: [{ aggregation: 'count', alias: 'c1' }] } }, { id: 'q1', plan: { metrics: [{ aggregation: 'count', alias: 'c2' }] } }]),
+        failureStatus: 'tool_call_invalid_arguments',
+      },
+      {
+        turn: toolRuntimeCall([{ id: 'q1', plan: { select: ['DROP TABLE customers'] } }]),
+        failureStatus: 'tool_call_query_validation_failed',
+      },
+    ];
+
+    for (const entry of cases) {
+      const h = harness({ toolRuntimeEnabled: true, conversationalTurns: [entry.turn] });
+      const sessionId = await createSession(h);
+      const response = await h.service.processSessionTurn({ sessionId, question: 'Ejecuta esto' });
+      expect(response.status).toBe('ok');
+      if (response.status === 'ok') expect(response.response.status).toBe('planner_invalid');
+      expect(h.executeAnalyticalQuery).not.toHaveBeenCalled();
+      expect(h.stageLatencyDiagnostics.at(-1)).toMatchObject({ success: false, failureStatus: entry.failureStatus });
+    }
+  });
+
+  it('preserves Cluster 3 follow-up focus and restart context through native tool runtime', async () => {
+    const h = harness({
+      toolRuntimeEnabled: true,
+      conversationalTurns: [
+        toolRuntimeCall([{ id: 'avg_ticket_by_cluster', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'avg', field: 'commercial.averageOrderValueTaxIncl', alias: 'avg_ticket' }], orderBy: [{ field: 'avg_ticket', direction: 'desc' }], limit: 1 } }]),
+        toolRuntimeCall([
+          { id: 'ticket_by_cluster', plan: { dimensions: ['cluster.clusterId'], filters: [{ field: 'cluster.clusterId', operator: 'is_not_null' }], metrics: [{ aggregation: 'avg', field: 'commercial.averageOrderValueTaxIncl', alias: 'avg_ticket' }] } },
+          { id: 'spend_by_cluster', plan: { dimensions: ['cluster.clusterId'], filters: [{ field: 'cluster.clusterId', operator: 'is_not_null' }], metrics: [{ aggregation: 'sum', field: 'commercial.totalSpentTaxIncl', alias: 'total_spent' }] } },
+        ]),
+        toolRuntimeContent('Cluster 3 se mantiene como referencia; las diferencias observadas no prueban causalidad.'),
+      ],
+      executionResults: [
+        result([{ clusterId: 3, avg_ticket: '381304.040000' }], '3'.repeat(64), ['clusterId', 'avg_ticket']),
+        result([{ clusterId: 3, avg_ticket: '381304.040000' }], '4'.repeat(64), ['clusterId', 'avg_ticket']),
+        result([{ clusterId: 3, total_spent: '900000.000000' }], '5'.repeat(64), ['clusterId', 'total_spent']),
+      ],
+    });
+    const sessionId = await createSession(h);
+    await h.service.processSessionTurn({ sessionId, question: 'Cual cluster tiene mayor ticket promedio?' });
+    const reloaded = await h.service.getSession(sessionId);
+    expect(reloaded.status).toBe('ok');
+    const second = await h.service.processSessionTurn({ sessionId, question: 'Por que?' });
+
+    expect(second.status).toBe('ok');
+    if (second.status === 'ok') expect(second.response.status).toBe('answered');
+    const calls = h.generateConversationalTurn.mock.calls as unknown as [GenerateConversationalTurnInput][];
+    const secondPayload = JSON.parse(String(calls[1]?.[0].messages[1]?.content));
+    expect(secondPayload.semanticFocus.activeEntity).toMatchObject({ id: 3 });
+    expect(secondPayload.semanticFocus.activeFinding).toMatchObject({ sourceQueryId: 'avg_ticket_by_cluster', entityId: 3 });
+  });
+
+  it('handles clarification, continuation, exploratory analysis, profitability limitation, and provider timeout in native tool runtime', async () => {
+    const clarification = harness({ toolRuntimeEnabled: true, conversationalTurns: [toolRuntimeContent('Necesito un criterio concreto para comparar los grupos.')] });
+    const clarificationSessionId = await createSession(clarification);
+    const first = await clarification.service.processSessionTurn({ sessionId: clarificationSessionId, question: 'Cual es el mejor grupo?' });
+    expect(first.status).toBe('ok');
+    if (first.status === 'ok') expect(first.response.status).toBe('clarification_required');
+
+    const continuation = harness({
+      toolRuntimeEnabled: true,
+      conversationalTurns: [toolRuntimeContent('Necesito un criterio concreto para comparar los grupos.'), toolRuntimeCall([{ id: 'cluster_total_spend', plan: { dimensions: ['cluster.clusterId'], filters: [{ field: 'cluster.clusterId', operator: 'is_not_null' }], metrics: [{ aggregation: 'sum', field: 'commercial.totalSpentTaxIncl', alias: 'total_spent' }], orderBy: [{ field: 'total_spent', direction: 'desc' }], limit: 1 } }])],
+      executionResults: [result([{ clusterId: 2, total_spent: '900000.000000' }], '6'.repeat(64), ['clusterId', 'total_spent'])],
+    });
+    const continuationSessionId = await createSession(continuation);
+    await continuation.service.processSessionTurn({ sessionId: continuationSessionId, question: 'Cual es el mejor grupo?' });
+    const second = await continuation.service.processSessionTurn({ sessionId: continuationSessionId, question: 'Por gasto total' });
+    expect(second.status).toBe('ok');
+    if (second.status === 'ok') expect(second.response.status).toBe('answered');
+
+    const exploratory = harness({
+      toolRuntimeEnabled: true,
+      conversationalTurns: [toolRuntimeCall([
+        { id: 'cluster_count', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'count', alias: 'customers' }] } },
+        { id: 'ticket_by_cluster', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'avg', field: 'commercial.averageOrderValueTaxIncl', alias: 'avg_ticket' }] } },
+      ]), toolRuntimeContent('Hay diferencias observadas por cluster con limitaciones de cobertura.')],
+      executionResults: [result([{ clusterId: 1, customers: 5 }], '7'.repeat(64), ['clusterId', 'customers']), result([{ clusterId: 3, avg_ticket: '150000.000000' }], '8'.repeat(64), ['clusterId', 'avg_ticket'])],
+    });
+    const exploratorySessionId = await createSession(exploratory);
+    const exploratoryResponse = await exploratory.service.processSessionTurn({ sessionId: exploratorySessionId, question: 'Que ves interesante en mis clientes?' });
+    expect(exploratoryResponse.status).toBe('ok');
+    if (exploratoryResponse.status === 'ok') expect(exploratoryResponse.response.status).toBe('answered');
+
+    const profitability = harness({ toolRuntimeEnabled: true, conversationalTurns: [toolRuntimeContent('No hay campos de margen, costo o rentabilidad disponibles.')] });
+    const profitabilitySessionId = await createSession(profitability);
+    const profitabilityResponse = await profitability.service.processSessionTurn({ sessionId: profitabilitySessionId, question: 'Cual segmento es mas rentable?' });
+    expect(profitabilityResponse.status).toBe('ok');
+    if (profitabilityResponse.status === 'ok') expect(profitabilityResponse.response.status).toBe('unsupported_data');
+
+    const timeout = harness({ toolRuntimeEnabled: true, conversationalTurnError: providerTimeout('tool_selection') });
+    const timeoutSessionId = await createSession(timeout);
+    const timeoutResponse = await timeout.service.processSessionTurn({ sessionId: timeoutSessionId, question: 'Cuantos clientes hay?' });
+    expect(timeoutResponse.status).toBe('ok');
+    if (timeoutResponse.status === 'ok') expect(timeoutResponse.response.status).toBe('provider_timeout');
+    expect(timeout.stageLatencyDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: 'tool_selection', success: false, failureStatus: 'tool_selection_provider_timeout' }),
+    ]));
+  });
+
+  it('keeps tool runtime and unified planner flags independent', async () => {
+    const toolFirst = harness({
+      toolRuntimeEnabled: true,
+      unifiedPlannerEnabled: true,
+      conversationalTurns: [toolRuntimeContent('RFM clasifica clientes por recencia, frecuencia y valor monetario.')],
+      conversationPlans: [unifiedRespondDirectly('unified')],
+    });
+    const toolFirstSessionId = await createSession(toolFirst);
+    await toolFirst.service.processSessionTurn({ sessionId: toolFirstSessionId, question: 'Que significa RFM?' });
+    expect(toolFirst.generateConversationalTurn).toHaveBeenCalledTimes(1);
+    expect(toolFirst.generateConversationPlan).not.toHaveBeenCalled();
+
+    const unifiedOnly = harness({
+      toolRuntimeEnabled: false,
+      unifiedPlannerEnabled: true,
+      conversationPlans: [unifiedRespondDirectly('unified')],
+    });
+    const unifiedOnlySessionId = await createSession(unifiedOnly);
+    await unifiedOnly.service.processSessionTurn({ sessionId: unifiedOnlySessionId, question: 'Que significa RFM?' });
+    expect(unifiedOnly.generateConversationalTurn).not.toHaveBeenCalled();
+    expect(unifiedOnly.generateConversationPlan).toHaveBeenCalledTimes(1);
   });
 
   it('responds directly through the unified planner without legacy orchestrator or planner calls', async () => {

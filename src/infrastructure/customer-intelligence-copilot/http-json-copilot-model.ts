@@ -215,7 +215,13 @@ function metadataFromObject(obj: Record<string, unknown>, fallbackModel: string,
   };
 }
 
-function usageMetadata(raw: unknown): { readonly promptTokens?: number; readonly completionTokens?: number; readonly totalTokens?: number } {
+function usageMetadata(raw: unknown): {
+  readonly promptTokens?: number;
+  readonly completionTokens?: number;
+  readonly totalTokens?: number;
+  readonly promptCacheHitTokens?: number;
+  readonly promptCacheMissTokens?: number;
+} {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {};
   const usage = (raw as { readonly usage?: unknown }).usage;
   if (usage === null || typeof usage !== 'object' || Array.isArray(usage)) return {};
@@ -223,10 +229,12 @@ function usageMetadata(raw: unknown): { readonly promptTokens?: number; readonly
     ...positiveIntegerField(usage, 'prompt_tokens', 'promptTokens'),
     ...positiveIntegerField(usage, 'completion_tokens', 'completionTokens'),
     ...positiveIntegerField(usage, 'total_tokens', 'totalTokens'),
+    ...positiveIntegerField(usage, 'prompt_cache_hit_tokens', 'promptCacheHitTokens'),
+    ...positiveIntegerField(usage, 'prompt_cache_miss_tokens', 'promptCacheMissTokens'),
   };
 }
 
-function positiveIntegerField(source: unknown, sourceKey: string, targetKey: 'promptTokens' | 'completionTokens' | 'totalTokens'): Record<typeof targetKey, number> | Record<string, never> {
+function positiveIntegerField(source: unknown, sourceKey: string, targetKey: 'promptTokens' | 'completionTokens' | 'totalTokens' | 'promptCacheHitTokens' | 'promptCacheMissTokens'): Record<typeof targetKey, number> | Record<string, never> {
   const value = (source as Record<string, unknown>)[sourceKey];
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? { [targetKey]: value } as Record<typeof targetKey, number> : {};
 }

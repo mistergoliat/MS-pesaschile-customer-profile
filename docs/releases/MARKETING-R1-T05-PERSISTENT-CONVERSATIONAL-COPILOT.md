@@ -445,6 +445,96 @@ Result: PASS, 8 files, 156 tests.
 
 Live validation: NOT_RUN.
 
+## T05.8 Native Tool-Calling Analytical Runtime
+
+Motivation: live T05.7 benchmark evidence showed that the unified mega-envelope did not improve
+reliability or latency: simple and grouped analytical scenarios failed before reaching analytics,
+and unified repairs increased latency. T05.8 keeps T05.7 behind its own flag and introduces a new,
+separate native tool-calling runtime for analytical conversation turns.
+
+Architecture:
+
+- The session runtime can now ask the OpenAI-compatible provider for a normal assistant response or
+  native `tool_calls` using Chat Completions `tools` and `tool_choice`.
+- The only analytical tool is `run_analytical_queries`.
+- Tool arguments contain `queries: [{ id, plan }]`, with 1 to 3 query steps.
+- The provider adapter parses native `message.tool_calls[].function.arguments` as JSON and exposes
+  structured tool-call data to application code. Malformed argument JSON is not executed.
+- The `http_json` provider is not faked into tool calling; when the tool runtime flag is enabled and
+  no native method exists, the session fails explicitly with unsupported tool runtime behavior.
+
+Model-call budgets:
+
+- Direct conversation: one model call (`tool_selection`), no analytics.
+- Simple analytics: one model call (`tool_selection`), analytical execution, deterministic renderer,
+  no synthesis model call.
+- Deep analytics: one model call (`tool_selection`), analytical execution, one final
+  `tool_synthesis` model call. No recursive tool loop or third inference is allowed.
+
+Validation boundary:
+
+- Tool-call arguments are untrusted.
+- Unknown tools, malformed arguments, duplicate query ids, query counts over
+  `CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES`, and invalid `AnalyticalQueryPlan` objects fail closed.
+- Existing T03 validation/compiler/runtime remains the security firewall: no provider-generated SQL,
+  no arbitrary expressions, no table names, SELECT-only compiled queries, bound parameters, field
+  registry enforcement, snapshot pinning, provenance, and queryPlanHash remain intact.
+
+Context projection:
+
+- The tool runtime request uses a stable system prefix with tool-runtime and epistemic rules.
+- The dynamic suffix carries the compact projected session context: pinned snapshot context,
+  conversation summary, recent turns, semantic focus, unresolved clarification, analytical
+  references, recent results, and deterministic recent findings.
+- `semanticFocus.activeFinding` is derived from persisted plans/results when the result shape makes a
+  top-rank or single-value finding deterministic. It is contextual state, not chain-of-thought, and
+  requires no migration.
+
+Execution modes:
+
+- Native tool path diagnostics use `direct_response`, `simple_analysis`, and `deep_analysis`.
+- Legacy paths are retained for rollback/benchmark continuity.
+
+Observability:
+
+- Added safe latency stages `tool_selection` and `tool_synthesis`.
+- Stage diagnostics include duration, success/failure, failureStatus, queryCount, executionMode,
+  analyticsExecutionDurationMs, totalTurnDurationMs, prompt/response char counts, token usage, and
+  provider cache tokens when available.
+- New internal failure statuses include `tool_selection_provider_timeout`,
+  `tool_selection_provider_invalid_response`, `tool_call_invalid_arguments`,
+  `tool_call_unknown_tool`, `tool_call_query_validation_failed`, `tool_execution_timeout`,
+  `tool_execution_unavailable`, `tool_synthesis_provider_timeout`, and
+  `tool_synthesis_provider_invalid_response`.
+- Diagnostics continue to exclude raw prompts, provider payloads, SQL, credentials, result rows, PII,
+  and chain-of-thought.
+
+Feature flags:
+
+- `CUSTOMER_INTELLIGENCE_COPILOT_TOOL_RUNTIME_ENABLED=false` by default.
+- `CUSTOMER_INTELLIGENCE_COPILOT_UNIFIED_PLANNER_ENABLED=false` by default.
+- The flags are independent. Tool runtime, unified planner, and legacy routes can be benchmarked
+  separately.
+
+Benchmark harness:
+
+- `npm run intelligence:copilot:benchmark` supports `--runtime=legacy`, `--runtime=unified`,
+  `--runtime=tools`, or production-config-driven runtime.
+- Records now include runtime, tool selection latency, tool synthesis latency, tool call count,
+  cache hit/miss tokens, and cache hit ratio.
+- Existing progress logging and JSONL incremental output are preserved.
+
+Local focused validation:
+
+`npm test -- --run tests/unit/customer-intelligence-copilot-contracts.test.ts tests/unit/openai-compatible-copilot-model.test.ts tests/unit/http-json-copilot-model.test.ts tests/unit/customer-intelligence-copilot-session.test.ts tests/unit/customer-intelligence-copilot-semantic-benchmark.test.ts tests/unit/customer-intelligence-copilot-benchmark.test.ts tests/unit/customer-intelligence-query-planner-contract.test.ts tests/unit/customer-intelligence-query-validator.test.ts tests/unit/config.test.ts`
+
+Result: PASS, 9 files, 182 tests.
+
+Live benchmark: NOT_RUN locally in this task because it requires configured provider credentials and
+an analytics DB.
+
+Live validation: NOT_RUN.
+
 ## T05.5 Answer Generation Reliability and Latency Observability
 
 Live symptom: in a fresh T05.4 session, `Cual cluster tiene mayor ticket promedio?` completed

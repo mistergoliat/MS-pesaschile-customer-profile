@@ -17,6 +17,44 @@ export type CopilotModelMetadata = {
   readonly promptTokens?: number;
   readonly completionTokens?: number;
   readonly totalTokens?: number;
+  readonly promptCacheHitTokens?: number;
+  readonly promptCacheMissTokens?: number;
+};
+
+export type CopilotConversationalMessage =
+  | { readonly role: 'system' | 'user'; readonly content: string }
+  | { readonly role: 'assistant'; readonly content?: string | null; readonly toolCalls?: readonly CopilotToolCall[] }
+  | { readonly role: 'tool'; readonly content: string; readonly toolCallId: string };
+
+export type CopilotToolDefinition = {
+  readonly type: 'function';
+  readonly function: {
+    readonly name: string;
+    readonly description: string;
+    readonly parameters: Record<string, unknown>;
+  };
+};
+
+export type CopilotToolChoice = 'auto' | 'none';
+
+export type CopilotToolCall = {
+  readonly id: string;
+  readonly name: string;
+  readonly arguments: unknown;
+  readonly argumentsParseError?: string;
+};
+
+export type GenerateConversationalTurnInput = {
+  readonly messages: readonly CopilotConversationalMessage[];
+  readonly tools: readonly CopilotToolDefinition[];
+  readonly toolChoice: CopilotToolChoice;
+  readonly stage: 'tool_selection' | 'tool_synthesis';
+};
+
+export type GenerateConversationalTurnOutput = {
+  readonly content: string | null;
+  readonly toolCalls: readonly CopilotToolCall[];
+  readonly metadata: CopilotModelMetadata | null;
 };
 
 export type GenerateAnalysisPlanInput = {
@@ -93,6 +131,7 @@ export type GenerateAnswerOutput = {
 };
 
 export type CustomerIntelligenceCopilotModel = {
+  generateConversationalTurn?(input: GenerateConversationalTurnInput): Promise<GenerateConversationalTurnOutput>;
   generateConversationPlan?(input: GenerateConversationPlanInput): Promise<GenerateConversationPlanOutput>;
   repairConversationPlan?(input: RepairConversationPlanInput): Promise<GenerateConversationPlanOutput>;
   generateConversationDecision(input: GenerateConversationDecisionInput): Promise<GenerateConversationDecisionOutput>;

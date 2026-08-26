@@ -23,6 +23,25 @@ beforeEach(() => {
   process.env = { ...REQUIRED_BASE_ENV };
 });
 
+describe('config - Customer Intelligence Copilot runtime flags', () => {
+  it('keeps unified planner and native tool runtime disabled by default', async () => {
+    const { config } = await import('../../src/config.js');
+
+    expect(config.marketingCopilot.unifiedPlannerEnabled).toBe(false);
+    expect(config.marketingCopilot.toolRuntimeEnabled).toBe(false);
+  });
+
+  it('parses unified planner and native tool runtime flags independently', async () => {
+    process.env.CUSTOMER_INTELLIGENCE_COPILOT_UNIFIED_PLANNER_ENABLED = 'true';
+    process.env.CUSTOMER_INTELLIGENCE_COPILOT_TOOL_RUNTIME_ENABLED = '1';
+
+    const { config } = await import('../../src/config.js');
+
+    expect(config.marketingCopilot.unifiedPlannerEnabled).toBe(true);
+    expect(config.marketingCopilot.toolRuntimeEnabled).toBe(true);
+  });
+});
+
 afterEach(() => {
   process.env = originalEnv;
 });

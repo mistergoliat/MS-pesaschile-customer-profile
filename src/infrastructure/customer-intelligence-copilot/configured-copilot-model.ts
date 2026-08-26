@@ -68,7 +68,16 @@ function createStageRoutedModel(models: {
   readonly planner: CustomerIntelligenceCopilotModel;
   readonly answerer: CustomerIntelligenceCopilotModel;
 }): CustomerIntelligenceCopilotModel {
+  const supportsToolRuntime = !!models.planner.generateConversationalTurn && !!models.answerer.generateConversationalTurn;
   return {
+    ...(supportsToolRuntime
+      ? {
+          generateConversationalTurn: (input) => {
+            const model = input.stage === 'tool_synthesis' ? models.answerer : models.planner;
+            return model.generateConversationalTurn!(input);
+          },
+        }
+      : {}),
     generateConversationPlan: (input) => {
       if (!models.planner.generateConversationPlan) throw new Error('planner model does not support unified conversation planning');
       return models.planner.generateConversationPlan(input);

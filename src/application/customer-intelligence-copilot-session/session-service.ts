@@ -11,6 +11,9 @@ import {
   CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_PROMPT_VERSION,
   CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_PROMPT_VERSION,
   CUSTOMER_INTELLIGENCE_COPILOT_ANSWER_PROMPT_VERSION,
+  CUSTOMER_INTELLIGENCE_COPILOT_TOOL_RUNTIME_INSTRUCTIONS,
+  CUSTOMER_INTELLIGENCE_COPILOT_TOOL_RUNTIME_PROMPT_VERSION,
+  CUSTOMER_INTELLIGENCE_COPILOT_RUN_ANALYTICAL_QUERIES_TOOL,
   CUSTOMER_INTELLIGENCE_COPILOT_SESSION_VERSION,
   asksForFreshBusinessFact,
   serializeAnalyticalQueryContractForCopilot,
@@ -35,7 +38,14 @@ import type {
 } from '../customer-intelligence/resolve-customer-intelligence-context.js';
 import type { ExecuteAnalyticalQueryForExport, ExecuteAnalyticalQueryWithResolvedContext } from '../customer-intelligence-query/index.js';
 import { AnalyticsTimeoutError, AnalyticsUnavailableError, AnalyticsSchemaIncompatibleError } from '../customer-profile/errors.js';
-import type { AnalyticalSchemaProvider, CustomerIntelligenceCopilotModel, CopilotModelMetadata } from '../customer-intelligence-copilot/index.js';
+import type {
+  AnalyticalSchemaProvider,
+  CustomerIntelligenceCopilotModel,
+  CopilotConversationalMessage,
+  CopilotModelMetadata,
+  CopilotToolCall,
+  CopilotToolDefinition,
+} from '../customer-intelligence-copilot/index.js';
 import {
   buildCopilotSessionContext,
   deriveAnalyticalReferences,
@@ -135,6 +145,8 @@ export type CopilotPlannerDiagnostic = {
 };
 
 type CopilotLatencyStage =
+  | 'tool_selection'
+  | 'tool_synthesis'
   | 'orchestrator'
   | 'orchestrator_repair'
   | 'planner'
@@ -145,7 +157,7 @@ type CopilotLatencyStage =
   | 'answerer'
   | 'turn';
 
-type CopilotExecutionMode = 'fast_path' | 'simple_analysis' | 'deep_analysis';
+type CopilotExecutionMode = 'fast_path' | 'direct_response' | 'simple_analysis' | 'deep_analysis';
 
 export type CopilotStageLatencyDiagnostic = {
   readonly event: 'customer_intelligence_copilot_stage_latency';
@@ -165,6 +177,8 @@ export type CopilotStageLatencyDiagnostic = {
   readonly promptTokens?: number;
   readonly completionTokens?: number;
   readonly totalTokens?: number;
+  readonly promptCacheHitTokens?: number;
+  readonly promptCacheMissTokens?: number;
 };
 
 export function createCustomerIntelligenceCopilotSessionService(deps: {
@@ -177,6 +191,7 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
   readonly store: CopilotSessionStore;
   readonly clock: Clock;
   readonly limits: CopilotSessionLimits;
+  readonly toolRuntimeEnabled?: boolean;
   readonly unifiedPlannerEnabled?: boolean;
   readonly onOrchestratorDiagnostic?: (diagnostic: CopilotOrchestratorDiagnostic) => void;
   readonly onPlannerDiagnostic?: (diagnostic: CopilotPlannerDiagnostic) => void;
@@ -242,6 +257,37 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
         const updated = appendTurn(session, response, question, [], [], deps.clock.now(), deps.limits);
         await deps.store.save(updated, deps.clock.now());
         return { status: 'ok', response, sessionContext };
+      }
+
+      if (deps.toolRuntimeEnabled ?? false) {
+        if (!deps.model.generateConversationalTurn) {
+          const response = withSession({ sessionId: session.sessionId, turnId }, terminal('unsupported_operation', 'El proveedor configurado no soporta native tool calling para Customer Intelligence.'));
+          await deps.store.save(appendTurn(session, response, question, [], [], deps.clock.now(), deps.limits), deps.clock.now());
+          emitTurnLatency(deps.onStageLatencyDiagnostic, {
+            turnStartedAt,
+            queryCount: 0,
+            analyticsExecutionDurationMs,
+            success: false,
+            failureStatus: 'tool_calling_unsupported',
+            executionMode: 'direct_response',
+          });
+          return { status: 'ok', response, sessionContext };
+        }
+        return processToolRuntimeTurn({
+          session,
+          turnId,
+          question,
+          sessionContext,
+          schema: serializeAnalyticalSchemaForCopilot(deps.getAnalyticalSchema()),
+          queryContract: serializeAnalyticalQueryContractForCopilot(),
+          model: deps.model,
+          executeAnalyticalQuery: deps.executeAnalyticalQuery,
+          store: deps.store,
+          clock: deps.clock,
+          limits: deps.limits,
+          onStageLatencyDiagnostic: deps.onStageLatencyDiagnostic,
+          turnStartedAt,
+        });
       }
 
       if ((deps.unifiedPlannerEnabled ?? false) && deps.model.generateConversationPlan && deps.model.repairConversationPlan) {
@@ -1147,6 +1193,380 @@ async function answerFromSessionContext(args: {
   }
 }
 
+async function processToolRuntimeTurn(args: {
+  readonly session: CopilotSession;
+  readonly turnId: string;
+  readonly question: string;
+  readonly sessionContext: ReturnType<typeof buildCopilotSessionContext>;
+  readonly schema: ReturnType<typeof serializeAnalyticalSchemaForCopilot>;
+  readonly queryContract: ReturnType<typeof serializeAnalyticalQueryContractForCopilot>;
+  readonly model: CustomerIntelligenceCopilotModel;
+  readonly executeAnalyticalQuery: ExecuteAnalyticalQueryWithResolvedContext;
+  readonly store: CopilotSessionStore;
+  readonly clock: Clock;
+  readonly limits: CopilotSessionLimits;
+  readonly onStageLatencyDiagnostic?: (diagnostic: CopilotStageLatencyDiagnostic) => void;
+  readonly turnStartedAt: number;
+}): Promise<ProcessCopilotSessionTurnResult> {
+  const messages = toolRuntimeMessages(args);
+  const tools = analyticalToolDefinitions();
+  let selection: Awaited<ReturnType<NonNullable<CustomerIntelligenceCopilotModel['generateConversationalTurn']>>>;
+  try {
+    selection = await timeCopilotStage({
+      stage: 'tool_selection',
+      onDiagnostic: args.onStageLatencyDiagnostic,
+      turnStartedAt: args.turnStartedAt,
+      repairAttempted: false,
+      queryCount: 0,
+      analyticsExecutionDurationMs: 0,
+      queryCountFromOutput: (output) => queryCountFromToolCalls(output.toolCalls),
+      executionMode: 'direct_response',
+      call: () =>
+        args.model.generateConversationalTurn!({
+          messages,
+          tools,
+          toolChoice: 'auto',
+          stage: 'tool_selection',
+        }),
+    });
+  } catch (error) {
+    const response = withSession({ sessionId: args.session.sessionId, turnId: args.turnId }, mapProviderError(error) ?? answerGenerationFailed(error));
+    await args.store.save(appendTurn(args.session, response, args.question, [], [], args.clock.now(), args.limits), args.clock.now());
+    emitTurnLatency(args.onStageLatencyDiagnostic, { turnStartedAt: args.turnStartedAt, queryCount: 0, analyticsExecutionDurationMs: 0, success: false, failureStatus: diagnosticFailureStatus(error) ?? response.status, executionMode: 'direct_response' });
+    return { status: 'ok', response, sessionContext: args.sessionContext };
+  }
+
+  if (selection.toolCalls.length === 0) {
+    const response = withSession({ sessionId: args.session.sessionId, turnId: args.turnId }, directToolRuntimeResponse(selection.content ?? '', selection.metadata, args.session.pinnedContext));
+    await args.store.save(appendTurn(args.session, response, args.question, [], [], args.clock.now(), args.limits), args.clock.now());
+    emitTurnLatency(args.onStageLatencyDiagnostic, { turnStartedAt: args.turnStartedAt, queryCount: 0, analyticsExecutionDurationMs: 0, success: true, failureStatus: null, executionMode: 'direct_response' });
+    return { status: 'ok', response, sessionContext: args.sessionContext };
+  }
+
+  const validatedToolCall = validateRunAnalyticalQueriesToolCall(selection.toolCalls);
+  if (!validatedToolCall.ok) {
+    const response = withSession({ sessionId: args.session.sessionId, turnId: args.turnId }, plannerInvalid(validatedToolCall.errors));
+    await args.store.save(appendTurn(args.session, response, args.question, [], [], args.clock.now(), args.limits), args.clock.now());
+    emitTurnLatency(args.onStageLatencyDiagnostic, { turnStartedAt: args.turnStartedAt, queryCount: 0, analyticsExecutionDurationMs: 0, success: false, failureStatus: validatedToolCall.failureStatus, executionMode: 'simple_analysis' });
+    return { status: 'ok', response, sessionContext: args.sessionContext };
+  }
+
+  const executionMode = executionModeForSteps(validatedToolCall.steps);
+  const analyticsStartedAt = Date.now();
+  let analyticsExecutionDurationMs = 0;
+  let executions: readonly { readonly id: string; readonly plan: AnalyticalQueryPlan; readonly result: AnalyticalQueryResult }[] = [];
+  try {
+    const executionResult = await executeAnalyticalSteps({
+      steps: validatedToolCall.steps,
+      executeAnalyticalQuery: args.executeAnalyticalQuery,
+      context: args.session.pinnedContext,
+      resolvedIds: args.session.resolvedIds,
+    });
+    if (executionResult.status === 'invalid_plan') {
+      const response = withSession({ sessionId: args.session.sessionId, turnId: args.turnId }, plannerInvalid(executionResult.errors));
+      emitStageLatency(args.onStageLatencyDiagnostic, {
+        stage: 'analytics_execution',
+        provider: null,
+        model: null,
+        durationMs: durationSince(analyticsStartedAt),
+        success: false,
+        failureStatus: 'tool_call_query_validation_failed',
+        repairAttempted: false,
+        queryCount: validatedToolCall.steps.length,
+        analyticsExecutionDurationMs,
+        totalTurnDurationMs: durationSince(args.turnStartedAt),
+        executionMode,
+      });
+      await args.store.save(appendTurn(args.session, response, args.question, [], [], args.clock.now(), args.limits), args.clock.now());
+      emitTurnLatency(args.onStageLatencyDiagnostic, { turnStartedAt: args.turnStartedAt, queryCount: validatedToolCall.steps.length, analyticsExecutionDurationMs, success: false, failureStatus: 'tool_call_query_validation_failed', executionMode });
+      return { status: 'ok', response, sessionContext: args.sessionContext };
+    }
+    executions = executionResult.executions;
+  } catch (error) {
+    analyticsExecutionDurationMs = sumAnalyticsExecutionDurationMs(executions);
+    const failureStatus = analyticsFailureStatus(error) === 'analytics_timeout' ? 'tool_execution_timeout' : 'tool_execution_unavailable';
+    emitStageLatency(args.onStageLatencyDiagnostic, {
+      stage: 'analytics_execution',
+      provider: null,
+      model: null,
+      durationMs: durationSince(analyticsStartedAt),
+      success: false,
+      failureStatus,
+      repairAttempted: false,
+      queryCount: validatedToolCall.steps.length,
+      analyticsExecutionDurationMs,
+      totalTurnDurationMs: durationSince(args.turnStartedAt),
+      executionMode,
+    });
+    const response = withSession({ sessionId: args.session.sessionId, turnId: args.turnId }, mapAnalyticsError(error));
+    await args.store.save(appendTurn(args.session, response, args.question, [], [], args.clock.now(), args.limits), args.clock.now());
+    emitTurnLatency(args.onStageLatencyDiagnostic, { turnStartedAt: args.turnStartedAt, queryCount: validatedToolCall.steps.length, analyticsExecutionDurationMs, success: false, failureStatus, executionMode });
+    return { status: 'ok', response, sessionContext: args.sessionContext };
+  }
+
+  analyticsExecutionDurationMs = sumAnalyticsExecutionDurationMs(executions);
+  emitStageLatency(args.onStageLatencyDiagnostic, {
+    stage: 'analytics_execution',
+    provider: null,
+    model: null,
+    durationMs: durationSince(analyticsStartedAt),
+    success: true,
+    failureStatus: null,
+    repairAttempted: false,
+    queryCount: validatedToolCall.steps.length,
+    analyticsExecutionDurationMs,
+    totalTurnDurationMs: durationSince(args.turnStartedAt),
+    executionMode,
+  });
+
+  const queryResults = executions.map((execution) => ({
+    queryId: uniqueQueryId(args.session, execution.id),
+    turnId: args.turnId,
+    plan: execution.plan,
+    result: retainedResult(execution.result, args.limits),
+  }));
+  const deterministicAnswer = renderDeterministicSimpleAnswer(executions, args.session.pinnedContext);
+  if (deterministicAnswer) {
+    const response = withSession(
+      { sessionId: args.session.sessionId, turnId: args.turnId, queryIds: queryResults.map((entry) => entry.queryId), sourceQueryIds: [] },
+      answered(executions, deterministicAnswer, selection.metadata, null, args.session.pinnedContext),
+    );
+    const updated = appendResults(appendTurn(args.session, response, args.question, queryResults.map((entry) => entry.queryId), [], args.clock.now(), args.limits), queryResults, args.limits);
+    await args.store.save(updated, args.clock.now());
+    emitTurnLatency(args.onStageLatencyDiagnostic, { turnStartedAt: args.turnStartedAt, queryCount: executions.length, analyticsExecutionDurationMs, success: true, failureStatus: null, executionMode: 'simple_analysis' });
+    return { status: 'ok', response, sessionContext: args.sessionContext };
+  }
+
+  try {
+    const synthesis = await timeCopilotStage({
+      stage: 'tool_synthesis',
+      onDiagnostic: args.onStageLatencyDiagnostic,
+      turnStartedAt: args.turnStartedAt,
+      repairAttempted: false,
+      queryCount: executions.length,
+      analyticsExecutionDurationMs,
+      executionMode: 'deep_analysis',
+      call: () =>
+        args.model.generateConversationalTurn!({
+          messages: [
+            ...messages,
+            { role: 'assistant', content: selection.content, toolCalls: selection.toolCalls },
+            { role: 'tool', toolCallId: validatedToolCall.toolCall.id, content: JSON.stringify(toolResultPayload(executions, args.session.pinnedContext)) },
+          ],
+          tools,
+          toolChoice: 'none',
+          stage: 'tool_synthesis',
+        }),
+    });
+    if (synthesis.toolCalls.length > 0 || !synthesis.content) {
+      const response = withSession({ sessionId: args.session.sessionId, turnId: args.turnId }, answerGenerationFailed(new Error('Tool synthesis returned an unexpected tool call or empty answer')));
+      await args.store.save(appendTurn(args.session, response, args.question, [], [], args.clock.now(), args.limits), args.clock.now());
+      emitTurnLatency(args.onStageLatencyDiagnostic, { turnStartedAt: args.turnStartedAt, queryCount: executions.length, analyticsExecutionDurationMs, success: false, failureStatus: 'tool_call_invalid_arguments', executionMode: 'deep_analysis' });
+      return { status: 'ok', response, sessionContext: args.sessionContext };
+    }
+    const response = withSession(
+      { sessionId: args.session.sessionId, turnId: args.turnId, queryIds: queryResults.map((entry) => entry.queryId), sourceQueryIds: [] },
+      answered(executions, synthesis.content, selection.metadata, synthesis.metadata, args.session.pinnedContext),
+    );
+    const updated = appendResults(appendTurn(args.session, response, args.question, queryResults.map((entry) => entry.queryId), [], args.clock.now(), args.limits), queryResults, args.limits);
+    await args.store.save(updated, args.clock.now());
+    emitTurnLatency(args.onStageLatencyDiagnostic, { turnStartedAt: args.turnStartedAt, queryCount: executions.length, analyticsExecutionDurationMs, success: true, failureStatus: null, executionMode: 'deep_analysis' });
+    return { status: 'ok', response, sessionContext: args.sessionContext };
+  } catch (error) {
+    const response = withSession({ sessionId: args.session.sessionId, turnId: args.turnId }, mapProviderError(error) ?? answerGenerationFailed(error));
+    await args.store.save(appendTurn(args.session, response, args.question, [], [], args.clock.now(), args.limits), args.clock.now());
+    emitTurnLatency(args.onStageLatencyDiagnostic, { turnStartedAt: args.turnStartedAt, queryCount: executions.length, analyticsExecutionDurationMs, success: false, failureStatus: diagnosticFailureStatus(error) ?? response.status, executionMode: 'deep_analysis' });
+    return { status: 'ok', response, sessionContext: args.sessionContext };
+  }
+}
+
+function toolRuntimeMessages(args: {
+  readonly question: string;
+  readonly schema: ReturnType<typeof serializeAnalyticalSchemaForCopilot>;
+  readonly queryContract: ReturnType<typeof serializeAnalyticalQueryContractForCopilot>;
+  readonly sessionContext: ReturnType<typeof buildCopilotSessionContext>;
+}): readonly CopilotConversationalMessage[] {
+  return [
+    { role: 'system', content: CUSTOMER_INTELLIGENCE_COPILOT_TOOL_RUNTIME_INSTRUCTIONS.join('\n') },
+    {
+      role: 'user',
+      content: JSON.stringify({
+        toolRuntimePromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_TOOL_RUNTIME_PROMPT_VERSION,
+        schema: args.schema,
+        queryContract: args.queryContract,
+        pinnedSnapshotContext: args.sessionContext.pinnedContext,
+        conversationSummary: args.sessionContext.conversationSummary ?? null,
+        semanticFocus: args.sessionContext.semanticFocus,
+        unresolvedClarification: args.sessionContext.semanticFocus.unresolvedClarification,
+        analyticalReferences: args.sessionContext.analyticalReferences,
+        recentFindings: recentFindingsFromContext(args.sessionContext),
+        recentResults: args.sessionContext.recentResults,
+        recentTurns: args.sessionContext.recentTurns,
+        currentQuestion: args.question,
+      }),
+    },
+  ];
+}
+
+function analyticalToolDefinitions(): readonly CopilotToolDefinition[] {
+  return [
+    {
+      type: 'function',
+      function: {
+        name: CUSTOMER_INTELLIGENCE_COPILOT_RUN_ANALYTICAL_QUERIES_TOOL,
+        description: 'Run 1 to 3 validated Customer Intelligence AnalyticalQueryPlan objects against the pinned snapshot context.',
+        parameters: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['queries'],
+          properties: {
+            queries: {
+              type: 'array',
+              minItems: 1,
+              maxItems: CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES,
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['id', 'plan'],
+                properties: {
+                  id: { type: 'string', minLength: 1, maxLength: 64, pattern: '^[A-Za-z_][A-Za-z0-9_]*$' },
+                  plan: {
+                    type: 'object',
+                    description: 'A customer-intelligence-query-plan-v1 AnalyticalQueryPlan. SQL, table names, expressions, and arbitrary code are forbidden.',
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  ];
+}
+
+function recentFindingsFromContext(sessionContext: ReturnType<typeof buildCopilotSessionContext>): readonly NonNullable<ReturnType<typeof buildCopilotSessionContext>['semanticFocus']['activeFinding']>[] {
+  return sessionContext.semanticFocus.activeFinding ? [sessionContext.semanticFocus.activeFinding] : [];
+}
+
+function directToolRuntimeResponse(
+  content: string,
+  metadata: CopilotModelMetadata | null,
+  provenance: CustomerIntelligenceSnapshotContext,
+): CustomerIntelligenceCopilotResponse {
+  const message = content.trim();
+  if (isUnsupportedContent(message)) return terminal('unsupported_data', message);
+  if (isClarificationContent(message)) return terminal('clarification_required', message);
+  return {
+    status: 'responded_directly',
+    answer: message,
+    analysis: {
+      contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION,
+      decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
+      decisionAction: 'respond_directly',
+      orchestratorModel: modelName(metadata),
+    },
+    provenance,
+  };
+}
+
+function isClarificationContent(content: string): boolean {
+  return /\?/.test(content) || /^(necesito|podrias|puedes|aclara|aclarar|define|indica|dime)\b/i.test(normalizeText(content)) || /\bcriterio concreto\b/i.test(normalizeText(content));
+}
+
+function isUnsupportedContent(content: string): boolean {
+  return /(no puedo|no hay|no existe|no cuento|no esta soportad|no esta disponible|fuera del runtime|rentabilidad|margen|costo|profit)/i.test(normalizeText(content));
+}
+
+function normalizeText(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
+function validateRunAnalyticalQueriesToolCall(toolCalls: readonly CopilotToolCall[]):
+  | { readonly ok: true; readonly toolCall: CopilotToolCall; readonly steps: readonly ValidatedStep[] }
+  | { readonly ok: false; readonly failureStatus: 'tool_call_invalid_arguments' | 'tool_call_unknown_tool' | 'tool_call_query_validation_failed'; readonly errors: readonly string[] } {
+  if (toolCalls.length !== 1) {
+    return { ok: false, failureStatus: 'tool_call_invalid_arguments', errors: [`expected exactly one analytical tool call, got ${toolCalls.length}`] };
+  }
+  const [toolCall] = toolCalls;
+  if (!toolCall) return { ok: false, failureStatus: 'tool_call_invalid_arguments', errors: ['missing analytical tool call'] };
+  if (toolCall.name !== CUSTOMER_INTELLIGENCE_COPILOT_RUN_ANALYTICAL_QUERIES_TOOL) {
+    return { ok: false, failureStatus: 'tool_call_unknown_tool', errors: [`unknown tool call: ${toolCall.name}`] };
+  }
+  if (toolCall.argumentsParseError) {
+    return { ok: false, failureStatus: 'tool_call_invalid_arguments', errors: [`tool arguments must be valid JSON: ${toolCall.argumentsParseError}`] };
+  }
+  if (toolCall.arguments === null || typeof toolCall.arguments !== 'object' || Array.isArray(toolCall.arguments)) {
+    return { ok: false, failureStatus: 'tool_call_invalid_arguments', errors: ['tool arguments must be a JSON object'] };
+  }
+
+  const errors: string[] = [];
+  const rawQueries = (toolCall.arguments as { readonly queries?: unknown }).queries;
+  if (!Array.isArray(rawQueries)) {
+    return { ok: false, failureStatus: 'tool_call_invalid_arguments', errors: ['run_analytical_queries requires queries array'] };
+  }
+  if (rawQueries.length === 0) errors.push('run_analytical_queries requires at least one query');
+  if (rawQueries.length > CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES) errors.push(`too many queries: ${rawQueries.length} (max ${CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES})`);
+
+  const ids = new Set<string>();
+  const steps: ValidatedStep[] = [];
+  for (const [index, rawQuery] of rawQueries.entries()) {
+    if (rawQuery === null || typeof rawQuery !== 'object' || Array.isArray(rawQuery)) {
+      errors.push(`queries[${index}] must be a JSON object`);
+      continue;
+    }
+    const query = rawQuery as { readonly id?: unknown; readonly plan?: unknown };
+    if (typeof query.id !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(query.id)) {
+      errors.push(`queries[${index}].id must match ^[A-Za-z_][A-Za-z0-9_]*$`);
+      continue;
+    }
+    if (ids.has(query.id)) {
+      errors.push(`duplicate query id: ${query.id}`);
+      continue;
+    }
+    ids.add(query.id);
+    const validation = validateAnalyticalQueryPlan(query.plan);
+    if (!validation.ok) errors.push(...validation.errors.map((error) => `${query.id}: ${error}`));
+    else steps.push({ id: query.id, plan: validation.plan.canonical });
+  }
+
+  if (errors.length > 0) {
+    const failureStatus = errors.some((error) => /unknown field|unsupported aggregation|invalid orderBy|must specify either "select"|requires a structured AnalyticalQueryPlan|alias matching/.test(error))
+      ? 'tool_call_query_validation_failed'
+      : 'tool_call_invalid_arguments';
+    return { ok: false, failureStatus, errors };
+  }
+  return { ok: true, toolCall, steps };
+}
+
+function queryCountFromToolCalls(toolCalls: readonly CopilotToolCall[]): number {
+  const first = toolCalls[0];
+  if (!first || first.arguments === null || typeof first.arguments !== 'object' || Array.isArray(first.arguments)) return 0;
+  const queries = (first.arguments as { readonly queries?: unknown }).queries;
+  return Array.isArray(queries) ? queries.length : 0;
+}
+
+function toolResultPayload(
+  executions: readonly { readonly id: string; readonly plan: AnalyticalQueryPlan; readonly result: AnalyticalQueryResult }[],
+  provenance: CustomerIntelligenceSnapshotContext,
+): Record<string, unknown> {
+  return {
+    tool: CUSTOMER_INTELLIGENCE_COPILOT_RUN_ANALYTICAL_QUERIES_TOOL,
+    provenance,
+    queries: executions.map((execution) => ({
+      id: execution.id,
+      plan: execution.plan,
+      queryPlanHash: execution.result.queryPlanHash,
+      columns: execution.result.columns,
+      rows: execution.result.rows,
+      rowCount: execution.result.rowCount,
+      execution: execution.result.execution,
+    })),
+  };
+}
+
 async function decideAndPlanConversation(args: {
   readonly question: string;
   readonly schema: ReturnType<typeof serializeAnalyticalSchemaForCopilot>;
@@ -1700,6 +2120,7 @@ function retainedResult(result: AnalyticalQueryResult, limits: CopilotSessionLim
 function metadataSize(metadata: CopilotModelMetadata | null): Partial<Pick<
   CopilotStageLatencyDiagnostic,
   'promptCharCount' | 'responseCharCount' | 'promptTokens' | 'completionTokens' | 'totalTokens'
+  | 'promptCacheHitTokens' | 'promptCacheMissTokens'
 >> {
   if (!metadata) return {};
   return {
@@ -1708,10 +2129,12 @@ function metadataSize(metadata: CopilotModelMetadata | null): Partial<Pick<
     ...optionalNumber('promptTokens', metadata.promptTokens),
     ...optionalNumber('completionTokens', metadata.completionTokens),
     ...optionalNumber('totalTokens', metadata.totalTokens),
+    ...optionalNumber('promptCacheHitTokens', metadata.promptCacheHitTokens),
+    ...optionalNumber('promptCacheMissTokens', metadata.promptCacheMissTokens),
   };
 }
 
-function optionalNumber<Key extends 'promptCharCount' | 'responseCharCount' | 'promptTokens' | 'completionTokens' | 'totalTokens'>(
+function optionalNumber<Key extends 'promptCharCount' | 'responseCharCount' | 'promptTokens' | 'completionTokens' | 'totalTokens' | 'promptCacheHitTokens' | 'promptCacheMissTokens'>(
   key: Key,
   value: number | undefined,
 ): Record<Key, number> | Record<string, never> {
@@ -1738,6 +2161,8 @@ function providerErrorStage(error: unknown): string | null {
 }
 
 function providerFailureStageName(stage: string): string {
+  if (stage === 'tool_selection') return 'tool_selection';
+  if (stage === 'tool_synthesis') return 'tool_synthesis';
   if (stage.startsWith('unified_planner')) return 'unified_planner';
   if (stage.startsWith('orchestrator')) return 'orchestrator';
   if (stage.startsWith('planner')) return 'planner';

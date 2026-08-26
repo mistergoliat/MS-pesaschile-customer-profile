@@ -277,6 +277,7 @@ export function bootstrap(): Bootstrap {
       store: createMysqlCopilotSessionStore(analyticsPool),
       clock: systemClock,
       limits: config.marketingCopilot.session,
+      toolRuntimeEnabled: config.marketingCopilot.toolRuntimeEnabled,
       unifiedPlannerEnabled: config.marketingCopilot.unifiedPlannerEnabled,
       onOrchestratorDiagnostic: (diagnostic) => {
         console.info(diagnostic, 'customer intelligence copilot orchestrator decision');

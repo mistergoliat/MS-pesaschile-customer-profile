@@ -80,7 +80,11 @@ const envSchema = z.object({
   CUSTOMER_INTELLIGENCE_COPILOT_EXPORT_BATCH_SIZE: z.coerce.number().int().positive().default(1000),
   CUSTOMER_INTELLIGENCE_COPILOT_UNIFIED_PLANNER_ENABLED: z
     .enum(['true', 'false', '1', '0'])
-    .default('true')
+    .default('false')
+    .transform((value) => value === 'true' || value === '1'),
+  CUSTOMER_INTELLIGENCE_COPILOT_TOOL_RUNTIME_ENABLED: z
+    .enum(['true', 'false', '1', '0'])
+    .default('false')
     .transform((value) => value === 'true' || value === '1'),
 
   PRESTASHOP_DB_HOST: z.string().min(1),
@@ -298,6 +302,7 @@ export const config = {
     enabled: raw.MARKETING_COPILOT_ENABLED,
     internalToken: raw.MARKETING_COPILOT_INTERNAL_TOKEN ?? null,
     unifiedPlannerEnabled: raw.CUSTOMER_INTELLIGENCE_COPILOT_UNIFIED_PLANNER_ENABLED,
+    toolRuntimeEnabled: raw.CUSTOMER_INTELLIGENCE_COPILOT_TOOL_RUNTIME_ENABLED,
     session: {
       ttlMinutes: raw.CUSTOMER_INTELLIGENCE_COPILOT_SESSION_TTL_MINUTES,
       maxActiveSessions: raw.CUSTOMER_INTELLIGENCE_COPILOT_MAX_ACTIVE_SESSIONS,

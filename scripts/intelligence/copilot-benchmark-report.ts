@@ -1,17 +1,24 @@
 export type CopilotBenchmarkRecord = {
+  readonly runtime: 'legacy' | 'unified' | 'tools' | 'config';
   readonly model: string;
   readonly scenarioId: string;
   readonly run: number;
+  readonly toolSelectionMs: number;
   readonly orchestratorMs: number;
   readonly plannerMs: number;
   readonly analyticsMs: number;
+  readonly toolSynthesisMs: number;
   readonly answererMs: number;
   readonly totalMs: number;
   readonly queryCount: number;
+  readonly toolCallCount: number;
   readonly repairCount: number;
   readonly status: string;
   readonly timeoutStage: string | null;
   readonly invalidResponseStage: string | null;
+  readonly cacheHitTokens: number;
+  readonly cacheMissTokens: number;
+  readonly cacheHitRatio: number | null;
   readonly semanticPass: boolean;
 };
 
@@ -35,7 +42,8 @@ export function aggregateBenchmark(records: readonly CopilotBenchmarkRecord[]) {
       maxTotalMs: totals[totals.length - 1] ?? 0,
       timeoutCount: group.filter((record) => record.timeoutStage !== null).length,
       invalidResponseCount: group.filter((record) => record.invalidResponseStage !== null).length,
-      successRate: group.filter((record) => record.status === 'answered' || record.status === 'unsupported_data').length / group.length,
+      meanCacheHitRatio: mean(group.map((record) => record.cacheHitRatio).filter((value): value is number => value !== null)),
+      successRate: group.filter((record) => record.status === 'answered' || record.status === 'unsupported_data' || record.status === 'unsupported_operation').length / group.length,
       semanticPassRate: group.filter((record) => record.semanticPass).length / group.length,
     };
   });
