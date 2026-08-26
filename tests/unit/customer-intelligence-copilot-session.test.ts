@@ -181,7 +181,7 @@ function harness(opts: {
   conversationPlans?: unknown[];
   repairConversationPlan?: unknown;
   conversationPlanError?: unknown;
-  conversationalTurns?: { content: string | null; toolCalls: readonly { id: string; name: string; arguments: unknown; argumentsParseError?: string }[]; metadata: { provider: string; model: string; promptCacheHitTokens?: number; promptCacheMissTokens?: number; promptTokens?: number; completionTokens?: number } | null }[];
+  conversationalTurns?: { content: string | null; toolCalls: readonly { id: string; name: string; arguments: unknown; argumentsParseError?: string }[]; metadata: { provider: string; model: string; promptCacheHitTokens?: number; promptCacheMissTokens?: number; promptTokens?: number; completionTokens?: number; finishReason?: string } | null }[];
   conversationalTurnErrors?: readonly (unknown | null)[];
   conversationalTurnError?: unknown;
   plans?: unknown[];
@@ -358,7 +358,7 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
     expect(rankingResponse.status).toBe('ok');
     if (rankingResponse.status === 'ok') {
       expect(rankingResponse.response.status).toBe('answered');
-      if (rankingResponse.response.status === 'answered') expect(rankingResponse.response.answer).toMatch(/cluster 3.*381304\.040000/i);
+      if (rankingResponse.response.status === 'answered') expect(rankingResponse.response.answer).toMatch(/cluster 3.*\$381\.304/i);
     }
     expect(ranking.generateConversationalTurn).toHaveBeenCalledTimes(1);
     expect(ranking.stageLatencyDiagnostics.map((diagnostic) => diagnostic.stage)).toEqual(['tool_selection', 'analytics_execution', 'turn']);
@@ -418,7 +418,7 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
     expect(response.status).toBe('ok');
     if (response.status === 'ok') {
       expect(response.response.status).toBe('answered');
-      if (response.response.status === 'answered') expect(response.response.answer).toMatch(/cluster 3.*381304\.040000/i);
+      if (response.response.status === 'answered') expect(response.response.answer).toMatch(/cluster 3.*\$381\.304/i);
     }
     expect(h.generateConversationalTurn).toHaveBeenCalledTimes(1);
     expect(h.generateAnswer).not.toHaveBeenCalled();
@@ -457,7 +457,7 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
     if (response.status === 'ok') {
       expect(response.response.status).toBe('answered');
       if (response.response.status === 'answered') {
-        expect(response.response.answer).toMatch(/cluster 3.*381304\.040000/i);
+        expect(response.response.answer).toMatch(/cluster 3.*\$381\.304/i);
         expect(response.response.analysis.queryPlanHashes).toEqual(['9'.repeat(64)]);
         expect(response.response.provenance.featureSnapshot.snapshotId).toBe('17');
       }
@@ -540,18 +540,27 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
       expect(response.response.status).toBe('answered');
       if (response.response.status === 'answered') expect(response.response.analysis.queryPlanHashes).toEqual(['1'.repeat(64), '2'.repeat(64)]);
     }
-    // The synthesis prompt's evidence bundle preserves every cluster row (not just the largest)
-    // plus the unclustered count as its own, separate fact.
+    // The synthesis prompt's evidence bundle preserves every cluster row as a bounded
+    // distribution (not just the largest) plus the unclustered count as its own, separate fact
+    // (task MARKETING-R1-T05.8.6 Section 4/7: distributions are their own structure).
     const calls = h.generateConversationalTurn.mock.calls as unknown as [GenerateConversationalTurnInput][];
     const synthesisPayload = JSON.parse(String(calls[1]?.[0].messages[1]?.content));
-    expect(synthesisPayload.evidence.facts).toEqual(expect.arrayContaining([
-      expect.objectContaining({ entityType: 'cluster', entityId: 0, metric: 'customer_count', value: 3973 }),
-      expect.objectContaining({ entityType: 'cluster', entityId: 1, metric: 'customer_count', value: 2077 }),
-      expect.objectContaining({ entityType: 'cluster', entityId: 2, metric: 'customer_count', value: 1539 }),
-      expect.objectContaining({ entityType: 'cluster', entityId: 3, metric: 'customer_count', value: 2569 }),
-      expect.objectContaining({ entityType: 'audience', entityId: null, metric: 'unclustered_count', value: 34792 }),
-    ]));
-    expect(synthesisPayload.evidence.facts).toHaveLength(5);
+    expect(synthesisPayload.evidence.distributions).toEqual([
+      expect.objectContaining({
+        queryId: 'cluster_distribution',
+        metric: 'customerCount',
+        entityType: 'cluster',
+        rows: [
+          { entityId: 0, value: 3973 },
+          { entityId: 1, value: 2077 },
+          { entityId: 2, value: 1539 },
+          { entityId: 3, value: 2569 },
+        ],
+      }),
+    ]);
+    expect(synthesisPayload.evidence.facts).toEqual([
+      expect.objectContaining({ entityType: 'cluster', entityId: null, metric: 'customerCount', value: 34792 }),
+    ]);
     // Primary finding for the turn is the distribution itself, not any single cluster row and not
     // the auxiliary unclustered-count query (task MARKETING-R1-T05.8.5 Section 1/7).
     expect(h.stageLatencyDiagnostics).toEqual(expect.arrayContaining([
@@ -560,7 +569,7 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
         primaryFindingType: 'distribution',
         primaryFindingEntityType: 'cluster',
         primaryFindingEntityId: null,
-        primaryFindingMetric: 'customer_count',
+        primaryFindingMetric: 'customerCount',
         primaryFindingSourceQueryId: 'cluster_distribution',
         distributionRowCount: 4,
       }),
@@ -608,12 +617,157 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
     if (response.response.status !== 'answered') throw new Error('expected answered');
     expect(response.response.analysis.synthesisFallbackUsed).toBe(true);
     // Every grouped value survives into the fallback text - none of the four clusters, nor the
-    // unclustered count, is dropped (task MARKETING-R1-T05.8.5 Section 6).
-    expect(response.response.answer).toMatch(/cluster 0.*3973/i);
-    expect(response.response.answer).toMatch(/cluster 1.*2077/i);
-    expect(response.response.answer).toMatch(/cluster 2.*1539/i);
-    expect(response.response.answer).toMatch(/cluster 3.*2569/i);
-    expect(response.response.answer).toMatch(/34792/);
+    // unclustered count, is dropped (task MARKETING-R1-T05.8.5 Section 6), and no internal alias
+    // (customer_count, query ids) leaks into the business-readable text (task MARKETING-R1-T05.8.6
+    // Section 10).
+    expect(response.response.answer).toMatch(/cluster 0.*3\.973/i);
+    expect(response.response.answer).toMatch(/cluster 1.*2\.077/i);
+    expect(response.response.answer).toMatch(/cluster 2.*1\.539/i);
+    expect(response.response.answer).toMatch(/cluster 3.*2\.569/i);
+    expect(response.response.answer).toMatch(/34\.792/);
+    expect(response.response.answer).not.toMatch(/customer_count|cluster_distribution|unclustered_count/);
+  });
+
+  it('captures the provider finish reason for tool selection (stop) and tool synthesis (length) as safe diagnostics, not raw payloads', async () => {
+    const h = harness({
+      toolRuntimeEnabled: true,
+      conversationalTurns: [
+        {
+          content: null,
+          toolCalls: [{
+            id: 'call_1',
+            name: CUSTOMER_INTELLIGENCE_COPILOT_RUN_ANALYTICAL_QUERIES_TOOL,
+            arguments: {
+              queries: [
+                { id: 'ticket_by_cluster', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'avg', field: 'commercial.averageOrderValueTaxIncl', alias: 'avg_ticket' }] } },
+                { id: 'spend_by_cluster', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'sum', field: 'commercial.totalSpentTaxIncl', alias: 'total_spent' }] } },
+              ],
+            },
+          }],
+          metadata: { provider: 'fake', model: 'tool', finishReason: 'stop' },
+        },
+        { content: 'Respuesta grounded.', toolCalls: [], metadata: { provider: 'fake', model: 'tool', finishReason: 'length' } },
+      ],
+      executionResults: [
+        result([{ clusterId: 3, avg_ticket: '150000.000000' }, { clusterId: 1, avg_ticket: '90000.000000' }], '1'.repeat(64), ['clusterId', 'avg_ticket']),
+        result([{ clusterId: 3, total_spent: '900000.000000' }, { clusterId: 1, total_spent: '400000.000000' }], '2'.repeat(64), ['clusterId', 'total_spent']),
+      ],
+    });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Compara los clusters' });
+
+    expect(response.status).toBe('ok');
+    expect(h.stageLatencyDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: 'tool_selection', providerFinishReason: 'stop' }),
+      expect.objectContaining({ stage: 'tool_synthesis', synthesisFinishReason: 'length' }),
+    ]));
+  });
+
+  it('allows an evidence distribution to carry more than 12 rows (the old cap), bounded at 32', async () => {
+    const manyRows = Array.from({ length: 20 }, (_, index) => ({ segmentCode: `SEG_${index}`, customers: 100 + index }));
+    const h = harness({
+      toolRuntimeEnabled: true,
+      conversationalTurns: [
+        toolRuntimeCall([
+          { id: 'segment_distribution', plan: { dimensions: ['rfm.segmentCode'], metrics: [{ aggregation: 'count', alias: 'customers' }] } },
+          { id: 'total_count', plan: { metrics: [{ aggregation: 'count', alias: 'total' }] } },
+        ]),
+        toolRuntimeContent('Distribucion por segmento.'),
+      ],
+      executionResults: [
+        result(manyRows, '1'.repeat(64), ['segmentCode', 'customers']),
+        result([{ total: 5000 }], '2'.repeat(64), ['total']),
+      ],
+    });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Distribucion por segmento RFM' });
+
+    expect(response.status).toBe('ok');
+    const calls = h.generateConversationalTurn.mock.calls as unknown as [GenerateConversationalTurnInput][];
+    const synthesisPayload = JSON.parse(String(calls[1]?.[0].messages[1]?.content));
+    expect(synthesisPayload.evidence.distributions[0].rows).toHaveLength(20);
+  });
+
+  it('caps an evidence distribution at 32 rows and the whole bundle at 8000 chars even when the query returns more', async () => {
+    const manyRows = Array.from({ length: 40 }, (_, index) => ({ segmentCode: `SEG_${index}`, customers: 100 + index }));
+    const h = harness({
+      toolRuntimeEnabled: true,
+      conversationalTurns: [
+        toolRuntimeCall([
+          { id: 'segment_distribution', plan: { dimensions: ['rfm.segmentCode'], metrics: [{ aggregation: 'count', alias: 'customers' }] } },
+          { id: 'total_count', plan: { metrics: [{ aggregation: 'count', alias: 'total' }] } },
+        ]),
+        toolRuntimeContent('Distribucion por segmento.'),
+      ],
+      executionResults: [
+        result(manyRows, '3'.repeat(64), ['segmentCode', 'customers']),
+        result([{ total: 5000 }], '4'.repeat(64), ['total']),
+      ],
+    });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Distribucion por segmento RFM' });
+
+    expect(response.status).toBe('ok');
+    const calls = h.generateConversationalTurn.mock.calls as unknown as [GenerateConversationalTurnInput][];
+    const synthesisPayload = JSON.parse(String(calls[1]?.[0].messages[1]?.content));
+    expect(synthesisPayload.evidence.distributions[0].rows.length).toBeLessThanOrEqual(32);
+    expect(JSON.stringify(synthesisPayload.evidence).length).toBeLessThanOrEqual(8000);
+  });
+
+  it('generates a deterministic pairwise comparison with correct absolute/relative difference arithmetic', async () => {
+    const h = harness({
+      toolRuntimeEnabled: true,
+      conversationalTurns: [
+        toolRuntimeCall([{ id: 'aov_cluster_3_vs_1', plan: { dimensions: ['cluster.clusterId'], filters: [{ field: 'cluster.clusterId', operator: 'in', value: [3, 1] }], metrics: [{ aggregation: 'avg', field: 'commercial.averageOrderValueTaxIncl', alias: 'avg_ticket' }] } }]),
+        toolRuntimeContent('El cluster 3 tiene mayor ticket promedio.'),
+      ],
+      executionResults: [result([{ clusterId: 3, avg_ticket: '381304.040000' }, { clusterId: 1, avg_ticket: '130552.920000' }], '5'.repeat(64), ['clusterId', 'avg_ticket'])],
+    });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Compara el ticket promedio del cluster 3 con el cluster 1' });
+
+    expect(response.status).toBe('ok');
+    const calls = h.generateConversationalTurn.mock.calls as unknown as [GenerateConversationalTurnInput][];
+    const synthesisPayload = JSON.parse(String(calls[1]?.[0].messages[1]?.content));
+    expect(synthesisPayload.evidence.comparisons).toEqual([
+      expect.objectContaining({
+        basis: 'pairwise',
+        metric: 'averageOrderValue',
+        left: { entityType: 'cluster', entityId: 3, value: 381304.04 },
+        right: { entityType: 'cluster', entityId: 1, value: 130552.92 },
+        absoluteDifference: '250751.12',
+      }),
+    ]);
+    const relativeDifference = Number(synthesisPayload.evidence.comparisons[0].relativeDifference);
+    expect(relativeDifference).toBeCloseTo((381304.04 - 130552.92) / 130552.92, 4);
+  });
+
+  it('surfaces material limitations as plain business sentences, never a raw coverage percentage', async () => {
+    const h = harness({
+      toolRuntimeEnabled: true,
+      conversationalTurns: [
+        toolRuntimeCall([{ id: 'aov_cluster_3_vs_1', plan: { dimensions: ['cluster.clusterId'], filters: [{ field: 'cluster.clusterId', operator: 'in', value: [3, 1] }], metrics: [{ aggregation: 'avg', field: 'commercial.averageOrderValueTaxIncl', alias: 'avg_ticket' }] } }]),
+      ],
+      conversationalTurnErrors: [null, providerInvalidResponse('tool_synthesis')],
+      executionResults: [result([{ clusterId: 3, avg_ticket: '381304.040000' }, { clusterId: 1, avg_ticket: '130552.920000' }], '6'.repeat(64), ['clusterId', 'avg_ticket'])],
+    });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Compara clusters' });
+
+    expect(response.status).toBe('ok');
+    if (response.status !== 'ok') throw new Error('expected ok');
+    expect(response.response.status).toBe('answered');
+    if (response.response.status !== 'answered') throw new Error('expected answered');
+    // BASE_CONTEXT pins clusterCoveragePct at 40 (material/partial), so the limitation surfaces -
+    // as a plain sentence, never the raw "cluster coverage 40%" style this replaces.
+    expect(response.response.answer).toMatch(/cluster asignado/i);
+    expect(response.response.answer).not.toMatch(/coverage/i);
+    expect(response.response.answer).not.toMatch(/\d+(\.\d+)?%/);
   });
 
   it('resolves "Cual tiene mas?" to Cluster 0 after a distribution, then AOV ranking to Cluster 3, preserving the Cluster 3 anchor for "Por que?"', async () => {
@@ -727,7 +881,7 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
     const synthesisContent = String(h.generateConversationalTurn.mock.calls[1]?.[0].messages[1]?.content);
     const synthesisPayload = JSON.parse(synthesisContent);
     expect(synthesisPayload).toMatchObject({
-      synthesisPromptVersion: 'customer-intelligence-tool-synthesis-v3',
+      synthesisPromptVersion: 'customer-intelligence-tool-synthesis-v4',
       question: 'Por que el cluster 3 tiene mayor ticket promedio?',
       evidence: { facts: expect.any(Array), comparisons: expect.any(Array), limitations: expect.any(Array) },
     });
@@ -785,7 +939,7 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
       expect(response.response.status).toBe('answered');
       if (response.response.status !== 'answered') throw new Error('expected answered');
       expect(response.response.answer).toContain('El analisis se completo, pero la sintesis avanzada no estuvo disponible.');
-      expect(response.response.answer).toContain('cluster 3');
+      expect(response.response.answer).toMatch(/cluster 3/i);
       expect(response.response.answer).not.toMatch(/\b(recomiendo|causa|hipotesis|oportunidad)\b/i);
       expect(response.response.analysis.synthesisFallbackUsed).toBe(true);
       expect(response.response.analysis.synthesisFallbackReason).toBe(entry.failureStatus);
@@ -826,12 +980,13 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
     expect(response.status).toBe('ok');
     if (response.status === 'ok') expect(response.response.status).toBe('answered');
     expect(h.generateConversationalTurn).toHaveBeenCalledTimes(2);
-    expect(h.generateConversationalTurn.mock.calls[1]?.[0]).toMatchObject({ stage: 'tool_synthesis', toolChoice: 'none', maxTokens: 500 });
-    // Both tied clusters are preserved as evidence facts (task MARKETING-R1-T05.8.5 Section 5) -
-    // a tie means no anchored winner, so the bundle must not collapse to just the first row.
+    expect(h.generateConversationalTurn.mock.calls[1]?.[0]).toMatchObject({ stage: 'tool_synthesis', toolChoice: 'none', maxTokens: 1500 });
+    // Both tied clusters are preserved - a tie means no anchored winner, so the bundle must not
+    // collapse to just the first row. With exactly two rows and no anchor this is now an explicit
+    // pairwise comparison (task MARKETING-R1-T05.8.6 Section 6) rather than two loose facts.
     expect(h.stageLatencyDiagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({ stage: 'analytics_execution', deterministicRendererEligible: false, deterministicRendererReason: 'tie_detected' }),
-      expect.objectContaining({ stage: 'tool_synthesis', evidenceBundleChars: expect.any(Number), evidenceFactCount: 2, synthesisPromptChars: expect.any(Number) }),
+      expect.objectContaining({ stage: 'tool_synthesis', evidenceBundleChars: expect.any(Number), evidenceFactCount: 0, evidenceComparisonCount: 1, synthesisPromptChars: expect.any(Number) }),
     ]));
   });
 

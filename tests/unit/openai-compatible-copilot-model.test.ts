@@ -244,6 +244,23 @@ describe('openai_compatible Customer Intelligence Copilot model adapter', () => 
     ]));
   });
 
+  it('surfaces the provider finish_reason (stop vs length) as safe metadata, defaulting to null when absent (task MARKETING-R1-T05.8.6 Section 3)', async () => {
+    mockFetchJson({ choices: [{ message: { content: 'Respuesta final.' }, finish_reason: 'length' }] });
+    const truncatedModel = createOpenAiCompatibleCopilotModel(config);
+    const truncated = await truncatedModel.generateConversationalTurn!(conversationalTurnInput('tool_synthesis'));
+    expect(truncated.metadata).toMatchObject({ finishReason: 'length' });
+
+    mockFetchJson({ choices: [{ message: { content: 'Respuesta final.' }, finish_reason: 'stop' }] });
+    const normalModel = createOpenAiCompatibleCopilotModel(config);
+    const normal = await normalModel.generateConversationalTurn!(conversationalTurnInput('tool_synthesis'));
+    expect(normal.metadata).toMatchObject({ finishReason: 'stop' });
+
+    mockFetchJson(chatResponse('Respuesta final.'));
+    const missingModel = createOpenAiCompatibleCopilotModel(config);
+    const missing = await missingModel.generateConversationalTurn!(conversationalTurnInput('tool_synthesis'));
+    expect(missing.metadata).toMatchObject({ finishReason: null });
+  });
+
   it('reports malformed tool arguments as parsed tool-call data for application validation', async () => {
     mockFetchJson({
       choices: [

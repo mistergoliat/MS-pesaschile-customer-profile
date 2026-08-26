@@ -86,7 +86,7 @@ const envSchema = z.object({
     .enum(['true', 'false', '1', '0'])
     .default('false')
     .transform((value) => value === 'true' || value === '1'),
-  CUSTOMER_INTELLIGENCE_COPILOT_SYNTHESIS_MAX_TOKENS: z.coerce.number().int().positive().max(2000).default(500),
+  CUSTOMER_INTELLIGENCE_COPILOT_SYNTHESIS_MAX_TOKENS: z.coerce.number().int().positive().max(2000).default(1500),
 
   PRESTASHOP_DB_HOST: z.string().min(1),
   PRESTASHOP_DB_PORT: z.coerce.number().int().positive().default(3306),

@@ -3,7 +3,7 @@ export const CUSTOMER_INTELLIGENCE_COPILOT_ANSWER_PROMPT_VERSION = 'customer-int
 export const CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_PROMPT_VERSION = 'customer-intelligence-copilot-orchestrator-v3';
 export const CUSTOMER_INTELLIGENCE_COPILOT_UNIFIED_PLANNER_PROMPT_VERSION = 'customer-intelligence-copilot-unified-planner-v1';
 export const CUSTOMER_INTELLIGENCE_COPILOT_TOOL_RUNTIME_PROMPT_VERSION = 'customer-intelligence-copilot-tool-runtime-v1';
-export const CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SYNTHESIS_PROMPT_VERSION = 'customer-intelligence-tool-synthesis-v3';
+export const CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SYNTHESIS_PROMPT_VERSION = 'customer-intelligence-tool-synthesis-v4';
 
 export const CUSTOMER_INTELLIGENCE_COPILOT_TOOL_RUNTIME_INSTRUCTIONS = [
   'You are the native tool-calling analytical runtime for Customer Intelligence.',
@@ -21,15 +21,23 @@ export const CUSTOMER_INTELLIGENCE_COPILOT_TOOL_RUNTIME_INSTRUCTIONS = [
   'When tool results are provided, produce a grounded final answer that separates observed facts from interpretation, hypotheses, recommendations, and limitations.',
 ] as const;
 
+// v4 (task MARKETING-R1-T05.8.6 Section 12): you are a marketing/business analyst explaining
+// deterministic Customer Intelligence evidence to a non-technical business user - prefer clear
+// business language over analytical jargon, and never expose internal implementation details.
 export const CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SYNTHESIS_INSTRUCTIONS = [
   'Answer the current Customer Intelligence question directly using only the supplied AnalyticalEvidenceBundle.',
-  'Prioritize the strongest supplied evidence and avoid narrating every result.',
+  'Answer in the same language as the user question.',
+  'Begin with the main conclusion, then the strongest supporting evidence; do not narrate every fact.',
   'The semanticAnchor is the current turn referent; do not replace it with later top rows.',
-  'Separate observed facts from interpretation or hypotheses.',
+  'Quantify relevant differences and, when useful, compare segments directly using the supplied comparisons and distributions.',
+  'Separate observed facts from interpretation, hypothesis, and recommendation, even in a short answer.',
   'Correlation is not causality; never claim a cause from these comparisons.',
   'Do not infer profitability without margin, cost, or profit fields.',
-  'Mention uncertainty or limitations only when material.',
-  'Avoid repeating methodology, schemas, query plans, or tool behavior.',
+  'Do not make future predictions unless predictive model outputs are supplied.',
+  'Mention coverage or other technical limitations only when they materially affect the conclusion.',
+  'If the evidence is insufficient to answer, state that limitation explicitly instead of inventing information.',
+  'Never expose internal aliases, field names, query ids, plan ids, contract/version names, database terms, or other implementation details; translate every metric into business terminology and natural monetary/percentage/count/ranking formatting.',
+  'Prioritize a decision-useful conclusion over exhaustively listing every row.',
   'Use concise commercial style, usually 100 to 300 words unless the user explicitly asks for depth.',
 ] as const;
 

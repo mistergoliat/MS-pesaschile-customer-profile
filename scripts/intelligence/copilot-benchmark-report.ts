@@ -38,8 +38,11 @@ export type CopilotBenchmarkRecord = {
   readonly evidenceBundleChars: number | null;
   readonly evidenceFactCount: number;
   readonly evidenceComparisonCount: number;
+  readonly evidenceDistributionCount: number;
+  readonly synthesisMaxTokens: number | null;
   readonly synthesisPromptChars: number | null;
   readonly synthesisCompletionTokens: number | null;
+  readonly synthesisFinishReason: string | null;
   readonly semanticPass: boolean;
   readonly semanticFailureReason: string | null;
 };

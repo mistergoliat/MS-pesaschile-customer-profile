@@ -24,15 +24,15 @@ beforeEach(() => {
 });
 
 describe('config - Customer Intelligence Copilot runtime flags', () => {
-  it('keeps unified planner and native tool runtime disabled by default', async () => {
+  it('keeps unified planner and native tool runtime disabled by default, with synthesis max tokens defaulting to 1500 (task MARKETING-R1-T05.8.6 Section 1)', async () => {
     const { config } = await import('../../src/config.js');
 
     expect(config.marketingCopilot.unifiedPlannerEnabled).toBe(false);
     expect(config.marketingCopilot.toolRuntimeEnabled).toBe(false);
-    expect(config.marketingCopilot.synthesisMaxTokens).toBe(500);
+    expect(config.marketingCopilot.synthesisMaxTokens).toBe(1500);
   });
 
-  it('parses unified planner and native tool runtime flags independently', async () => {
+  it('parses unified planner and native tool runtime flags independently, and still allows an env override of synthesis max tokens', async () => {
     process.env.CUSTOMER_INTELLIGENCE_COPILOT_UNIFIED_PLANNER_ENABLED = 'true';
     process.env.CUSTOMER_INTELLIGENCE_COPILOT_TOOL_RUNTIME_ENABLED = '1';
     process.env.CUSTOMER_INTELLIGENCE_COPILOT_SYNTHESIS_MAX_TOKENS = '321';

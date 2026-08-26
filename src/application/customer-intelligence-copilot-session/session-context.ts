@@ -1,5 +1,6 @@
 import {
   CUSTOMER_INTELLIGENCE_COPILOT_SESSION_CONTEXT_VERSION,
+  resolveSemanticMetricName,
   type CopilotAnalyticalReference,
   type CopilotSemanticFocus,
   type CopilotSessionContext,
@@ -212,17 +213,11 @@ function metricFromPlan(plan: AnalyticalQueryPlan, sourceQueryId: string): Copil
   const metric = plan.metrics?.[0];
   if (!metric) return null;
   return {
-    name: semanticMetricName(metric.field ?? null, metric.alias),
+    name: resolveSemanticMetricName(metric),
     field: metric.field ?? null,
     aggregation: metric.aggregation,
     sourceQueryId,
   };
-}
-
-function semanticMetricName(field: string | null, alias: string): string {
-  if (field === 'commercial.averageOrderValueTaxIncl') return 'averageOrderValue';
-  if (field === 'commercial.totalSpentTaxIncl') return 'totalSpent';
-  return alias;
 }
 
 type TopRowFacts = NonNullable<CopilotSemanticFocus['lastAnalyticalResult']>['topRowFacts'];

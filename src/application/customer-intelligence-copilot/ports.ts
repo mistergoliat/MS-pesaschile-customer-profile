@@ -19,6 +19,10 @@ export type CopilotModelMetadata = {
   readonly totalTokens?: number;
   readonly promptCacheHitTokens?: number;
   readonly promptCacheMissTokens?: number;
+  // The provider's raw finish reason (e.g. "stop", "length", "tool_calls"), when the transport
+  // exposes one - lets diagnostics distinguish natural completion from output truncation (task
+  // MARKETING-R1-T05.8.6 Section 3) without logging any provider payload.
+  readonly finishReason?: string | null;
 };
 
 export type CopilotConversationalMessage =

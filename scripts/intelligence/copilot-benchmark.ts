@@ -270,8 +270,11 @@ function recordFromDiagnostics(args: {
     evidenceBundleChars: maxOptional(args.diagnostics, 'evidenceBundleChars'),
     evidenceFactCount: maxOptional(args.diagnostics, 'evidenceFactCount') ?? 0,
     evidenceComparisonCount: maxOptional(args.diagnostics, 'evidenceComparisonCount') ?? 0,
+    evidenceDistributionCount: maxOptional(args.diagnostics, 'evidenceDistributionCount') ?? 0,
+    synthesisMaxTokens: maxOptional(args.diagnostics, 'synthesisMaxTokens'),
     synthesisPromptChars: maxOptional(args.diagnostics, 'synthesisPromptChars'),
     synthesisCompletionTokens: maxOptional(args.diagnostics, 'synthesisCompletionTokens'),
+    synthesisFinishReason: lastOptionalString(args.diagnostics, 'synthesisFinishReason'),
     semanticPass: args.semanticPass,
     semanticFailureReason: args.semanticFailureReason,
   };
@@ -341,7 +344,17 @@ function sumOptional(diagnostics: readonly CopilotStageLatencyDiagnostic[], key:
 
 function maxOptional(
   diagnostics: readonly CopilotStageLatencyDiagnostic[],
-  key: 'toolSchemaChars' | 'toolSelectionPromptChars' | 'toolSelectionPromptTokens' | 'evidenceBundleChars' | 'evidenceFactCount' | 'evidenceComparisonCount' | 'synthesisPromptChars' | 'synthesisCompletionTokens',
+  key:
+    | 'toolSchemaChars'
+    | 'toolSelectionPromptChars'
+    | 'toolSelectionPromptTokens'
+    | 'evidenceBundleChars'
+    | 'evidenceFactCount'
+    | 'evidenceComparisonCount'
+    | 'evidenceDistributionCount'
+    | 'synthesisMaxTokens'
+    | 'synthesisPromptChars'
+    | 'synthesisCompletionTokens',
 ): number | null {
   const values = diagnostics.map((diagnostic) => diagnostic[key]).filter((value): value is number => typeof value === 'number');
   return values.length > 0 ? Math.max(...values) : null;
@@ -353,7 +366,7 @@ function lastOptionalBoolean(diagnostics: readonly CopilotStageLatencyDiagnostic
 
 function lastOptionalString(
   diagnostics: readonly CopilotStageLatencyDiagnostic[],
-  key: 'deterministicRendererReason' | 'semanticAnchorEntityType' | 'primaryFindingEntityType' | 'primaryFindingMetric' | 'primaryFindingType',
+  key: 'deterministicRendererReason' | 'semanticAnchorEntityType' | 'primaryFindingEntityType' | 'primaryFindingMetric' | 'primaryFindingType' | 'synthesisFinishReason',
 ): string | null {
   const value = [...diagnostics].reverse().find((diagnostic) => typeof diagnostic[key] === 'string')?.[key];
   return typeof value === 'string' ? value : null;

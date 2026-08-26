@@ -45,6 +45,7 @@ type ChatCompletionOutput = {
     readonly totalTokens?: number;
     readonly promptCacheHitTokens?: number;
     readonly promptCacheMissTokens?: number;
+    readonly finishReason: string | null;
   };
 };
 
@@ -227,7 +228,7 @@ async function postChatCompletion(
       }
       throw providerError(config, request.stage, 'provider_invalid_response', 'Copilot model provider returned malformed JSON', response.status);
     }
-    const message = extractMessage(raw, config, request.stage);
+    const { message, finishReason } = extractMessage(raw, config, request.stage);
     const content = typeof message.content === 'string' ? message.content : '';
     return {
       content,
@@ -237,6 +238,7 @@ async function postChatCompletion(
         model: config.model,
         promptCharCount,
         responseCharCount: content.length,
+        finishReason,
         ...usageMetadata(raw),
       },
     };
@@ -303,7 +305,11 @@ function answerOutput(output: ChatCompletionOutput): GenerateAnswerOutput {
   };
 }
 
-function extractMessage(raw: unknown, config: OpenAiCompatibleCopilotModelConfig, stage: CopilotProviderCallStage): Record<string, unknown> {
+function extractMessage(
+  raw: unknown,
+  config: OpenAiCompatibleCopilotModelConfig,
+  stage: CopilotProviderCallStage,
+): { readonly message: Record<string, unknown>; readonly finishReason: string | null } {
   const obj = expectObject(raw, 'Copilot model provider returned a non-object response', config, stage);
   if (!Array.isArray(obj.choices) || obj.choices.length === 0) {
     throw providerError(config, stage, 'provider_invalid_response', 'Copilot model provider returned no choices', null);
@@ -317,7 +323,8 @@ function extractMessage(raw: unknown, config: OpenAiCompatibleCopilotModelConfig
   if ((message.content === null || message.content === undefined || message.content.trim().length === 0) && !Array.isArray(message.tool_calls)) {
     throw providerError(config, stage, 'provider_invalid_response', 'Copilot model provider returned empty message content', null);
   }
-  return message;
+  const finishReason = typeof choice.finish_reason === 'string' ? choice.finish_reason : null;
+  return { message, finishReason };
 }
 
 function extractToolCalls(message: Record<string, unknown>, config: OpenAiCompatibleCopilotModelConfig, stage: CopilotProviderCallStage): GenerateConversationalTurnOutput['toolCalls'] {

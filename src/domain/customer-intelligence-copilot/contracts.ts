@@ -261,6 +261,16 @@ export type CopilotSemanticAnchor = {
   readonly sourceTurnId?: string | null;
 };
 
+// task MARKETING-R1-T05.8.6 Section 4: a bounded semantic structure, not a mostly-flat
+// collection. Every value here is read back from a validated AnalyticalQueryResult - never
+// model-generated - and comparisons/distributions are deterministically derived (task Section 6:
+// "only derive arithmetic that is deterministic and safe").
+export type AnalyticalEvidenceEntityRef = {
+  readonly entityType: string | null;
+  readonly entityId: string | number | null;
+  readonly value: string | number | boolean;
+};
+
 export type AnalyticalEvidenceBundle = {
   readonly anchor: Pick<CopilotSemanticAnchor, 'entityType' | 'entityId' | 'metric'> | null;
   readonly facts: readonly {
@@ -272,15 +282,28 @@ export type AnalyticalEvidenceBundle = {
     readonly rank?: number;
     readonly comparison?: 'highest' | 'lowest' | 'observed';
   }[];
+  // basis: anchor_vs_peer_range (an active entity vs. its observed peer range), pairwise (exactly
+  // two rows, e.g. "compare cluster 3 vs cluster 1"), or top_vs_bottom (a ranked 3+ row result
+  // with no active entity - the two extremes only, never O(n^2) pairwise combinations).
   readonly comparisons: readonly {
     readonly queryId: string;
     readonly metric: string;
-    readonly entityType: string | null;
-    readonly entityId: string | number | null;
-    readonly anchorValue: string | number | boolean | null;
+    readonly basis: 'anchor_vs_peer_range' | 'pairwise' | 'top_vs_bottom';
+    readonly left: AnalyticalEvidenceEntityRef;
+    readonly right: AnalyticalEvidenceEntityRef;
+    readonly absoluteDifference: string | null;
+    readonly relativeDifference: string | null;
     readonly peerMin: string | number | null;
     readonly peerMax: string | number | null;
-    readonly anchorRank: number | null;
+  }[];
+  // A grouped breakdown (task MARKETING-R1-T05.8.5 `distribution` finding) kept as its own bounded
+  // structure instead of N separate facts, so the fallback/synthesis layer can render it as one
+  // coherent breakdown.
+  readonly distributions: readonly {
+    readonly queryId: string;
+    readonly metric: string;
+    readonly entityType: string | null;
+    readonly rows: readonly { readonly entityId: string | number | null; readonly value: string | number | boolean }[];
   }[];
   readonly limitations: readonly string[];
 };

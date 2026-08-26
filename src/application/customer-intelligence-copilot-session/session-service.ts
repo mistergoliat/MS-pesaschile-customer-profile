@@ -28,6 +28,12 @@ import {
   type CopilotConversationDecisionActionConstraints,
   type CopilotConversationDecision,
   type CopilotConversationPlan,
+  resolveBusinessMetric,
+  resolveBusinessMetricByName,
+  resolveSemanticMetricName,
+  businessEntityLabel,
+  formatBusinessValue,
+  formatRatio,
   type AnalyticalEvidenceBundle,
   type CopilotSemanticAnchor,
   type CustomerIntelligenceCopilotResponse,
@@ -171,8 +177,14 @@ type CopilotLatencyStage =
   | 'turn';
 
 type CopilotExecutionMode = 'fast_path' | 'direct_response' | 'simple_analysis' | 'deep_analysis';
-const DEFAULT_SYNTHESIS_MAX_TOKENS = 500;
-const ANALYTICAL_EVIDENCE_BUNDLE_MAX_CHARS = 4000;
+// task MARKETING-R1-T05.8.6 Section 1/2: live evidence showed synthesis repeatedly saturating the
+// old 500-token ceiling and the evidence bundle repeatedly saturating 12 facts while still far
+// below the old 4000-char cap - both artificial ceilings, not genuine reasoning limits.
+const DEFAULT_SYNTHESIS_MAX_TOKENS = 1500;
+const ANALYTICAL_EVIDENCE_BUNDLE_MAX_CHARS = 8000;
+const ANALYTICAL_EVIDENCE_MAX_FACTS = 32;
+const ANALYTICAL_EVIDENCE_MAX_COMPARISONS = 8;
+const ANALYTICAL_EVIDENCE_MAX_DISTRIBUTION_ROWS = 32;
 type DeterministicRendererReason =
   | 'eligible'
   | 'eligible_top_k_truncation'
@@ -224,10 +236,16 @@ export type CopilotStageLatencyDiagnostic = {
   readonly evidenceBundleChars?: number;
   readonly evidenceFactCount?: number;
   readonly evidenceComparisonCount?: number;
+  readonly evidenceDistributionCount?: number;
+  readonly evidenceMaxFacts?: number;
+  readonly evidenceMaxChars?: number;
+  readonly synthesisMaxTokens?: number;
   readonly synthesisPromptChars?: number;
   readonly synthesisPromptTokens?: number;
   readonly synthesisCompletionTokens?: number;
   readonly synthesisFallbackUsed?: boolean;
+  readonly providerFinishReason?: string | null;
+  readonly synthesisFinishReason?: string | null;
   readonly activeSemanticEntityType?: string | null;
   readonly activeSemanticEntityId?: string | number | null;
   readonly activeMetric?: string | null;
@@ -242,6 +260,8 @@ export type CopilotStageLatencyDiagnostic = {
     readonly dimensions: readonly string[];
     readonly metrics: readonly string[];
     readonly filterFieldNames: readonly string[];
+    readonly hasEntityFilter: boolean;
+    readonly limit: number | null;
     readonly orderByFields: readonly string[];
   }[];
   readonly synthesisInputResultCount?: number;
@@ -1310,6 +1330,7 @@ async function processToolRuntimeTurn(args: {
       },
       outputDiagnosticContext: (output) => ({
         toolArgumentChars: toolArgumentChars(output.toolCalls),
+        providerFinishReason: output.metadata?.finishReason ?? null,
         ...(typeof output.metadata?.promptTokens === 'number' ? { toolSelectionPromptTokens: output.metadata.promptTokens } : {}),
       }),
       call: () =>
@@ -1459,6 +1480,7 @@ async function processToolRuntimeTurn(args: {
       evidenceBundle,
     });
     const synthesisPromptChars = messageProjectionChars(synthesisMessages);
+    const synthesisMaxTokens = args.synthesisMaxTokens ?? DEFAULT_SYNTHESIS_MAX_TOKENS;
     const synthesis = await timeCopilotStage({
       stage: 'tool_synthesis',
       onDiagnostic: args.onStageLatencyDiagnostic,
@@ -1474,6 +1496,10 @@ async function processToolRuntimeTurn(args: {
         evidenceBundleChars,
         evidenceFactCount: evidenceBundle.facts.length,
         evidenceComparisonCount: evidenceBundle.comparisons.length,
+        evidenceDistributionCount: evidenceBundle.distributions.length,
+        evidenceMaxFacts: ANALYTICAL_EVIDENCE_MAX_FACTS,
+        evidenceMaxChars: ANALYTICAL_EVIDENCE_BUNDLE_MAX_CHARS,
+        synthesisMaxTokens,
         resultSummaryChars: evidenceBundleChars,
         synthesisPromptChars,
         synthesisInputResultCount: executions.length,
@@ -1481,6 +1507,7 @@ async function processToolRuntimeTurn(args: {
       outputDiagnosticContext: (output) => ({
         ...(typeof output.metadata?.promptTokens === 'number' ? { synthesisPromptTokens: output.metadata.promptTokens } : {}),
         ...(typeof output.metadata?.completionTokens === 'number' ? { synthesisCompletionTokens: output.metadata.completionTokens } : {}),
+        synthesisFinishReason: output.metadata?.finishReason ?? null,
       }),
       call: () =>
         args.model.generateConversationalTurn!({
@@ -1488,7 +1515,7 @@ async function processToolRuntimeTurn(args: {
           tools: [],
           toolChoice: 'none',
           stage: 'tool_synthesis',
-          maxTokens: args.synthesisMaxTokens ?? DEFAULT_SYNTHESIS_MAX_TOKENS,
+          maxTokens: synthesisMaxTokens,
         }),
     });
     if (synthesis.toolCalls.length > 0 || !synthesis.content) {
@@ -1517,6 +1544,7 @@ async function processToolRuntimeTurn(args: {
           evidenceBundleChars,
           evidenceFactCount: evidenceBundle.facts.length,
           evidenceComparisonCount: evidenceBundle.comparisons.length,
+          evidenceDistributionCount: evidenceBundle.distributions.length,
           ...primaryFindingDiagnostic(updated),
         },
       });
@@ -1541,6 +1569,7 @@ async function processToolRuntimeTurn(args: {
         evidenceBundleChars,
         evidenceFactCount: evidenceBundle.facts.length,
         evidenceComparisonCount: evidenceBundle.comparisons.length,
+        evidenceDistributionCount: evidenceBundle.distributions.length,
         ...primaryFindingDiagnostic(updated),
       },
     });
@@ -1572,6 +1601,7 @@ async function processToolRuntimeTurn(args: {
           evidenceBundleChars,
           evidenceFactCount: evidenceBundle.facts.length,
           evidenceComparisonCount: evidenceBundle.comparisons.length,
+          evidenceDistributionCount: evidenceBundle.distributions.length,
           ...primaryFindingDiagnostic(updated),
         },
       });
@@ -1753,100 +1783,231 @@ function buildAnalyticalEvidenceBundle(args: {
 }): AnalyticalEvidenceBundle {
   const facts: AnalyticalEvidenceBundle['facts'][number][] = [];
   const comparisons: AnalyticalEvidenceBundle['comparisons'][number][] = [];
+  const distributions: AnalyticalEvidenceBundle['distributions'][number][] = [];
   const limitations: string[] = [];
+  const entityTypesPresent = new Set<'cluster' | 'rfm_segment'>();
 
   for (const execution of args.executions) {
     if (execution.result.execution.truncated) limitations.push(`${execution.id}: result truncated`);
     const entity = entityDescriptorForPlan(execution.plan);
     for (const metric of execution.plan.metrics ?? []) {
-      const metricName = semanticMetricName(metric.field ?? null, metric.alias);
+      const metricName = resolveSemanticMetricName(metric);
       if (!entity) {
         const value = scalarValue(execution.result.rows[0], metric.alias);
         if (isEvidenceValue(value)) {
-          facts.push({ queryId: execution.id, metric: metricName, entityType: 'audience', entityId: null, value, comparison: 'observed' });
+          // A bare "IS NULL" filter on the entity dimension (e.g. an unclustered-customer count)
+          // reads far better as "clientes sin cluster asignado" than as a generic audience fact.
+          const nullEntityType = nullEntityDimensionFromFilters(execution.plan);
+          facts.push({ queryId: execution.id, metric: metricName, entityType: nullEntityType ?? 'audience', entityId: null, value, comparison: 'observed' });
         }
         continue;
       }
+      entityTypesPresent.add(entity.type);
 
       const rankedRows = rankedRowsForMetric(execution, metric.alias);
       const anchorIndex = args.semanticAnchor && args.semanticAnchor.entityType === entity.type
         ? rankedRows.findIndex((row) => sameEntityId(scalarValue(row, entity.resultField), args.semanticAnchor?.entityId ?? null))
         : -1;
-      if (anchorIndex < 0 && rankedRows.length > 1) {
-        // A genuine multi-row grouped distribution with no anchored entity: preserve every group
-        // as its own fact (task MARKETING-R1-T05.8.5 Section 5) instead of collapsing to just the
-        // first row, which silently discarded the rest of the breakdown.
-        for (const row of rankedRows) {
-          const rowEntityId = scalarValue(row, entity.resultField);
-          const rowValue = scalarValue(row, metric.alias);
-          if (!isEvidenceValue(rowValue)) continue;
-          facts.push({
-            queryId: execution.id,
-            metric: metricName,
-            entityType: entity.type,
-            entityId: rowEntityId === null || typeof rowEntityId === 'boolean' ? null : rowEntityId,
-            value: rowValue,
-            comparison: 'observed',
-          });
-        }
-        continue;
-      }
-      const selectedIndex = anchorIndex >= 0 ? anchorIndex : 0;
-      const selected = rankedRows[selectedIndex];
-      if (!selected) continue;
-      const entityId = scalarValue(selected, entity.resultField);
-      const value = scalarValue(selected, metric.alias);
-      if (!isEvidenceValue(value)) continue;
-      const comparison = selectedIndex === 0 ? comparisonForMetricOrder(execution.plan, metric.alias) : 'observed';
-      facts.push({
-        queryId: execution.id,
-        metric: metricName,
-        entityType: entity.type,
-        entityId: entityId === null || typeof entityId === 'boolean' ? null : entityId,
-        value,
-        rank: selectedIndex + 1,
-        comparison,
-      });
 
       if (anchorIndex >= 0) {
-        const numericValues = rankedRows.map((row) => numericComparableValue(scalarValue(row, metric.alias))).filter((v): v is number => v !== null);
-        comparisons.push({
+        const selected = rankedRows[anchorIndex]!;
+        const entityId = scalarValue(selected, entity.resultField);
+        const value = scalarValue(selected, metric.alias);
+        if (!isEvidenceValue(value)) continue;
+        facts.push({
           queryId: execution.id,
           metric: metricName,
           entityType: entity.type,
-          entityId: args.semanticAnchor?.entityId ?? null,
-          anchorValue: value,
-          peerMin: numericValues.length > 0 ? formatEvidenceNumber(Math.min(...numericValues)) : null,
-          peerMax: numericValues.length > 0 ? formatEvidenceNumber(Math.max(...numericValues)) : null,
-          anchorRank: anchorIndex + 1,
+          entityId: entityId === null || typeof entityId === 'boolean' ? null : entityId,
+          value,
+          rank: anchorIndex + 1,
+          comparison: anchorIndex === 0 ? comparisonForMetricOrder(execution.plan, metric.alias) : 'observed',
         });
+        // A peer range plus an explicit contrast against the peer farthest from the anchor's
+        // value (task MARKETING-R1-T05.8.6 Section 6: "explicit target vs peer") - a single,
+        // bounded comparison per metric, never O(n^2) pairwise combinations.
+        const numericValues = rankedRows.map((row) => numericComparableValue(scalarValue(row, metric.alias))).filter((v): v is number => v !== null);
+        const contrastIndex = farthestPeerIndex(rankedRows, anchorIndex, metric.alias);
+        if (contrastIndex !== null) {
+          const comparisonEntry = buildEvidenceComparison({
+            queryId: execution.id,
+            metric: metricName,
+            basis: 'anchor_vs_peer_range',
+            leftRow: selected,
+            rightRow: rankedRows[contrastIndex]!,
+            entity,
+            metricAlias: metric.alias,
+            peerMin: numericValues.length > 0 ? Math.min(...numericValues) : null,
+            peerMax: numericValues.length > 0 ? Math.max(...numericValues) : null,
+          });
+          if (comparisonEntry) comparisons.push(comparisonEntry);
+        }
+        continue;
+      }
+
+      if (rankedRows.length === 0) continue;
+      if (rankedRows.length === 1) {
+        const selected = rankedRows[0]!;
+        const entityId = scalarValue(selected, entity.resultField);
+        const value = scalarValue(selected, metric.alias);
+        if (!isEvidenceValue(value)) continue;
+        facts.push({
+          queryId: execution.id,
+          metric: metricName,
+          entityType: entity.type,
+          entityId: entityId === null || typeof entityId === 'boolean' ? null : entityId,
+          value,
+          rank: 1,
+          comparison: comparisonForMetricOrder(execution.plan, metric.alias),
+        });
+        continue;
+      }
+
+      // No anchored entity and more than one row: this query represents every observed group,
+      // not a single winner (task MARKETING-R1-T05.8.5 Section 2) - preserve it as its own
+      // bounded distribution instead of N loose facts, so it renders as one coherent breakdown.
+      const distributionRows: { entityId: string | number | null; value: string | number | boolean }[] = [];
+      for (const row of rankedRows.slice(0, ANALYTICAL_EVIDENCE_MAX_DISTRIBUTION_ROWS)) {
+        const rowValue = scalarValue(row, metric.alias);
+        if (!isEvidenceValue(rowValue) || rowValue === null) continue;
+        const rowEntityId = scalarValue(row, entity.resultField);
+        distributionRows.push({ entityId: rowEntityId === null || typeof rowEntityId === 'boolean' ? null : rowEntityId, value: rowValue });
+      }
+      if (distributionRows.length > 0) distributions.push({ queryId: execution.id, metric: metricName, entityType: entity.type, rows: distributionRows });
+
+      // Section 6: "for broad multi-cluster analysis, comparisons may use rank, min/max, peer
+      // range, explicit target vs peer" - a pairwise comparison when the query is literally a
+      // two-entity request (e.g. "compare cluster 3 vs cluster 1"), or the two extremes only
+      // when the query is ranked, never a full pairwise matrix.
+      if (rankedRows.length === 2) {
+        const comparisonEntry = buildEvidenceComparison({
+          queryId: execution.id,
+          metric: metricName,
+          basis: 'pairwise',
+          leftRow: rankedRows[0]!,
+          rightRow: rankedRows[1]!,
+          entity,
+          metricAlias: metric.alias,
+          peerMin: null,
+          peerMax: null,
+        });
+        if (comparisonEntry) comparisons.push(comparisonEntry);
+      } else if (execution.plan.orderBy?.some((order) => order.field === metric.alias)) {
+        const comparisonEntry = buildEvidenceComparison({
+          queryId: execution.id,
+          metric: metricName,
+          basis: 'top_vs_bottom',
+          leftRow: rankedRows[0]!,
+          rightRow: rankedRows[rankedRows.length - 1]!,
+          entity,
+          metricAlias: metric.alias,
+          peerMin: null,
+          peerMax: null,
+        });
+        if (comparisonEntry) comparisons.push(comparisonEntry);
       }
     }
   }
 
-  if (args.provenance.population.clusterCoveragePct < 100) limitations.push(`cluster coverage ${formatEvidenceNumber(args.provenance.population.clusterCoveragePct)}%`);
-  if (args.provenance.population.rfmCoveragePct < 100) limitations.push(`RFM coverage ${formatEvidenceNumber(args.provenance.population.rfmCoveragePct)}%`);
+  // Material limitations only (task MARKETING-R1-T05.8.6 Section 11): a plain-language sentence,
+  // only when the analysis actually shows that entity type, never raw coverage percentages
+  // injected into every answer regardless of relevance. Exact coverage numbers stay available on
+  // provenance/metadata for anything that needs them.
+  if (entityTypesPresent.has('cluster') && args.provenance.population.clusterCoveragePct < 100) {
+    limitations.push('Este analisis corresponde a los clientes que tienen un cluster asignado.');
+  }
+  if (entityTypesPresent.has('rfm_segment') && args.provenance.population.rfmCoveragePct < 100) {
+    limitations.push('Este analisis corresponde a los clientes con informacion RFM disponible.');
+  }
 
   return compactEvidenceBundle({
     anchor: args.semanticAnchor ? { entityType: args.semanticAnchor.entityType, entityId: args.semanticAnchor.entityId, metric: args.semanticAnchor.metric } : null,
-    facts: facts.slice(0, 12),
-    comparisons: comparisons.slice(0, 8),
+    facts: facts.slice(0, ANALYTICAL_EVIDENCE_MAX_FACTS),
+    comparisons: comparisons.slice(0, ANALYTICAL_EVIDENCE_MAX_COMPARISONS),
+    distributions,
     limitations: [...new Set(limitations)].slice(0, 4),
   });
 }
 
+function farthestPeerIndex(rows: readonly AnalyticalQueryResult['rows'][number][], anchorIndex: number, metricAlias: string): number | null {
+  const anchorValue = numericComparableValue(scalarValue(rows[anchorIndex], metricAlias));
+  if (anchorValue === null) return null;
+  let farthestIndex: number | null = null;
+  let farthestDistance = -1;
+  rows.forEach((row, index) => {
+    if (index === anchorIndex) return;
+    const value = numericComparableValue(scalarValue(row, metricAlias));
+    if (value === null) return;
+    const distance = Math.abs(value - anchorValue);
+    if (distance > farthestDistance) {
+      farthestDistance = distance;
+      farthestIndex = index;
+    }
+  });
+  return farthestIndex;
+}
+
+// Deterministic, Decimal-safe-enough arithmetic (task Section 6): every input already came from a
+// validated AnalyticalQueryResult, so this only rounds for display - no model-generated numbers.
+function buildEvidenceComparison(args: {
+  readonly queryId: string;
+  readonly metric: string;
+  readonly basis: AnalyticalEvidenceBundle['comparisons'][number]['basis'];
+  readonly leftRow: AnalyticalQueryResult['rows'][number];
+  readonly rightRow: AnalyticalQueryResult['rows'][number];
+  readonly entity: { readonly type: 'cluster' | 'rfm_segment'; readonly resultField: string };
+  readonly metricAlias: string;
+  readonly peerMin: number | null;
+  readonly peerMax: number | null;
+}): AnalyticalEvidenceBundle['comparisons'][number] | null {
+  const leftValue = numericComparableValue(scalarValue(args.leftRow, args.metricAlias));
+  const rightValue = numericComparableValue(scalarValue(args.rightRow, args.metricAlias));
+  if (leftValue === null || rightValue === null) return null;
+  const leftEntityId = scalarValue(args.leftRow, args.entity.resultField);
+  const rightEntityId = scalarValue(args.rightRow, args.entity.resultField);
+  const relativeDifference = rightValue !== 0 ? (leftValue - rightValue) / rightValue : null;
+  return {
+    queryId: args.queryId,
+    metric: args.metric,
+    basis: args.basis,
+    left: { entityType: args.entity.type, entityId: leftEntityId === null || typeof leftEntityId === 'boolean' ? null : leftEntityId, value: leftValue },
+    right: { entityType: args.entity.type, entityId: rightEntityId === null || typeof rightEntityId === 'boolean' ? null : rightEntityId, value: rightValue },
+    absoluteDifference: formatEvidenceNumber(leftValue - rightValue),
+    relativeDifference: relativeDifference !== null ? relativeDifference.toFixed(4) : null,
+    peerMin: args.peerMin !== null ? formatEvidenceNumber(args.peerMin) : null,
+    peerMax: args.peerMax !== null ? formatEvidenceNumber(args.peerMax) : null,
+  };
+}
+
 function compactEvidenceBundle(bundle: AnalyticalEvidenceBundle): AnalyticalEvidenceBundle {
   let compacted = bundle;
-  while (JSON.stringify(compacted).length > ANALYTICAL_EVIDENCE_BUNDLE_MAX_CHARS && (compacted.comparisons.length > 0 || compacted.facts.length > 1 || compacted.limitations.length > 0)) {
+  while (
+    JSON.stringify(compacted).length > ANALYTICAL_EVIDENCE_BUNDLE_MAX_CHARS &&
+    (compacted.comparisons.length > 0 || compacted.facts.length > 1 || compacted.distributions.length > 0 || compacted.limitations.length > 0)
+  ) {
     if (compacted.comparisons.length > 0) {
       compacted = { ...compacted, comparisons: compacted.comparisons.slice(0, -1) };
+    } else if (compacted.distributions.some((distribution) => distribution.rows.length > 1)) {
+      compacted = { ...compacted, distributions: trimLargestDistribution(compacted.distributions) };
     } else if (compacted.facts.length > 1) {
       compacted = { ...compacted, facts: compacted.facts.slice(0, -1) };
+    } else if (compacted.distributions.length > 0) {
+      compacted = { ...compacted, distributions: compacted.distributions.slice(0, -1) };
     } else {
       compacted = { ...compacted, limitations: compacted.limitations.slice(0, -1) };
     }
   }
   return compacted;
+}
+
+// Trims one row off whichever distribution currently holds the most rows, so a char-budget
+// overrun degrades every distribution gracefully instead of dropping one entirely first.
+function trimLargestDistribution(distributions: AnalyticalEvidenceBundle['distributions']): AnalyticalEvidenceBundle['distributions'] {
+  let largestIndex = 0;
+  for (let index = 1; index < distributions.length; index += 1) {
+    if (distributions[index]!.rows.length > distributions[largestIndex]!.rows.length) largestIndex = index;
+  }
+  return distributions.map((distribution, index) => (index === largestIndex ? { ...distribution, rows: distribution.rows.slice(0, -1) } : distribution));
 }
 
 // The PrimaryAnalyticalFinding this turn established (task MARKETING-R1-T05.8.4 Section 2),
@@ -1876,6 +2037,29 @@ function primaryFindingDiagnostic(session: CopilotSession): {
   };
 }
 
+// An audience-level query filtered to `IS NULL` on the entity dimension (e.g. an unclustered- or
+// unsegmented-customer count) reads far better labeled by that dimension ("Clientes sin cluster
+// asignado") than as a generic, unlabeled audience fact.
+function nullEntityDimensionFromFilters(plan: AnalyticalQueryPlan): 'cluster' | 'rfm_segment' | null {
+  const fields = filterFieldNames(plan);
+  const isNullFields = new Set<string>();
+  const filters = plan.filters;
+  const nodes = Array.isArray(filters) ? filters : filters ? [filters as AnalyticalFilterNode] : [];
+  for (const node of nodes) collectIsNullFields(node, isNullFields);
+  if (fields.includes('cluster.clusterId') && isNullFields.has('cluster.clusterId')) return 'cluster';
+  if (fields.includes('rfm.segmentCode') && isNullFields.has('rfm.segmentCode')) return 'rfm_segment';
+  return null;
+}
+
+function collectIsNullFields(filter: AnalyticalFilterNode, fields: Set<string>): void {
+  if ('field' in filter) {
+    if (filter.operator === 'is_null') fields.add(filter.field);
+    return;
+  }
+  if ('and' in filter) for (const child of filter.and) collectIsNullFields(child, fields);
+  if ('or' in filter) for (const child of filter.or) collectIsNullFields(child, fields);
+}
+
 function entityDescriptorForPlan(plan: AnalyticalQueryPlan): { readonly type: 'cluster' | 'rfm_segment'; readonly resultField: string } | null {
   const dimensions = plan.dimensions ?? [];
   if (dimensions.includes('cluster.clusterId')) return { type: 'cluster', resultField: 'clusterId' };
@@ -1888,7 +2072,7 @@ function rankedRowsForMetric(
   execution: { readonly plan: AnalyticalQueryPlan; readonly result: AnalyticalQueryResult },
   metricAlias: string,
 ): readonly AnalyticalQueryResult['rows'][number][] {
-  const rows = execution.result.rows.slice(0, 12);
+  const rows = execution.result.rows.slice(0, ANALYTICAL_EVIDENCE_MAX_DISTRIBUTION_ROWS);
   if (execution.plan.orderBy?.some((order) => order.field === metricAlias)) return rows;
   return [...rows].sort((a, b) => {
     const left = numericComparableValue(scalarValue(a, metricAlias));
@@ -1943,28 +2127,65 @@ function fallbackToolSynthesisResponse(args: {
   );
 }
 
+// task MARKETING-R1-T05.8.6 Section 10: business-readable prose, never internal aliases (avg_r,
+// customer_count, query ids, "rank N"). Every grouped value the (already bounded) evidence bundle
+// retained must stay represented - no additional truncation is applied here.
 function renderDeterministicEvidenceFallback(bundle: AnalyticalEvidenceBundle): string {
-  const lines = ['El analisis se completo, pero la sintesis avanzada no estuvo disponible.', 'Principales resultados observados:'];
-  // Every grouped value the evidence bundle retained must stay represented (task
-  // MARKETING-R1-T05.8.5 Section 6) - the bundle itself is already bounded (max 12 facts, max
-  // 4000 chars via compactEvidenceBundle), so no additional truncation is applied here.
+  const lines = ['El analisis se completo, pero la sintesis avanzada no estuvo disponible.'];
+
+  for (const distribution of bundle.distributions) {
+    const metric = resolveBusinessMetricByName(distribution.metric);
+    const noun = distribution.entityType === 'rfm_segment' ? 'segmento' : 'cluster';
+    lines.push(`Distribucion de ${metric.label.toLowerCase()} por ${noun}:`);
+    for (const row of distribution.rows) {
+      const suffix = metric.format === 'count' ? ' clientes' : '';
+      lines.push(`- ${businessEntityLabel(distribution.entityType, row.entityId)}: ${formatBusinessValue(row.value, metric.format)}${suffix}.`);
+    }
+  }
+
+  for (const comparison of bundle.comparisons) {
+    const metric = resolveBusinessMetricByName(comparison.metric);
+    const leftLabel = businessEntityLabel(comparison.left.entityType, comparison.left.entityId);
+    const rightLabel = businessEntityLabel(comparison.right.entityType, comparison.right.entityId);
+    const rightPreposition = comparison.right.entityType === 'audience' ? 'de' : 'del';
+    const leftValue = formatBusinessValue(comparison.left.value, metric.format);
+    const rightValue = formatBusinessValue(comparison.right.value, metric.format);
+    const leftNumeric = typeof comparison.left.value === 'number' ? comparison.left.value : Number(comparison.left.value);
+    const rightNumeric = typeof comparison.right.value === 'number' ? comparison.right.value : Number(comparison.right.value);
+    const ratioPhrase = buildRatioPhrase(leftNumeric, rightNumeric);
+    const hasSuffix = metric.format === 'count' ? `${leftLabel} tiene ${leftValue} clientes, frente a ${rightValue} ${rightPreposition} ${rightLabel}${ratioPhrase}.` : `${leftLabel} tiene ${metric.label.toLowerCase()} de ${leftValue}, frente a ${rightValue} ${rightPreposition} ${rightLabel}${ratioPhrase}.`;
+    lines.push(hasSuffix);
+  }
+
   for (const fact of bundle.facts) {
-    const entity = fact.entityType === 'cluster' && fact.entityId !== null
-      ? `cluster ${String(fact.entityId)}`
-      : fact.entityType === 'rfm_segment' && fact.entityId !== null
-        ? `segmento RFM ${String(fact.entityId)}`
-        : 'poblacion analizada';
-    const rank = fact.rank ? `, rank ${fact.rank}` : '';
-    const comparison = fact.comparison && fact.comparison !== 'observed' ? ` (${fact.comparison})` : '';
-    lines.push(`- ${entity}: ${fact.metric} = ${String(fact.value)}${rank}${comparison}.`);
+    const metric = resolveBusinessMetricByName(fact.metric);
+    const value = formatBusinessValue(fact.value, metric.format);
+    if (fact.entityType === 'audience') {
+      lines.push(`${metric.label} observado: ${value}.`);
+      continue;
+    }
+    const entity = businessEntityLabel(fact.entityType, fact.entityId);
+    if (metric.format === 'count') {
+      if (fact.entityId === null) lines.push(`${entity}: ${value}.`);
+      else if (fact.comparison === 'highest') lines.push(`${entity} es el grupo con mas clientes: ${value}.`);
+      else if (fact.comparison === 'lowest') lines.push(`${entity} es el grupo con menos clientes: ${value}.`);
+      else lines.push(`${entity} tiene ${value} clientes.`);
+      continue;
+    }
+    if (fact.comparison === 'highest') lines.push(`${entity} presenta el mayor ${metric.label.toLowerCase()} observado: ${value}.`);
+    else if (fact.comparison === 'lowest') lines.push(`${entity} presenta el menor ${metric.label.toLowerCase()} observado: ${value}.`);
+    else lines.push(`${entity} presenta ${metric.label.toLowerCase()} de ${value}.`);
   }
-  for (const comparison of bundle.comparisons.slice(0, 3)) {
-    lines.push(`- ${comparison.metric}: el ancla tiene ${String(comparison.anchorValue)}, con rango observado ${String(comparison.peerMin)} a ${String(comparison.peerMax)}.`);
-  }
-  if (bundle.limitations.length > 0) {
-    lines.push(`Limitaciones: ${bundle.limitations.join('; ')}.`);
-  }
+
+  lines.push(...bundle.limitations);
   return lines.join('\n');
+}
+
+function buildRatioPhrase(leftValue: number, rightValue: number): string {
+  if (!Number.isFinite(leftValue) || !Number.isFinite(rightValue)) return '';
+  const ratio = leftValue >= rightValue ? formatRatio(leftValue, rightValue) : formatRatio(rightValue, leftValue);
+  if (!ratio) return '';
+  return `; es aproximadamente ${ratio} ${leftValue >= rightValue ? 'mayor' : 'menor'}`;
 }
 
 function messageProjectionChars(messages: readonly CopilotConversationalMessage[]): number {
@@ -1996,6 +2217,8 @@ function toolCallDiagnostic(steps: readonly ValidatedStep[]) {
       dimensions: step.plan.dimensions ?? [],
       metrics: step.plan.metrics?.map((metric) => metric.alias) ?? [],
       filterFieldNames: filterFieldNames(step.plan),
+      hasEntityFilter: filterFieldNames(step.plan).some((field) => field === 'cluster.clusterId' || field === 'rfm.segmentCode'),
+      limit: step.plan.limit ?? null,
       orderByFields: step.plan.orderBy?.map((order) => order.field) ?? [],
     })),
   };
@@ -2537,39 +2760,48 @@ function renderDeterministicSimpleAnswer(
   if (!execution || !canRenderDeterministicSimpleAnswer(execution.plan) || !resultSupportsDeterministicAnswer(execution)) return null;
   const metric = primaryDeterministicMetric(execution.plan);
   if (!metric) return null;
+  const businessMetric = resolveBusinessMetric(metric);
   if ((execution.plan.dimensions?.length ?? 0) === 0 && metric.aggregation === 'count') {
     const value = scalarValue(execution.result.rows[0], metric.alias);
     if (typeof value !== 'number') return null;
-    return `Hay ${formatNumber(value)} clientes en la poblacion actual de Customer Intelligence. La referencia es el snapshot ${provenance.featureSnapshot.snapshotId}.`;
+    return `Hay ${formatBusinessValue(value, 'count')} clientes en la poblacion actual de Customer Intelligence. La referencia es el snapshot ${provenance.featureSnapshot.snapshotId}.`;
   }
   if ((execution.plan.dimensions?.length ?? 0) === 0) {
     const metricValue = scalarValue(execution.result.rows[0], metric.alias);
     if (metricValue === null || typeof metricValue === 'boolean') return null;
-    const value = typeof metricValue === 'number' ? formatNumber(metricValue) : String(metricValue);
-    return `El valor observado de ${metricDisplayName(metric)} es ${value}. La referencia es el snapshot ${provenance.featureSnapshot.snapshotId}.`;
+    const value = formatBusinessValue(metricValue, businessMetric.format);
+    return `El valor observado de ${businessMetric.label.toLowerCase()} es ${value}. La referencia es el snapshot ${provenance.featureSnapshot.snapshotId}.`;
   }
   const dimension = primaryDeterministicDimension(execution.plan);
   if (!dimension || execution.result.rows.length === 0) return null;
+  const entityType = dimensionEntityType(dimension);
   const row = execution.result.rows[0];
   const dimensionValue = scalarValue(row, resultColumnName(dimension));
   const metricValue = scalarValue(row, metric.alias);
-  if (dimensionValue === null || metricValue === null || typeof metricValue === 'boolean') return null;
-  const entity = entityLabel(dimension, dimensionValue);
-  const metricLabel = metricDisplayName(metric);
-  const value = typeof metricValue === 'number' ? formatNumber(metricValue) : String(metricValue);
+  if (dimensionValue === null || typeof dimensionValue === 'boolean' || metricValue === null || typeof metricValue === 'boolean') return null;
+  const entity = businessEntityLabel(entityType, dimensionValue);
+  const value = formatBusinessValue(metricValue, businessMetric.format);
   if (metric.aggregation === 'count') {
     if (!isSimpleTopMetricRankingPlan(execution.plan) && execution.result.rows.length > 1) {
       const dimensionName = resultColumnName(dimension);
-      const items = execution.result.rows.slice(0, 10).map((entry) => {
+      const items = execution.result.rows.slice(0, ANALYTICAL_EVIDENCE_MAX_DISTRIBUTION_ROWS).map((entry) => {
         const entryDimensionValue = scalarValue(entry, dimensionName);
         const entryMetricValue = scalarValue(entry, metric.alias);
-        return `${entityLabel(dimension, entryDimensionValue ?? 'sin_asignacion')}: ${String(entryMetricValue ?? 0)}`;
+        const entryEntityId = entryDimensionValue === null || typeof entryDimensionValue === 'boolean' ? null : entryDimensionValue;
+        return `- ${businessEntityLabel(entityType, entryEntityId)}: ${formatBusinessValue(entryMetricValue, 'count')} clientes.`;
       });
-      return `Distribucion observada: ${items.join('; ')} clientes. La referencia es el snapshot ${provenance.featureSnapshot.snapshotId}.`;
+      const noun = entityType === 'rfm_segment' ? 'segmento' : 'cluster';
+      return `Distribucion de clientes por ${noun}:\n${items.join('\n')}\nLa referencia es el snapshot ${provenance.featureSnapshot.snapshotId}.`;
     }
-    return `${entity} concentra el mayor conteo observado: ${value} clientes. La referencia es el snapshot ${provenance.featureSnapshot.snapshotId}.`;
+    return `${entity} tiene la mayor cantidad de clientes: ${value}. La referencia es el snapshot ${provenance.featureSnapshot.snapshotId}.`;
   }
-  return `${entity} lidera en ${metricLabel}: ${value}. La referencia es el snapshot ${provenance.featureSnapshot.snapshotId}.`;
+  return `${entity} presenta el mayor ${businessMetric.label.toLowerCase()}: ${value}. La referencia es el snapshot ${provenance.featureSnapshot.snapshotId}.`;
+}
+
+function dimensionEntityType(dimension: string): 'cluster' | 'rfm_segment' | null {
+  if (dimension === 'cluster.clusterId' || dimension === 'cluster.label') return 'cluster';
+  if (dimension === 'rfm.segmentCode') return 'rfm_segment';
+  return null;
 }
 
 function shouldUseDeterministicAnswer(
@@ -2657,35 +2889,6 @@ function scalarValue(row: AnalyticalQueryResult['rows'][number] | undefined, key
 function resultColumnName(logicalName: string): string {
   const parts = logicalName.split('.');
   return parts[parts.length - 1] ?? logicalName;
-}
-
-function entityLabel(dimension: string, value: string | number | boolean): string {
-  if (dimension === 'cluster.clusterId') return `El cluster ${String(value)}`;
-  if (dimension === 'cluster.label') return `El cluster ${String(value)}`;
-  if (dimension === 'rfm.segmentCode') return `El segmento RFM ${String(value)}`;
-  return `${resultColumnName(dimension)} ${String(value)}`;
-}
-
-function metricDisplayName(metric: NonNullable<AnalyticalQueryPlan['metrics']>[number]): string {
-  if (metric.aggregation === 'avg' && metric.field === 'commercial.averageOrderValueTaxIncl') return 'ticket promedio';
-  if (metric.aggregation === 'sum' && metric.field === 'commercial.totalSpentTaxIncl') return 'gasto total';
-  if (metric.aggregation === 'count') return 'conteo de clientes';
-  return metric.alias;
-}
-
-function semanticMetricName(field: string | null, alias: string): string {
-  if (field === 'commercial.averageOrderValueTaxIncl') return 'averageOrderValue';
-  if (field === 'commercial.totalSpentTaxIncl') return 'totalSpent';
-  if (field === 'commercial.validOrders') return 'validOrderCount';
-  if (field === 'commercial.orders365d') return 'orders365d';
-  if (field === 'commercial.daysSinceLastOrder') return 'daysSinceLastOrder';
-  if (field === 'commercial.effectiveDiversity') return 'effectiveDiversity';
-  if (field === 'commercial.repeatProductRate') return 'repeatProductRate';
-  return alias;
-}
-
-function formatNumber(value: number): string {
-  return new Intl.NumberFormat('es-CL', { maximumFractionDigits: 2 }).format(value);
 }
 
 function formatEvidenceNumber(value: number): string {

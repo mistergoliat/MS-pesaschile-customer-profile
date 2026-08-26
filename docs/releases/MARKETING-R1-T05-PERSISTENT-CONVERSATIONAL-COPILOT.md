@@ -1028,6 +1028,218 @@ Explicitly out of scope for T05.8.5 and not modified. The current generic XLSX e
 deferred for product redesign. Audience/segment-shaped export will be defined separately under
 MARKETING-R2-A01 Audience Engine.
 
+## T05.8.6 Analytical Reasoning Capacity + Human Presentation
+
+Motivation: T05.8.5 fixed distribution semantics, but live evidence showed the runtime was still
+hitting artificial ceilings, not genuine reasoning limits, and the answers it did produce leaked
+implementation detail:
+
+- `tool_synthesis` repeatedly reached exactly the old 500-token ceiling.
+- `AnalyticalEvidenceBundle` repeatedly reached exactly the old 12-fact cap while still far below
+  the old 4000-char cap - the fact cap, not the char budget, was the binding constraint.
+- `evidenceComparisonCount` was often 0 even for genuinely comparative questions, because a
+  comparison was only ever generated when a stored semantic anchor happened to match a row in the
+  new result - a same-turn "compare cluster 3 vs cluster 1" with no prior anchor produced zero
+  comparisons.
+- User-visible degraded (fallback) answers exposed internal aliases and jargon directly:
+  `avg_r`, `avg_f`, `avg_m`, `customer_count`, `rank N`, raw `cluster coverage NN%`, query ids.
+- `finish_reason` was parsed by the OpenAI-compatible adapter but discarded, so a synthesis call
+  truncated by `finishReason=length` was indistinguishable from a normal `stop` completion in any
+  diagnostic.
+
+This slice is a capacity/presentation slice only. T03's deterministic SELECT-only compiler/runtime,
+the compact tool contract, the 3-query cap, T05.8.5 distribution semantics, PrimaryFinding/
+semanticAnchor selection, the deterministic fast paths, session persistence, and provenance/
+queryPlanHash are all unchanged and re-verified by the full pre-existing regression suite.
+
+### 1-2. Synthesis capacity and evidence budget
+
+- `CUSTOMER_INTELLIGENCE_COPILOT_SYNTHESIS_MAX_TOKENS` default raised from `500` to `1500`
+  (`src/config.ts`); the existing `.max(2000)` ceiling and env override are unchanged.
+- Evidence bundle bounds raised: max facts `12` -> `32`
+  (`ANALYTICAL_EVIDENCE_MAX_FACTS`), max serialized chars `4000` -> `8000`
+  (`ANALYTICAL_EVIDENCE_BUNDLE_MAX_CHARS`). A new `ANALYTICAL_EVIDENCE_MAX_DISTRIBUTION_ROWS = 32`
+  also raises the per-query row cap `rankedRowsForMetric` reads before ranking/grouping, so a
+  distribution with more than 12 groups is no longer silently cut at the source.
+  `compactEvidenceBundle`'s trim loop now degrades distributions gracefully (trims the largest
+  distribution's rows one at a time) before dropping a whole distribution or a fact, so a
+  char-budget overrun never drops an entire query's evidence first.
+- Nothing here changes what data is fetched from MariaDB: these are all post-execution, in-memory
+  bounds on what is serialized into the synthesis prompt.
+
+### 3. Finish reason observability
+
+- `CopilotModelMetadata` (application ports) gained `finishReason?: string | null`.
+- `openai-compatible-copilot-model.ts`'s `extractMessage` now also returns the response's
+  `choices[0].finish_reason` (`stop`, `length`, `tool_calls`, or `null` when the provider omits
+  it), threaded into every stage's metadata - not logged as a raw payload, just the reason string.
+- New stage-latency diagnostics: `providerFinishReason` (`tool_selection`) and
+  `synthesisFinishReason` (`tool_synthesis`), plus `synthesisMaxTokens`, `evidenceMaxFacts`,
+  `evidenceMaxChars`, and `evidenceDistributionCount` alongside the existing `evidenceFactCount`/
+  `evidenceComparisonCount`. The benchmark harness records `synthesisFinishReason` per run.
+- Tests cover both `stop` and `length` at the provider-adapter level (raw JSON parsing) and at the
+  session level (surfaced as the new diagnostic fields), plus the no-`finish_reason` case
+  defaulting to `null`.
+
+### 4-7. Structured analytical evidence
+
+`AnalyticalEvidenceBundle` (`domain/customer-intelligence-copilot/contracts.ts`) evolved from
+`{ anchor, facts, comparisons, limitations }` into `{ anchor, facts, comparisons, distributions,
+limitations }` - a smaller, compatible refactor rather than the fully separate `keyFindings`/
+`supportingFacts` split the task sketched, since `facts` already distinguishes a `rank`/
+`comparison` "winner" entry from an "observed" one and `evidenceFactCount` is an existing,
+depended-on diagnostic name. Every value is still read back from a validated
+`AnalyticalQueryResult`; nothing in the bundle is model-generated.
+
+`buildAnalyticalEvidenceBundle` (session-service.ts) now branches per metric on row count and
+semantic anchor match:
+
+- **Anchor found** (an active entity from a prior turn matches a row): one fact for that entity
+  (`rank`, `highest`/`lowest`/`observed`) plus one `anchor_vs_peer_range` comparison against the
+  peer whose value is farthest from the anchor's - `left` is the anchor, `right` is that peer,
+  with `peerMin`/`peerMax` still carrying the full observed range.
+- **No anchor, one row**: a single fact, tagged `highest`/`lowest` when the query was itself
+  ordered by that metric (unchanged from T05.8.5).
+- **No anchor, exactly two rows**: a `pairwise` comparison (e.g. "compare cluster 3 vs cluster
+  1") - this is the case that previously produced zero comparisons. The two rows are also kept as
+  facts.
+- **No anchor, three or more rows**: a bounded `distributions` entry (all rows, task
+  MARKETING-R1-T05.8.5 Section 7 unchanged) plus, only when the query is itself ordered by that
+  metric, a single `top_vs_bottom` comparison (first ranked row vs. last) - never a full pairwise
+  matrix (never O(n^2)); at most one comparison per metric either way.
+
+`absoluteDifference` and `relativeDifference` (`(left - right) / right`) are computed from
+`Number()`-parsed values and rounded for display (`toFixed`); no big-decimal dependency was added
+- values already come from validated `DECIMAL` columns at business magnitudes, where double
+  precision is more than sufficient. `relativeDifference` is a relative-increase fraction (e.g.
+  `1.9205` for a ~192% increase); the "X veces mayor" ratio phrasing used in prose is a separate,
+  presentation-only `left/right` division, not stored in the bundle.
+
+An `IS NULL` filter on the entity dimension (e.g. an unclustered-customer count) is now detected
+(`nullEntityDimensionFromFilters`) and labeled `entityType: 'cluster', entityId: null` instead of
+the generic `'audience'`, so it renders as "Clientes sin cluster asignado" rather than a
+disconnected "Clientes observado" line.
+
+### 8-9. Business semantic registry and human number formatting
+
+New module `src/domain/customer-intelligence-copilot/business-semantics.ts` - the one source of
+truth the task asked for. It replaces two separate, already-divergent `semanticMetricName`
+functions (session-context.ts and session-service.ts each had their own partial field-to-name
+mapping) with one exported `resolveSemanticMetricName`, and adds:
+
+- `resolveBusinessMetric`/`resolveBusinessMetricByName`: field/aggregation -> `{ name, label,
+  format }`. Covers every field currently reachable through the schema, including the RFM score
+  averages that were leaking as `avg_r`/`avg_f`/`avg_m` (`rfm.rScore` -> "Recencia promedio",
+  `rfm.fScore` -> "Frecuencia promedio", `rfm.mScore` -> "Valor monetario promedio") and a bare
+  `COUNT(*)` (no field, in this schema always a customer count) -> "Clientes". An `avg` aggregation
+  over an otherwise count-shaped field resolves to `decimal` format instead of `count` (e.g. "2.5
+  compras promedio", not "2 compras promedio"). An unrecognized field never echoes the raw alias -
+  it humanizes it (camelCase/snake_case split into words) as a last resort.
+- `businessEntityLabel`: `Cluster 3`, `Segmento RFM AT_RISK_HIGH_VALUE`, `Clientes sin cluster
+  asignado` / `Clientes sin segmento RFM`, or `la poblacion analizada` for audience-level values.
+- `formatBusinessValue`: `currency_clp` (`$381.304`, no decimals), `count` (`3.973`, Spanish
+  thousands separator), `percentage` (`22,6%`, one decimal), `decimal` (two decimals), `ratio`
+  (`2,9 veces`, one decimal) - all `es-CL` locale, via `Intl.NumberFormat`. Internal
+  numeric/provenance representations (result rows, `queryPlanHash`, etc.) are untouched; only
+  user-facing text is formatted.
+- `formatBusinessRank`: `"1.er lugar de 4"` for rank 1 (apocopated `primer` -> `1.er`), `"2.o lugar
+  de 4"` for others - plain-ASCII approximation of the Spanish ordinal indicator (`o`, not the
+  superscript `º`), consistent with this codebase's existing no-accent Spanish text convention.
+  Exported and unit-tested; not currently wired into a specific sentence (no renderer needed a
+  "rank of N" phrase beyond what `comparison: highest/lowest` already conveys).
+- `formatRatio`: the "X veces" phrase used in comparison sentences.
+
+### 10. Humanized deterministic fallback
+
+`renderDeterministicEvidenceFallback` (session-service.ts) rewritten against the structured
+bundle: distributions render as a labeled bulleted breakdown ("Distribucion de clientes por
+cluster:\n- Cluster 0: 3.973 clientes...."), comparisons render as a direct sentence with the
+ratio phrase ("Cluster 0 tiene 3.973 clientes, frente a 2.569 del Cluster 3; es aproximadamente
+1,55 veces mayor."), and facts render as either a count sentence ("Cluster 3 es el grupo con mas
+clientes: 4.") or a business-label sentence ("Cluster 3 presenta el mayor ticket promedio
+observado: $150.000."). None of `customer_count`, `avg_r`/`avg_f`/`avg_m`, `rank N`, a raw query
+id, or a raw coverage percentage can appear - every value goes through the business-semantics
+registry first. The old `.slice(0, 5)` fact truncation (already removed in T05.8.5) stays removed;
+the bundle's own bounds are the only limit.
+
+The fast deterministic renderer (`renderDeterministicSimpleAnswer`, the zero-synthesis path for
+`simple_fact`/`simple_grouped_ranking`) was migrated to the same registry - it previously only knew
+two metric labels (`ticket promedio`, `gasto total`) via a separate `metricDisplayName` function and
+formatted every other metric with a bare `Intl.NumberFormat` (no currency symbol, wrong precision
+for CLP). It now produces `"Cluster 3 presenta el mayor ticket promedio: $381.304."` instead of a
+raw `381304.040000`. `entityLabel`, `metricDisplayName`, `semanticMetricName`, and `formatNumber`
+(session-service.ts local functions) were deleted in favor of the shared registry.
+
+### 11. Material limitations
+
+`buildAnalyticalEvidenceBundle` only pushes a limitation sentence when the bundle actually contains
+evidence of that entity type (tracked via `entityTypesPresent`) and coverage for it is below 100%:
+"Este analisis corresponde a los clientes que tienen un cluster asignado." /
+"...con informacion RFM disponible." - never both unconditionally, and never the raw
+`cluster coverage NN%; RFM coverage NN%` string. Exact coverage percentages remain available on
+`provenance.population` for anything that needs the number, just not injected into user-facing text.
+
+### 12. Synthesis prompt v4
+
+`CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SYNTHESIS_PROMPT_VERSION` bumped
+`customer-intelligence-tool-synthesis-v3` -> `-v4`. `CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SYNTHESIS_INSTRUCTIONS`
+rewritten per the task's suggested semantics (lead with the conclusion, quantify differences,
+compare segments directly using the supplied comparisons/distributions, distinguish fact from
+interpretation/hypothesis/recommendation, no causality from correlation, no profitability without
+margin/cost/profit fields, no prediction without a predictive model, mention coverage only when
+material, state insufficient evidence explicitly, and - the new, explicit line - never expose
+internal aliases/field names/query ids/plan ids/contract or version names/database terms; always
+translate into business terminology with natural formatting). Still excludes schema, query
+contract, raw plans, and full conversation history, per the existing v3 design; only the
+instruction text changed.
+
+### 13. Tool selection
+
+Not redesigned. Native tool calling, the compact query contract, the 3-query cap, and T03
+validation are unchanged. `toolQueries` diagnostics gained `hasEntityFilter` (boolean) and `limit`
+(the query's own `LIMIT`, or `null`) alongside the existing `id`/`dimensions`/`metrics`/
+`filterFieldNames`/`orderByFields`. Filter *values* are still never logged, only field names and
+this boolean/limit metadata.
+
+### 14. Model unchanged
+
+`deepseek-v4-flash` remains the default; the benchmark harness's default model list
+(`deepseek-v4-flash,deepseek-v4-pro`) is untouched. No production model switch was made.
+
+### Test evidence
+
+New/updated tests cover: default synthesis max tokens = 1500 and env override (config.test.ts);
+evidence distributions carrying more than 12 rows, bounded at 32, and the whole bundle bounded at
+8000 chars; `finish_reason` `stop`/`length`/absent at both the provider-adapter level and the
+session-diagnostic level; deterministic pairwise comparison generation with verified
+absolute/relative-difference arithmetic; CLP/percentage/count/ratio/rank formatting and RFM-score
+label humanization (dedicated `customer-intelligence-copilot-business-semantics.test.ts`); material
+limitations rendered as plain sentences with no raw coverage percentage; the v4 synthesis prompt
+text asserted to prohibit internal aliases/query ids; and the full pre-existing T05.8.1-T05.8.5
+regression suite (distribution semantics, top-rank fast path, semantic anchor, synthesis fallback,
+T03 provenance, max-3-queries enforcement) re-run and passing unchanged except for output-text
+assertions updated to match the new humanized wording (e.g. `$381.304` instead of `381304.040000`,
+`3.973` instead of `3973`) and one evidence-bundle assertion corrected from 2 loose facts to 1
+pairwise comparison for a tied ranking, which is the intended Section 6 behavior.
+
+Local focused validation:
+
+`npx vitest run tests/unit/customer-intelligence-copilot-session.test.ts tests/unit/customer-intelligence-copilot-business-semantics.test.ts tests/unit/customer-intelligence-copilot-semantic-benchmark.test.ts tests/unit/customer-intelligence-copilot-benchmark.test.ts tests/unit/customer-intelligence-copilot-contracts.test.ts tests/unit/config.test.ts tests/unit/openai-compatible-copilot-model.test.ts tests/unit/http-json-copilot-model.test.ts`
+
+Result: PASS.
+
+Full suite (`npm test` / `npx vitest run`): PASS, 179 files, 1533 tests. `npm run typecheck`,
+`npm run build`, and `npm run lint` all clean.
+
+Live validation (Section 17's six-question conversation plus diagnostic inspection) and the Flash
+benchmark (Section 18): NOT_RUN - no configured provider credentials or analytics DB access in
+this environment.
+
+## Export/XLSX (T05.8.6)
+
+Still explicitly out of scope; not modified. Same deferral as T05.8.5 - audience/segment-shaped
+export is defined separately under MARKETING-R2-A01 Audience Engine.
+
 ## T05.5 Answer Generation Reliability and Latency Observability
 
 Live symptom: in a fresh T05.4 session, `Cual cluster tiene mayor ticket promedio?` completed
