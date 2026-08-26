@@ -132,10 +132,12 @@ function fakeService(overrides: Partial<CustomerIntelligenceCopilotSessionServic
         queryIds: ['q1'],
         sourceQueryIds: [],
         status: 'answered',
+        finalResponseState: 'success',
         answer: 'Hay 10 clientes.',
         analysis: {
           contractVersion: 'customer-intelligence-copilot-v1',
           analysisPlanVersion: 'customer-intelligence-copilot-analysis-plan-v1',
+          finalResponseState: 'success',
           queryCount: 1,
           queryPlanHashes: ['a'.repeat(64)],
           resultRowCount: 1,

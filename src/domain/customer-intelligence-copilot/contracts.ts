@@ -14,6 +14,8 @@ export const CUSTOMER_INTELLIGENCE_COPILOT_PLAN_REPAIR_ATTEMPTS = 1;
 export const CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_REPAIR_ATTEMPTS = 1;
 export const CUSTOMER_INTELLIGENCE_CONVERSATION_PLAN_REPAIR_ATTEMPTS = 1;
 
+export type CopilotFinalResponseState = 'success' | 'degraded_success' | 'failure';
+
 export type CopilotPlanStatus = 'query_plan' | 'answer_from_context' | 'unsupported_data' | 'unsupported_operation' | 'clarification_required';
 
 export type CopilotQueryStep = {
@@ -271,6 +273,15 @@ export type AnalyticalEvidenceEntityRef = {
   readonly value: string | number | boolean;
 };
 
+export type CopilotPopulationContext = {
+  readonly entityType: 'cluster' | 'rfm_segment';
+  readonly entityId: string | number | null;
+  readonly fullPopulation?: number;
+  readonly analyzedPopulation?: number;
+  readonly analysisBasis?: string;
+  readonly coverageRatio?: number;
+};
+
 export type AnalyticalEvidenceBundle = {
   readonly anchor: Pick<CopilotSemanticAnchor, 'entityType' | 'entityId' | 'metric'> | null;
   readonly facts: readonly {
@@ -305,6 +316,7 @@ export type AnalyticalEvidenceBundle = {
     readonly entityType: string | null;
     readonly rows: readonly { readonly entityId: string | number | null; readonly value: string | number | boolean }[];
   }[];
+  readonly populationContexts: readonly CopilotPopulationContext[];
   readonly limitations: readonly string[];
 };
 
@@ -333,10 +345,12 @@ export type CopilotSessionContext = {
 export type CustomerIntelligenceCopilotResponse =
   | {
       readonly status: 'answered';
+      readonly finalResponseState: 'success' | 'degraded_success';
       readonly answer: string;
       readonly analysis: {
         readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION;
         readonly analysisPlanVersion: typeof CUSTOMER_INTELLIGENCE_COPILOT_ANALYSIS_PLAN_VERSION;
+        readonly finalResponseState: 'success' | 'degraded_success';
         readonly queryCount: number;
         readonly queryPlanHashes: readonly string[];
         readonly resultRowCount: number;
@@ -344,46 +358,62 @@ export type CustomerIntelligenceCopilotResponse =
         readonly plannerModel: string | null;
         readonly answerModel: string | null;
         readonly synthesisFallbackUsed?: boolean;
-        readonly synthesisFallbackReason?: string | null;
+        readonly populationContextPresent?: boolean;
+        readonly fullPopulationCount?: number;
+        readonly analyzedPopulationCount?: number;
+        readonly analysisPopulationBasis?: string;
+        readonly populationContexts?: readonly CopilotPopulationContext[];
       };
       readonly provenance: CustomerIntelligenceSnapshotContext;
     }
   | {
       readonly status: 'answered_from_context';
+      readonly finalResponseState: 'success';
       readonly answer: string;
       readonly analysis: {
         readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION;
         readonly analysisPlanVersion: typeof CUSTOMER_INTELLIGENCE_COPILOT_ANALYSIS_PLAN_VERSION;
+        readonly finalResponseState: 'success';
         readonly sourceQueryIds: readonly string[];
         readonly resultRowCount: number;
         readonly plannerModel: string | null;
         readonly answerModel: string | null;
+        readonly populationContextPresent?: boolean;
+        readonly fullPopulationCount?: number;
+        readonly analyzedPopulationCount?: number;
+        readonly analysisPopulationBasis?: string;
+        readonly populationContexts?: readonly CopilotPopulationContext[];
       };
       readonly provenance: CustomerIntelligenceSnapshotContext;
     }
   | {
       readonly status: 'responded_directly';
+      readonly finalResponseState: 'success';
       readonly answer: string;
       readonly analysis: {
         readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION;
         readonly decisionVersion: typeof CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION;
         readonly decisionAction: 'respond_directly';
         readonly orchestratorModel: string | null;
+        readonly finalResponseState: 'success';
       };
       readonly provenance: CustomerIntelligenceSnapshotContext;
     }
   | {
       readonly status: 'clarification_required' | 'unsupported_data' | 'unsupported_operation';
+      readonly finalResponseState: 'success';
       readonly message: string;
       readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION;
     }
   | {
       readonly status: 'planner_invalid';
+      readonly finalResponseState: 'failure';
       readonly errors: readonly string[];
       readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION;
     }
   | {
       readonly status: 'orchestrator_invalid';
+      readonly finalResponseState: 'failure';
       readonly errors: readonly string[];
       readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION;
     }
@@ -398,6 +428,7 @@ export type CustomerIntelligenceCopilotResponse =
         | 'provider_timeout'
         | 'provider_network_error'
         | 'provider_invalid_response';
+      readonly finalResponseState: 'failure';
       readonly message: string;
       readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION;
     };

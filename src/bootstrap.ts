@@ -241,6 +241,7 @@ export function bootstrap(): Bootstrap {
 
   let answerCustomerIntelligenceQuestion: AnswerCustomerIntelligenceQuestion = async () => ({
     status: 'analytics_unavailable',
+    finalResponseState: 'failure',
     message: 'marketing_copilot_not_configured',
     contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION,
   });

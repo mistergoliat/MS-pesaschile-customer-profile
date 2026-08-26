@@ -39,10 +39,12 @@ afterEach(async () => {
 
 const answered: CustomerIntelligenceCopilotResponse = {
   status: 'answered',
+  finalResponseState: 'success',
   answer: 'Cluster 0 tiene 10 clientes.',
   analysis: {
     contractVersion: 'customer-intelligence-copilot-v1',
     analysisPlanVersion: 'customer-intelligence-copilot-analysis-plan-v1',
+    finalResponseState: 'success',
     queryCount: 1,
     queryPlanHashes: ['a'.repeat(64)],
     resultRowCount: 1,
@@ -102,13 +104,13 @@ describe('POST /v1/customer-intelligence/copilot', () => {
   });
 
   it.each([
-    [{ status: 'clarification_required', message: 'Define criterio.', contractVersion: 'customer-intelligence-copilot-v1' }, 200],
-    [{ status: 'unsupported_data', message: 'No hay carritos.', contractVersion: 'customer-intelligence-copilot-v1' }, 422],
-    [{ status: 'unsupported_operation', message: 'Mediana no soportada.', contractVersion: 'customer-intelligence-copilot-v1' }, 422],
-    [{ status: 'planner_invalid', errors: ['bad plan'], contractVersion: 'customer-intelligence-copilot-v1' }, 502],
-    [{ status: 'analytics_unavailable', message: 'down', contractVersion: 'customer-intelligence-copilot-v1' }, 503],
-    [{ status: 'analytics_timeout', message: 'timeout', contractVersion: 'customer-intelligence-copilot-v1' }, 504],
-    [{ status: 'answer_generation_failed', message: 'bad answer', contractVersion: 'customer-intelligence-copilot-v1' }, 502],
+    [{ status: 'clarification_required', finalResponseState: 'success', message: 'Define criterio.', contractVersion: 'customer-intelligence-copilot-v1' }, 200],
+    [{ status: 'unsupported_data', finalResponseState: 'success', message: 'No hay carritos.', contractVersion: 'customer-intelligence-copilot-v1' }, 422],
+    [{ status: 'unsupported_operation', finalResponseState: 'success', message: 'Mediana no soportada.', contractVersion: 'customer-intelligence-copilot-v1' }, 422],
+    [{ status: 'planner_invalid', finalResponseState: 'failure', errors: ['bad plan'], contractVersion: 'customer-intelligence-copilot-v1' }, 502],
+    [{ status: 'analytics_unavailable', finalResponseState: 'failure', message: 'down', contractVersion: 'customer-intelligence-copilot-v1' }, 503],
+    [{ status: 'analytics_timeout', finalResponseState: 'failure', message: 'timeout', contractVersion: 'customer-intelligence-copilot-v1' }, 504],
+    [{ status: 'answer_generation_failed', finalResponseState: 'failure', message: 'bad answer', contractVersion: 'customer-intelligence-copilot-v1' }, 502],
   ] satisfies readonly [CustomerIntelligenceCopilotResponse, number][])('maps %s to HTTP %s', async (result, expectedStatus) => {
     const baseUrl = await startApp({ marketingCopilot: { enabled: true, internalToken: 'secret-token-1234' }, answerCustomerIntelligenceQuestion: async () => result });
     const response = await post(baseUrl, { question: 'Pregunta' });

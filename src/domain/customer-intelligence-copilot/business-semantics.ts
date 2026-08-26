@@ -13,6 +13,20 @@ export type BusinessMetricSemantics = {
   readonly format: BusinessValueFormat;
 };
 
+const CLUSTER_BUSINESS_LABELS: Readonly<Record<number, string>> = {
+  0: 'Clientes recurrentes historicos actualmente inactivos',
+  1: 'Clientes recurrentes recientes',
+  2: 'Clientes nuevos con actividad inicial que luego cayo',
+  3: 'Clientes recurrentes de alto valor y compra diversificada',
+};
+
+const CLUSTER_CODE_LABELS: Readonly<Record<string, string>> = {
+  LONG_TENURE_DORMANT_SPREAD_OUT_REPEAT_BUYERS: 'Clientes recurrentes historicos actualmente inactivos',
+  RECENTLY_ACTIVE_NEWER_REPEAT_BUYERS: 'Clientes recurrentes recientes',
+  NEW_BURST_THEN_LAPSED_BUYERS: 'Clientes nuevos con actividad inicial que luego cayo',
+  HIGH_VALUE_DIVERSIFIED_REPEAT_BUYERS: 'Clientes recurrentes de alto valor y compra diversificada',
+};
+
 type MetricLike = {
   readonly aggregation: AnalyticalAggregation;
   readonly field?: string;
@@ -104,7 +118,15 @@ function humanizeUnknownAlias(alias: string): string {
 }
 
 export function businessEntityLabel(entityType: string | null, entityId: string | number | null): string {
-  if (entityType === 'cluster') return entityId !== null ? `Cluster ${String(entityId)}` : 'Clientes sin cluster asignado';
+  if (entityType === 'cluster') {
+    if (entityId === null) return 'Clientes sin cluster asignado';
+    if (typeof entityId === 'number') {
+      const businessLabel = CLUSTER_BUSINESS_LABELS[entityId];
+      return businessLabel ? `Cluster ${entityId} - ${businessLabel}` : `Cluster ${String(entityId)}`;
+    }
+    const businessLabel = CLUSTER_CODE_LABELS[entityId];
+    return businessLabel ?? humanizeUnknownAlias(entityId);
+  }
   if (entityType === 'rfm_segment') return entityId !== null ? `Segmento RFM ${String(entityId)}` : 'Clientes sin segmento RFM';
   return 'la poblacion analizada';
 }

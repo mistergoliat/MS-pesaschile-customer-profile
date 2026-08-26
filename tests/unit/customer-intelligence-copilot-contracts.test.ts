@@ -132,7 +132,21 @@ describe('Customer Intelligence Copilot contracts', () => {
     );
 
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.errors).toContain('respond_directly cannot answer fresh Customer Intelligence business facts');
+    if (!result.ok) expect(result.errors).toContain('respond_directly cannot answer analytical Customer Intelligence questions that require grounded data');
+  });
+
+  it('rejects respond_directly for reactivation-priority recommendations that require analytics', () => {
+    const result = validateCopilotConversationDecision(
+      {
+        decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
+        action: 'respond_directly',
+        message: 'Priorizaria el cluster 3.',
+      },
+      { question: 'Que grupo priorizarias para una campana de reactivacion y por que?', sessionContext: EMPTY_SESSION_CONTEXT },
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors).toContain('respond_directly cannot answer analytical Customer Intelligence questions that require grounded data');
   });
 
   it('accepts valid unified non-analytical envelopes', () => {

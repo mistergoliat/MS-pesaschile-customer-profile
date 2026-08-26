@@ -1,5 +1,6 @@
 import type {
   CopilotAnalyticalReference,
+  CopilotFinalResponseState,
   CopilotSessionContext,
   CustomerIntelligenceCopilotResponse,
 } from '../../domain/customer-intelligence-copilot/index.js';
@@ -26,7 +27,9 @@ export type CopilotSessionTurn = {
   readonly createdAt: string;
   readonly userQuestion: string;
   readonly assistantStatus: string;
+  readonly assistantFinalResponseState: CopilotFinalResponseState;
   readonly assistantAnswer: string | null;
+  readonly synthesisFallbackUsed?: boolean;
   readonly queryIds: readonly string[];
   readonly sourceQueryIds: readonly string[];
 };

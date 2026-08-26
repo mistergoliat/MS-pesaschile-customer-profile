@@ -34,7 +34,10 @@ const SCHEMA: AnalyticalSchema = {
     { logicalName: 'customer.customerId', type: 'integer', nullable: false, source: 'customer', allowedOperators: ['eq', 'in'], allowedAggregations: ['count', 'count_distinct'], description: 'Customer id.' },
     { logicalName: 'commercial.averageOrderValueTaxIncl', type: 'decimal', nullable: false, source: 'commercial', allowedOperators: ['gt', 'gte', 'lt', 'lte'], allowedAggregations: ['avg', 'min', 'max'], description: 'Average order value.' },
     { logicalName: 'commercial.totalSpentTaxIncl', type: 'decimal', nullable: false, source: 'commercial', allowedOperators: ['gt', 'gte', 'lt', 'lte'], allowedAggregations: ['sum', 'avg', 'min', 'max'], description: 'Total spent.' },
-    { logicalName: 'rfm.segmentCode', type: 'string', nullable: true, source: 'rfm', allowedOperators: ['eq', 'in', 'is_null'], allowedAggregations: ['count', 'count_distinct'], description: 'RFM segment.' },
+    { logicalName: 'rfm.segmentCode', type: 'string', nullable: true, source: 'rfm', allowedOperators: ['eq', 'in', 'is_null', 'is_not_null'], allowedAggregations: ['count', 'count_distinct'], description: 'RFM segment.' },
+    { logicalName: 'rfm.rScore', type: 'integer', nullable: true, source: 'rfm', allowedOperators: ['eq', 'gt', 'gte', 'lt', 'lte', 'is_null', 'is_not_null'], allowedAggregations: ['avg', 'min', 'max'], description: 'RFM recency score.' },
+    { logicalName: 'rfm.fScore', type: 'integer', nullable: true, source: 'rfm', allowedOperators: ['eq', 'gt', 'gte', 'lt', 'lte', 'is_null', 'is_not_null'], allowedAggregations: ['avg', 'min', 'max'], description: 'RFM frequency score.' },
+    { logicalName: 'rfm.mScore', type: 'integer', nullable: true, source: 'rfm', allowedOperators: ['eq', 'gt', 'gte', 'lt', 'lte', 'is_null', 'is_not_null'], allowedAggregations: ['avg', 'min', 'max'], description: 'RFM monetary score.' },
     { logicalName: 'cluster.clusterId', type: 'integer', nullable: true, source: 'cluster', allowedOperators: ['eq', 'is_null'], allowedAggregations: ['count', 'count_distinct'], description: 'Cluster id.' },
     { logicalName: 'cluster.label', type: 'string', nullable: true, source: 'cluster', allowedOperators: ['eq', 'is_null'], allowedAggregations: ['count'], description: 'Cluster label.' },
   ],
@@ -881,9 +884,9 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
     const synthesisContent = String(h.generateConversationalTurn.mock.calls[1]?.[0].messages[1]?.content);
     const synthesisPayload = JSON.parse(synthesisContent);
     expect(synthesisPayload).toMatchObject({
-      synthesisPromptVersion: 'customer-intelligence-tool-synthesis-v4',
+      synthesisPromptVersion: 'customer-intelligence-tool-synthesis-v5',
       question: 'Por que el cluster 3 tiene mayor ticket promedio?',
-      evidence: { facts: expect.any(Array), comparisons: expect.any(Array), limitations: expect.any(Array) },
+      evidence: { facts: expect.any(Array), comparisons: expect.any(Array), populationContexts: expect.any(Array), limitations: expect.any(Array) },
     });
     expect(synthesisPayload).not.toHaveProperty('queryContract');
     expect(synthesisPayload).not.toHaveProperty('schema');
@@ -938,11 +941,12 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
       if (response.status !== 'ok') throw new Error('expected ok');
       expect(response.response.status).toBe('answered');
       if (response.response.status !== 'answered') throw new Error('expected answered');
-      expect(response.response.answer).toContain('El analisis se completo, pero la sintesis avanzada no estuvo disponible.');
+      expect(response.response.answer).not.toContain('sintesis avanzada no estuvo disponible');
       expect(response.response.answer).toMatch(/cluster 3/i);
       expect(response.response.answer).not.toMatch(/\b(recomiendo|causa|hipotesis|oportunidad)\b/i);
+      expect(response.response.finalResponseState).toBe('degraded_success');
       expect(response.response.analysis.synthesisFallbackUsed).toBe(true);
-      expect(response.response.analysis.synthesisFallbackReason).toBe(entry.failureStatus);
+      expect(response.response.analysis.finalResponseState).toBe('degraded_success');
       expect(response.response.provenance.featureSnapshot.snapshotId).toBe('17');
       expect(response.response.queryIds).toEqual(['cluster_count', 'ticket_by_cluster']);
       // deep model-call budget: exactly one tool_selection + one tool_synthesis attempt. The
@@ -959,6 +963,67 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
         expect.objectContaining({ stage: 'turn', success: true, failureStatus: 'answered_degraded_synthesis', synthesisFallbackUsed: true }),
       ]));
     }
+  });
+
+  it('keeps full cluster population distinct from the analyzed RFM subpopulation in degraded comparisons', async () => {
+    const h = harness({
+      toolRuntimeEnabled: true,
+      conversationalTurns: [
+        toolRuntimeCall([
+          {
+            id: 'cluster_population',
+            plan: {
+              dimensions: ['cluster.clusterId'],
+              metrics: [{ aggregation: 'count', alias: 'customer_count' }],
+              orderBy: [{ field: 'customer_count', direction: 'desc' }],
+            },
+          },
+          {
+            id: 'rfm_population_by_cluster',
+            plan: {
+              dimensions: ['cluster.clusterId'],
+              filters: [{ field: 'rfm.segmentCode', operator: 'is_not_null' }],
+              metrics: [{ aggregation: 'count', alias: 'rfm_customer_count' }],
+              orderBy: [{ field: 'rfm_customer_count', direction: 'desc' }],
+            },
+          },
+          {
+            id: 'rfm_scores_by_cluster',
+            plan: {
+              dimensions: ['cluster.clusterId'],
+              filters: [{ field: 'rfm.segmentCode', operator: 'is_not_null' }],
+              metrics: [{ aggregation: 'avg', field: 'rfm.rScore', alias: 'avg_r' }],
+              orderBy: [{ field: 'avg_r', direction: 'desc' }],
+            },
+          },
+        ]),
+        { content: null, toolCalls: [], metadata: { provider: 'fake', model: 'tool' } },
+      ],
+      executionResults: [
+        result([{ clusterId: 3, customer_count: 2569 }, { clusterId: 2, customer_count: 1539 }], 'p'.repeat(64), ['clusterId', 'customer_count']),
+        result([{ clusterId: 3, rfm_customer_count: 1244 }, { clusterId: 2, rfm_customer_count: 900 }], 'q'.repeat(64), ['clusterId', 'rfm_customer_count']),
+        result([{ clusterId: 3, avg_r: '1.800000' }, { clusterId: 2, avg_r: '2.400000' }], 'r'.repeat(64), ['clusterId', 'avg_r']),
+      ],
+    });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Ahora compara el RFM del cluster con ticket promedio mas alto contra el cluster 2' });
+
+    expect(response.status).toBe('ok');
+    if (response.status !== 'ok') throw new Error('expected ok');
+    expect(response.response.status).toBe('answered');
+    if (response.response.status !== 'answered') throw new Error('expected answered');
+    expect(response.response.finalResponseState).toBe('degraded_success');
+    expect(response.response.analysis.populationContextPresent).toBe(true);
+    expect(response.response.analysis.analysisPopulationBasis).toBe('rfm');
+    expect(response.response.analysis.populationContexts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ entityType: 'cluster', entityId: 3, fullPopulation: 2569, analyzedPopulation: 1244, analysisBasis: 'rfm' }),
+      expect.objectContaining({ entityType: 'cluster', entityId: 2, fullPopulation: 1539, analyzedPopulation: 900, analysisBasis: 'rfm' }),
+    ]));
+    expect(response.response.answer).toContain('2.569 clientes en total');
+    expect(response.response.answer).toContain('1.244');
+    expect(response.response.answer).toMatch(/metricas rfm se calculan sobre esa subpoblacion/i);
+    expect(response.response.answer).not.toMatch(/cluster 3[^\n]*tiene 1\.244 clientes/i);
   });
 
   it('routes tied grouped rankings to bounded synthesis and records deterministic renderer rejection', async () => {

@@ -253,7 +253,9 @@ async function loadTurns(pool: Pool, sessionId: string): Promise<readonly Copilo
         createdAt: toIso(row.created_at),
         userQuestion: row.content,
         assistantStatus: existing?.assistantStatus ?? 'pending',
+        assistantFinalResponseState: existing?.assistantFinalResponseState ?? finalResponseStateFromTurnStatus(existing?.assistantStatus ?? 'pending'),
         assistantAnswer: existing?.assistantAnswer ?? null,
+        ...(existing?.synthesisFallbackUsed !== undefined ? { synthesisFallbackUsed: existing.synthesisFallbackUsed } : {}),
         queryIds,
         sourceQueryIds,
       });
@@ -263,7 +265,9 @@ async function loadTurns(pool: Pool, sessionId: string): Promise<readonly Copilo
         createdAt: existing?.createdAt ?? toIso(row.created_at),
         userQuestion: existing?.userQuestion ?? '',
         assistantStatus: row.status,
+        assistantFinalResponseState: finalResponseStateFromTurnStatus(row.status),
         assistantAnswer: row.content.length > 0 ? row.content : null,
+        ...(existing?.synthesisFallbackUsed !== undefined ? { synthesisFallbackUsed: existing.synthesisFallbackUsed } : {}),
         queryIds,
         sourceQueryIds,
       });
@@ -329,4 +333,23 @@ function toMysqlDate(value: string | Date): string {
 
 function toIso(value: string | Date): string {
   return (value instanceof Date ? value : new Date(value)).toISOString();
+}
+
+function finalResponseStateFromTurnStatus(status: string): CopilotSessionTurn['assistantFinalResponseState'] {
+  if (
+    status === 'planner_invalid'
+    || status === 'orchestrator_invalid'
+    || status === 'analytics_unavailable'
+    || status === 'analytics_timeout'
+    || status === 'answer_generation_failed'
+    || status === 'provider_authentication_error'
+    || status === 'provider_billing_error'
+    || status === 'provider_rate_limited'
+    || status === 'provider_timeout'
+    || status === 'provider_network_error'
+    || status === 'provider_invalid_response'
+  ) {
+    return 'failure';
+  }
+  return 'success';
 }

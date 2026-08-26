@@ -43,7 +43,8 @@ describe('Customer Intelligence Copilot business semantics registry (task MARKET
   });
 
   it('labels RFM segment and cluster entities in business-readable Spanish, including the unassigned case', () => {
-    expect(businessEntityLabel('cluster', 3)).toBe('Cluster 3');
+    expect(businessEntityLabel('cluster', 3)).toBe('Cluster 3 - Clientes recurrentes de alto valor y compra diversificada');
+    expect(businessEntityLabel('cluster', 'LONG_TENURE_DORMANT_SPREAD_OUT_REPEAT_BUYERS')).toBe('Clientes recurrentes historicos actualmente inactivos');
     expect(businessEntityLabel('cluster', null)).toBe('Clientes sin cluster asignado');
     expect(businessEntityLabel('rfm_segment', 'AT_RISK_HIGH_VALUE')).toBe('Segmento RFM AT_RISK_HIGH_VALUE');
     expect(businessEntityLabel('rfm_segment', null)).toBe('Clientes sin segmento RFM');
@@ -54,10 +55,11 @@ describe('Customer Intelligence Copilot business semantics registry (task MARKET
     expect(resolveBusinessMetricByName('customerCount')).toMatchObject({ label: 'Clientes', format: 'count' });
   });
 
-  it('the v4 tool synthesis prompt explicitly prohibits exposing internal aliases, query ids, and implementation details', () => {
+  it('the v5 tool synthesis prompt explicitly prohibits internal codes, aliases, query ids, and implementation details', () => {
     const combined = CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SYNTHESIS_INSTRUCTIONS.join(' ');
-    expect(combined).toMatch(/never expose internal aliases/i);
+    expect(combined).toMatch(/internal cluster codes, internal aliases/i);
     expect(combined).toMatch(/query ids/i);
     expect(combined).toMatch(/business terminology/i);
+    expect(combined).toMatch(/recommendation with prediction/i);
   });
 });

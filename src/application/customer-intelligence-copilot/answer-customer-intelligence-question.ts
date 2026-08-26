@@ -110,6 +110,7 @@ export function createAnswerCustomerIntelligenceQuestion(deps: {
     } catch (error) {
       return {
         status: 'answer_generation_failed',
+        finalResponseState: 'failure',
         message: error instanceof Error ? error.message : 'Answer generation failed',
         contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION,
       };
@@ -117,10 +118,12 @@ export function createAnswerCustomerIntelligenceQuestion(deps: {
 
     return {
       status: 'answered',
+      finalResponseState: 'success',
       answer: answerOutput.answer,
       analysis: {
         contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION,
         analysisPlanVersion: CUSTOMER_INTELLIGENCE_COPILOT_ANALYSIS_PLAN_VERSION,
+        finalResponseState: 'success',
         queryCount: executions.length,
         queryPlanHashes: executions.map((execution) => execution.result.queryPlanHash),
         resultRowCount: executions.reduce((sum, execution) => sum + execution.result.rowCount, 0),
@@ -214,23 +217,25 @@ function validateCopilotAnalyticalQueryPlan(rawPlan: unknown):
 }
 
 function terminal(status: 'clarification_required' | 'unsupported_data' | 'unsupported_operation', message: string): CustomerIntelligenceCopilotResponse {
-  return { status, message, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
+  return { status, finalResponseState: 'success', message, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
 }
 
 function plannerInvalid(errors: readonly string[]): CustomerIntelligenceCopilotResponse {
-  return { status: 'planner_invalid', errors, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
+  return { status: 'planner_invalid', finalResponseState: 'failure', errors, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
 }
 
 function mapContextFailure(reason: string): CustomerIntelligenceCopilotResponse {
   if (reason === 'analytics_not_configured' || reason === 'analytics_unavailable' || reason === 'no_published_feature_snapshot' || reason === 'feature_snapshot_not_found') {
     return {
       status: 'analytics_unavailable',
+      finalResponseState: 'failure',
       message: reason,
       contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION,
     };
   }
   return {
     status: 'analytics_unavailable',
+    finalResponseState: 'failure',
     message: reason,
     contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION,
   };
@@ -238,10 +243,10 @@ function mapContextFailure(reason: string): CustomerIntelligenceCopilotResponse 
 
 function mapAnalyticsError(error: unknown): CustomerIntelligenceCopilotResponse {
   if (error instanceof AnalyticsTimeoutError) {
-    return { status: 'analytics_timeout', message: error.message, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
+    return { status: 'analytics_timeout', finalResponseState: 'failure', message: error.message, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
   }
   if (error instanceof AnalyticsUnavailableError || error instanceof AnalyticsSchemaIncompatibleError) {
-    return { status: 'analytics_unavailable', message: error.message, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
+    return { status: 'analytics_unavailable', finalResponseState: 'failure', message: error.message, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
   }
   throw error;
 }

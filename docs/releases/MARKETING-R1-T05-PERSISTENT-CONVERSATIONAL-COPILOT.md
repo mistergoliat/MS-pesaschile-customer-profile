@@ -195,6 +195,124 @@ Do not use real secrets in fixtures. Against a configured EC2 environment:
 
 Live validation: NOT_RUN.
 
+## T05.8.7 Final User Semantics and Response-State Hardening
+
+Motivation: the remaining T05 production issues were no longer about analytical reach or session
+durability, but about final user semantics. A valid answered turn could still be surfaced to CRM
+users as a temporary model error, analytical subpopulations could be confused with full entity
+counts, internal cluster interpretation codes could leak into user-facing Spanish, and
+recommendation questions such as reactivation prioritization still needed a tighter epistemic
+boundary.
+
+Response-state invariant:
+
+- Public copilot responses now carry an explicit top-level `finalResponseState`.
+- `answered` without synthesis fallback maps to `success`.
+- `answered` with deterministic synthesis fallback maps to `degraded_success`.
+- Technical no-answer states map to `failure`.
+- `clarification_required`, `unsupported_data`, `unsupported_operation`,
+  `answered_from_context`, and `responded_directly` remain non-fatal public responses and no
+  longer require CRM consumers to infer precedence from provider-oriented details.
+- Public degraded-success responses retain bounded metadata such as
+  `analysis.synthesisFallbackUsed = true`, but no longer expose provider failure reasons as the
+  primary user-facing state.
+
+Deterministic fallback hardening:
+
+- Tool-synthesis fallback no longer says that advanced synthesis failed or degraded.
+- The fallback now returns business-facing content only, while internal stage diagnostics continue
+  to preserve provider timeout/network/invalid-response causes.
+- Public analysis metadata now exposes bounded safe diagnostics:
+  `finalResponseState`, `populationContextPresent`, `fullPopulationCount`,
+  `analyzedPopulationCount`, and `analysisPopulationBasis` when deterministically derivable.
+
+Population semantics:
+
+- Structured analytical evidence now includes bounded `populationContexts`.
+- Each population context is derived only from validated analytical results and may carry:
+  `entityType`, `entityId`, `fullPopulation`, `analyzedPopulation`, `analysisBasis`, and
+  `coverageRatio`.
+- Cluster-level RFM denominator queries are now treated as denominator metadata, not as ordinary
+  business findings, so an analyzed RFM count cannot be rendered as if it were the full cluster
+  size.
+- When a full cluster population and an analyzed RFM subpopulation both exist and differ
+  materially, deterministic fallback and synthesis payloads now preserve wording such as:
+  "X clientes en total" plus "Y de ellos con informacion RFM disponible", instead of silently
+  collapsing those numbers into one.
+
+Cluster business labels:
+
+- The business semantic registry now maps clusters to stable Spanish labels while preserving the
+  numeric identity (`Cluster 0`, `Cluster 1`, `Cluster 2`, `Cluster 3`).
+- Internal interpretation codes such as
+  `LONG_TENURE_DORMANT_SPREAD_OUT_REPEAT_BUYERS`,
+  `RECENTLY_ACTIVE_NEWER_REPEAT_BUYERS`,
+  `NEW_BURST_THEN_LAPSED_BUYERS`, and
+  `HIGH_VALUE_DIVERSIFIED_REPEAT_BUYERS`
+  are now translated before any user-facing rendering.
+- Preferred rendering is now numeric cluster identity plus business label, e.g.
+  `Cluster 3 - Clientes recurrentes de alto valor y compra diversificada`.
+
+Reactivation recommendation boundary:
+
+- Reactivation-priority questions are now treated as supported analytical recommendation requests,
+  not as unsupported future prediction requests.
+- Conversation validation and orchestration now reject `respond_directly` for those questions and
+  require grounded analytics instead.
+- Planner, unified planner, answerer, native tool runtime, and tool-synthesis prompts now state
+  explicitly that historical recommendations are allowed, but predictions or guaranteed campaign
+  outcomes are not.
+- Deterministic fallback now has a recommendation-safe path that preserves FACT,
+  INTERPRETATION, RECOMENDACION, and LIMITACION semantics without claiming conversion forecasts.
+
+Prompt updates:
+
+- Tool-synthesis prompt version incremented from
+  `customer-intelligence-tool-synthesis-v4` to
+  `customer-intelligence-tool-synthesis-v5`.
+- Prompt instructions now explicitly require:
+  no internal cluster codes, no provider degradation talk when an answer exists, plain-language
+  analyzed-denominator wording, and recommendation-versus-prediction separation.
+
+Tests added/updated:
+
+- Response-state coverage now asserts explicit `success` / `degraded_success` / `failure`
+  semantics and keeps degraded synthesis on an answered HTTP/API path.
+- Population coverage now asserts that full cluster counts and analyzed RFM counts remain
+  distinct and that denominator wording survives deterministic fallback.
+- Cluster-label coverage now asserts Spanish business labels and rejects internal cluster codes in
+  user-facing prompt/rendering paths.
+- Reactivation coverage now asserts that reactivation prioritization is supported, can consume up
+  to the existing 3-query budget, and remains recommendation-only rather than predictive.
+
+Local validation on Wednesday, August 26, 2026:
+
+- Focused copilot validation:
+  `npx vitest run --config vitest.config.ts tests/unit/customer-intelligence-copilot-session.test.ts tests/unit/customer-intelligence-copilot-semantic-benchmark.test.ts tests/unit/customer-intelligence-copilot-business-semantics.test.ts tests/unit/customer-intelligence-copilot-contracts.test.ts tests/integration/customer-intelligence-copilot-route.test.ts tests/integration/customer-intelligence-copilot-session-routes.test.ts`
+- Result: PASS, 6 files, 116 tests.
+- `npm run typecheck`: PASS.
+- `npm run build`: PASS.
+- `npm run lint`: PASS.
+- `npm test`: PASS, 179 files, 1536 tests.
+
+Live validation:
+
+- NOT_RUN.
+- Required fresh-session acceptance questions remain:
+  `Cuantos hay en cada cluster?`,
+  `Cual tiene mas clientes?`,
+  `Cual tiene mayor ticket promedio?`,
+  `Ahora compara el RFM del cluster con ticket promedio mas alto contra el cluster 2`,
+  `Que grupo priorizarias para una campana de reactivacion y por que?`
+
+Residual documented debt:
+
+- Native LLM tool selection remains probabilistic within the bounded validator/repair envelope.
+- Synthesis providers can still degrade occasionally, but the deterministic fallback now preserves
+  a successful public answer state.
+- XLSX/export remains deferred to `MARKETING-R2-A01 Audience Engine`.
+- Predictive campaign propensity/conversion modeling is still unavailable.
+
 ## Known Limitations
 
 - Summary checkpointing is deterministic/extractive in this slice; it does not call a separate

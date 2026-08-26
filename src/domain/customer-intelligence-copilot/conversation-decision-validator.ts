@@ -35,8 +35,8 @@ export function validateCopilotConversationDecision(
 
   switch (raw.action) {
     case 'respond_directly':
-      if (context.question && asksForFreshBusinessFact(context.question)) {
-        errors.push('respond_directly cannot answer fresh Customer Intelligence business facts');
+      if (context.question && requiresCustomerIntelligenceAnalytics(context.question)) {
+        errors.push('respond_directly cannot answer analytical Customer Intelligence questions that require grounded data');
       }
       if (typeof raw.message !== 'string' || raw.message.trim().length === 0) {
         errors.push(`${raw.action} requires a non-empty message`);
@@ -116,6 +116,17 @@ export function asksForFreshBusinessFact(question: string): boolean {
     /\b(en|por) cada (cluster|segmento|grupo)\b/.test(normalized) ||
     /\bby (cluster|segment|group)\b/.test(normalized)
   );
+}
+
+export function asksForAnalyticalRecommendation(question: string): boolean {
+  const normalized = normalizeQuestion(question);
+  const hasEntitySubject = /\b(cluster|clusters|segmento|segmentos|segment|segments|grupo|grupos|group|groups)\b/.test(normalized);
+  if (!hasEntitySubject) return false;
+  return /\b(priorizar(?:ia|ias|ian|iamos)?|reactivacion|reactivar|reactivation|reactivate|campana|campana de reactivacion|campaign|recommend|recomendar(?:ia|ias)?|conviene priorizar)\b/.test(normalized);
+}
+
+export function requiresCustomerIntelligenceAnalytics(question: string): boolean {
+  return asksForFreshBusinessFact(question) || asksForAnalyticalRecommendation(question);
 }
 
 function normalizeQuestion(question: string): string {

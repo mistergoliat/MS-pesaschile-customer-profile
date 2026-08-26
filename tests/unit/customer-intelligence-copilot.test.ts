@@ -309,6 +309,6 @@ describe('Customer Intelligence Copilot orchestration', () => {
   it('treats email exfiltration as unsupported data when the planner classifies it that way', async () => {
     const h = harness({ plan: { planVersion: CUSTOMER_INTELLIGENCE_COPILOT_ANALYSIS_PLAN_VERSION, status: 'unsupported_data', message: 'El schema no contiene email.' } });
     const response = await h.answerQuestion({ question: 'Dame emails de todos los clientes' });
-    expect(response).toEqual({ status: 'unsupported_data', message: 'El schema no contiene email.', contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION });
+    expect(response).toEqual({ status: 'unsupported_data', finalResponseState: 'success', message: 'El schema no contiene email.', contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION });
   });
 });

@@ -316,6 +316,39 @@ describe('Customer Intelligence Copilot semantic benchmark', () => {
     expect(h.executeAnalyticalQuery).toHaveBeenCalledTimes(2);
   });
 
+  it('treats reactivation prioritization as a supported analytical recommendation, not a prediction', async () => {
+    const h = harness({
+      decisions: [decision('run_analytics', { analyticalQuestion: 'Recommend which cluster to prioritize for reactivation using historical value, recency, and frequency evidence. Do not predict campaign conversion.' })],
+      plans: [plan([
+        { id: 'reactivation_value', plan: { dimensions: ['cluster.clusterId'], filters: [{ field: 'cluster.clusterId', operator: 'is_not_null' }], metrics: [{ aggregation: 'sum', field: 'commercial.totalSpentTaxIncl', alias: 'total_spent' }], orderBy: [{ field: 'total_spent', direction: 'desc' }], limit: 1 } },
+        { id: 'reactivation_inactivity', plan: { dimensions: ['cluster.clusterId'], filters: [{ field: 'cluster.clusterId', operator: 'is_not_null' }], metrics: [{ aggregation: 'max', field: 'commercial.daysSinceLastOrder', alias: 'days_inactive' }], orderBy: [{ field: 'days_inactive', direction: 'desc' }], limit: 1 } },
+        { id: 'reactivation_frequency', plan: { dimensions: ['cluster.clusterId'], filters: [{ field: 'cluster.clusterId', operator: 'is_not_null' }], metrics: [{ aggregation: 'avg', field: 'commercial.validOrders', alias: 'avg_orders' }], orderBy: [{ field: 'avg_orders', direction: 'desc' }], limit: 1 } },
+      ])],
+      executionResults: [
+        result([{ clusterId: 3, total_spent: '900000.000000' }], '6'.repeat(64), ['clusterId', 'total_spent']),
+        result([{ clusterId: 3, days_inactive: '210.000000' }], '7'.repeat(64), ['clusterId', 'days_inactive']),
+        result([{ clusterId: 3, avg_orders: '4.200000' }], '8'.repeat(64), ['clusterId', 'avg_orders']),
+      ],
+      answer: 'FACT: El Cluster 3 concentra mayor valor historico y mayor inactividad observada. INTERPRETACION: Esto lo vuelve comercialmente relevante para reactivacion. RECOMENDACION: Priorizaria el Cluster 3. LIMITACION: Es una recomendacion historica; no predice conversion.',
+    });
+    const sessionId = await createSession(h);
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Que grupo priorizarias para una campana de reactivacion y por que?' });
+
+    expect(response.status).toBe('ok');
+    if (response.status !== 'ok') throw new Error('expected ok');
+    expect(response.response.status).toBe('answered');
+    if (response.response.status !== 'answered') throw new Error('expected answered');
+    expect(response.response.finalResponseState).toBe('success');
+    expect(response.response.answer).toMatch(/Priorizaria el Cluster 3/i);
+    expect(response.response.answer).toMatch(/no predice conversion/i);
+    expect(response.response.answer).not.toMatch(/mejor convierta|tendra .*conversion|garantiza/i);
+    expect(h.generateAnalysisPlan).toHaveBeenCalledWith(expect.objectContaining({
+      question: expect.stringContaining('reactivation'),
+      maxQueries: 3,
+    }));
+    expect(h.executeAnalyticalQuery).toHaveBeenCalledTimes(3);
+  });
+
   it('does not substitute revenue for unavailable profitability', async () => {
     const h = harness({
       decisions: [decision('run_analytics', { analyticalQuestion: 'Assess whether profitability is available; do not substitute spend for profit.' })],

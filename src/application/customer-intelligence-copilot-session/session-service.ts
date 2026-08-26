@@ -17,7 +17,7 @@ import {
   CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SYNTHESIS_PROMPT_VERSION,
   CUSTOMER_INTELLIGENCE_COPILOT_RUN_ANALYTICAL_QUERIES_TOOL,
   CUSTOMER_INTELLIGENCE_COPILOT_SESSION_VERSION,
-  asksForFreshBusinessFact,
+  asksForAnalyticalRecommendation,
   serializeAnalyticalQueryContractForCopilot,
   serializeAnalyticalSchemaForCopilot,
   validateCopilotAnalysisPlan,
@@ -34,7 +34,9 @@ import {
   businessEntityLabel,
   formatBusinessValue,
   formatRatio,
+  requiresCustomerIntelligenceAnalytics,
   type AnalyticalEvidenceBundle,
+  type CopilotPopulationContext,
   type CopilotSemanticAnchor,
   type CustomerIntelligenceCopilotResponse,
 } from '../../domain/customer-intelligence-copilot/index.js';
@@ -122,6 +124,7 @@ type ValidatedConversationPlan =
 
 type AnalyticsUnavailableResponse = {
   readonly status: 'analytics_unavailable';
+  readonly finalResponseState: 'failure';
   readonly message: string;
   readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION;
 };
@@ -130,6 +133,7 @@ type AnalyticsFailureResponse =
   | AnalyticsUnavailableResponse
   | {
       readonly status: 'analytics_timeout';
+      readonly finalResponseState: 'failure';
       readonly message: string;
       readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION;
     };
@@ -416,12 +420,14 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
             { sessionId: session.sessionId, turnId },
             {
               status: 'responded_directly',
+              finalResponseState: 'success',
               answer: unified.decision.message,
               analysis: {
                 contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION,
                 decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
                 decisionAction: 'respond_directly',
                 orchestratorModel: modelName(unified.metadata),
+                finalResponseState: 'success',
               },
               provenance: session.pinnedContext,
             },
@@ -512,12 +518,14 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
           { sessionId: session.sessionId, turnId },
           {
             status: 'responded_directly',
+            finalResponseState: 'success',
             answer: decisionResult.decision.message,
             analysis: {
               contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION,
               decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
               decisionAction: 'respond_directly',
               orchestratorModel: modelName(decisionResult.metadata),
+              finalResponseState: 'success',
             },
             provenance: session.pinnedContext,
           },
@@ -1082,7 +1090,7 @@ function buildConversationDecisionActionConstraints(
 ): CopilotConversationDecisionActionConstraints {
   const availableSourceQueryIds = availableSourceQueryIdsFor(sessionContext);
   const answerFromContextAllowed = availableSourceQueryIds.length > 0;
-  const freshBusinessFactQuestion = asksForFreshBusinessFact(question);
+  const freshBusinessFactQuestion = requiresCustomerIntelligenceAnalytics(question);
   const allowedActions: CopilotConversationDecisionAction[] = [
     ...(freshBusinessFactQuestion ? [] : (['respond_directly'] as const)),
     'clarification_required',
@@ -1234,6 +1242,8 @@ async function answerFromSessionContext(args: {
   readonly turnStartedAt: number;
 }): Promise<{ readonly session: CopilotSession; readonly response: { readonly sessionId: string; readonly turnId: string; readonly queryIds: readonly string[]; readonly sourceQueryIds: readonly string[] } & CustomerIntelligenceCopilotResponse }> {
   const sources = args.sourceQueryIds.map((queryId) => args.session.analyticalState.results.find((entry) => entry.queryId === queryId)).filter((entry): entry is CopilotSessionQueryResult => entry !== undefined);
+  const populationContexts = derivePopulationContexts(sources.map((source) => ({ id: source.queryId, plan: source.plan, result: source.result })));
+  const populationDiagnostics = buildPopulationDiagnostics(populationContexts);
   if (sources.length !== args.sourceQueryIds.length) {
     const response = withSession({ sessionId: args.session.sessionId, turnId: args.turnId, queryIds: [], sourceQueryIds: args.sourceQueryIds }, orchestratorInvalid(['answer_from_context referenced an unknown session query']));
     return {
@@ -1262,14 +1272,17 @@ async function answerFromSessionContext(args: {
       { sessionId: args.session.sessionId, turnId: args.turnId, queryIds: [], sourceQueryIds: args.sourceQueryIds },
       {
         status: 'answered_from_context',
+        finalResponseState: 'success',
         answer: answerOutput.answer,
         analysis: {
           contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION,
           analysisPlanVersion: CUSTOMER_INTELLIGENCE_COPILOT_ANALYSIS_PLAN_VERSION,
+          finalResponseState: 'success',
           sourceQueryIds: args.sourceQueryIds,
           resultRowCount: sources.reduce((sum, source) => sum + source.result.rowCount, 0),
           plannerModel: modelName(args.plannerMetadata),
           answerModel: modelName(answerOutput.metadata),
+          ...populationDiagnostics,
         },
         provenance: args.session.pinnedContext,
       },
@@ -1522,12 +1535,12 @@ async function processToolRuntimeTurn(args: {
       const response = fallbackToolSynthesisResponse({
         session: args.session,
         turnId: args.turnId,
+        question: args.question,
         executions,
         queryResults,
         evidenceBundle,
         selectionMetadata: selection.metadata,
         provenance: args.session.pinnedContext,
-        reason: 'invalid_synthesis_output',
       });
       const updated = appendResults(appendTurn(args.session, response, args.question, queryResults.map((entry) => entry.queryId), [], args.clock.now(), args.limits), queryResults, args.limits);
       await args.store.save(updated, args.clock.now());
@@ -1579,12 +1592,12 @@ async function processToolRuntimeTurn(args: {
       const response = fallbackToolSynthesisResponse({
         session: args.session,
         turnId: args.turnId,
+        question: args.question,
         executions,
         queryResults,
         evidenceBundle,
         selectionMetadata: selection.metadata,
         provenance: args.session.pinnedContext,
-        reason: diagnosticFailureStatus(error) ?? 'tool_synthesis_provider_failure',
       });
       const updated = appendResults(appendTurn(args.session, response, args.question, queryResults.map((entry) => entry.queryId), [], args.clock.now(), args.limits), queryResults, args.limits);
       await args.store.save(updated, args.clock.now());
@@ -1790,7 +1803,9 @@ function buildAnalyticalEvidenceBundle(args: {
   for (const execution of args.executions) {
     if (execution.result.execution.truncated) limitations.push(`${execution.id}: result truncated`);
     const entity = entityDescriptorForPlan(execution.plan);
+    const populationBasis = analysisPopulationBasisForPlan(execution.plan);
     for (const metric of execution.plan.metrics ?? []) {
+      if (entity?.type === 'cluster' && populationBasis === 'rfm' && isPopulationCountMetric(metric.aggregation)) continue;
       const metricName = resolveSemanticMetricName(metric);
       if (!entity) {
         const value = scalarValue(execution.result.rows[0], metric.alias);
@@ -1909,14 +1924,17 @@ function buildAnalyticalEvidenceBundle(args: {
     }
   }
 
+  const populationContexts = derivePopulationContexts(args.executions);
+  const hasMaterialPopulationContext = populationContexts.some((context) => isMaterialPopulationContext(context));
+
   // Material limitations only (task MARKETING-R1-T05.8.6 Section 11): a plain-language sentence,
   // only when the analysis actually shows that entity type, never raw coverage percentages
   // injected into every answer regardless of relevance. Exact coverage numbers stay available on
   // provenance/metadata for anything that needs them.
-  if (entityTypesPresent.has('cluster') && args.provenance.population.clusterCoveragePct < 100) {
+  if (!hasMaterialPopulationContext && entityTypesPresent.has('cluster') && args.provenance.population.clusterCoveragePct < 100) {
     limitations.push('Este analisis corresponde a los clientes que tienen un cluster asignado.');
   }
-  if (entityTypesPresent.has('rfm_segment') && args.provenance.population.rfmCoveragePct < 100) {
+  if (!hasMaterialPopulationContext && entityTypesPresent.has('rfm_segment') && args.provenance.population.rfmCoveragePct < 100) {
     limitations.push('Este analisis corresponde a los clientes con informacion RFM disponible.');
   }
 
@@ -1925,6 +1943,7 @@ function buildAnalyticalEvidenceBundle(args: {
     facts: facts.slice(0, ANALYTICAL_EVIDENCE_MAX_FACTS),
     comparisons: comparisons.slice(0, ANALYTICAL_EVIDENCE_MAX_COMPARISONS),
     distributions,
+    populationContexts,
     limitations: [...new Set(limitations)].slice(0, 4),
   });
 }
@@ -1983,12 +2002,14 @@ function compactEvidenceBundle(bundle: AnalyticalEvidenceBundle): AnalyticalEvid
   let compacted = bundle;
   while (
     JSON.stringify(compacted).length > ANALYTICAL_EVIDENCE_BUNDLE_MAX_CHARS &&
-    (compacted.comparisons.length > 0 || compacted.facts.length > 1 || compacted.distributions.length > 0 || compacted.limitations.length > 0)
+    (compacted.comparisons.length > 0 || compacted.facts.length > 1 || compacted.distributions.length > 0 || compacted.populationContexts.length > 0 || compacted.limitations.length > 0)
   ) {
     if (compacted.comparisons.length > 0) {
       compacted = { ...compacted, comparisons: compacted.comparisons.slice(0, -1) };
     } else if (compacted.distributions.some((distribution) => distribution.rows.length > 1)) {
       compacted = { ...compacted, distributions: trimLargestDistribution(compacted.distributions) };
+    } else if (compacted.populationContexts.length > 0) {
+      compacted = { ...compacted, populationContexts: compacted.populationContexts.slice(0, -1) };
     } else if (compacted.facts.length > 1) {
       compacted = { ...compacted, facts: compacted.facts.slice(0, -1) };
     } else if (compacted.distributions.length > 0) {
@@ -1998,6 +2019,117 @@ function compactEvidenceBundle(bundle: AnalyticalEvidenceBundle): AnalyticalEvid
     }
   }
   return compacted;
+}
+
+function derivePopulationContexts(
+  executions: readonly { readonly id: string; readonly plan: AnalyticalQueryPlan; readonly result: AnalyticalQueryResult }[],
+): readonly CopilotPopulationContext[] {
+  const fullCounts = new Map<string, number>();
+  const analyzedCounts = new Map<string, number>();
+
+  for (const execution of executions) {
+    const entity = entityDescriptorForPlan(execution.plan);
+    if (!entity) continue;
+    const basis = analysisPopulationBasisForPlan(execution.plan);
+    for (const metric of execution.plan.metrics ?? []) {
+      if (!isPopulationCountMetric(metric.aggregation)) continue;
+      for (const row of execution.result.rows.slice(0, ANALYTICAL_EVIDENCE_MAX_DISTRIBUTION_ROWS)) {
+        const entityId = scalarValue(row, entity.resultField);
+        const population = numericCountValue(scalarValue(row, metric.alias));
+        if (entityId === null || typeof entityId === 'boolean' || population === null) continue;
+        const key = populationContextKey(entity.type, entityId, basis ?? 'full');
+        if (basis === 'rfm') analyzedCounts.set(key, population);
+        else fullCounts.set(key, population);
+      }
+    }
+  }
+
+  const contexts: CopilotPopulationContext[] = [];
+  const seen = new Set<string>();
+  for (const execution of executions) {
+    const entity = entityDescriptorForPlan(execution.plan);
+    const basis = analysisPopulationBasisForPlan(execution.plan);
+    if (!entity || !basis) continue;
+    for (const row of execution.result.rows.slice(0, ANALYTICAL_EVIDENCE_MAX_DISTRIBUTION_ROWS)) {
+      const entityId = scalarValue(row, entity.resultField);
+      if (entityId === null || typeof entityId === 'boolean') continue;
+      const analyzedPopulation = analyzedCounts.get(populationContextKey(entity.type, entityId, basis));
+      const fullPopulation = fullCounts.get(populationContextKey(entity.type, entityId, 'full'));
+      if (analyzedPopulation === undefined && fullPopulation === undefined) continue;
+      const contextKey = populationContextKey(entity.type, entityId, basis);
+      if (seen.has(contextKey)) continue;
+      seen.add(contextKey);
+      contexts.push({
+        entityType: entity.type,
+        entityId,
+        ...(typeof fullPopulation === 'number' ? { fullPopulation } : {}),
+        ...(typeof analyzedPopulation === 'number' ? { analyzedPopulation } : {}),
+        analysisBasis: basis,
+        ...(typeof fullPopulation === 'number' && fullPopulation > 0 && typeof analyzedPopulation === 'number'
+          ? { coverageRatio: analyzedPopulation / fullPopulation }
+          : {}),
+      });
+    }
+  }
+  return contexts;
+}
+
+function buildPopulationDiagnostics(
+  populationContexts: readonly CopilotPopulationContext[],
+): Partial<Pick<
+  NonNullable<Extract<CustomerIntelligenceCopilotResponse, { readonly status: 'answered' }>['analysis']>,
+  'populationContextPresent' | 'fullPopulationCount' | 'analyzedPopulationCount' | 'analysisPopulationBasis' | 'populationContexts'
+>> {
+  if (populationContexts.length === 0) return { populationContextPresent: false };
+  const primary = populationContexts.length === 1 ? populationContexts[0] : populationContexts.find((context) => isMaterialPopulationContext(context)) ?? null;
+  return {
+    populationContextPresent: true,
+    ...(primary && typeof primary.fullPopulation === 'number' ? { fullPopulationCount: primary.fullPopulation } : {}),
+    ...(primary && typeof primary.analyzedPopulation === 'number' ? { analyzedPopulationCount: primary.analyzedPopulation } : {}),
+    ...(primary?.analysisBasis ? { analysisPopulationBasis: primary.analysisBasis } : {}),
+    populationContexts,
+  };
+}
+
+function analysisPopulationBasisForPlan(plan: AnalyticalQueryPlan): 'rfm' | null {
+  const fields = [
+    ...(plan.dimensions ?? []),
+    ...filterFieldNames(plan),
+    ...(plan.metrics ?? []).map((metric) => metric.field).filter((field): field is string => typeof field === 'string'),
+  ];
+  return fields.some((field) => field.startsWith('rfm.')) ? 'rfm' : null;
+}
+
+function isPopulationCountMetric(aggregation: string): boolean {
+  return aggregation === 'count' || aggregation === 'count_distinct';
+}
+
+function numericCountValue(value: unknown): number | null {
+  if (!isEvidenceValue(value)) return null;
+  const numeric = numericComparableValue(value);
+  return numeric === null ? null : Math.round(numeric);
+}
+
+function populationContextKey(entityType: string, entityId: string | number, basis: string): string {
+  return `${entityType}:${String(entityId)}:${basis}`;
+}
+
+function isMaterialPopulationContext(context: CopilotPopulationContext): boolean {
+  return typeof context.fullPopulation === 'number'
+    && typeof context.analyzedPopulation === 'number'
+    && context.fullPopulation > 0
+    && context.analyzedPopulation !== context.fullPopulation;
+}
+
+function renderPopulationContextLine(context: CopilotPopulationContext): string | null {
+  if (!isMaterialPopulationContext(context)) return null;
+  const entity = businessEntityLabel(context.entityType, context.entityId);
+  const fullPopulation = formatBusinessValue(context.fullPopulation ?? null, 'count');
+  const analyzedPopulation = formatBusinessValue(context.analyzedPopulation ?? null, 'count');
+  if (context.analysisBasis === 'rfm') {
+    return `${entity} tiene ${fullPopulation} clientes en total. Para esta comparacion RFM hay informacion disponible para ${analyzedPopulation} de ellos, por lo que las metricas RFM se calculan sobre esa subpoblacion.`;
+  }
+  return `${entity} tiene ${fullPopulation} clientes en total. Para este analisis hay informacion disponible para ${analyzedPopulation} de ellos, por lo que los resultados se calculan sobre esa subpoblacion.`;
 }
 
 // Trims one row off whichever distribution currently holds the most rows, so a char-budget
@@ -2107,22 +2239,22 @@ function canUseDeterministicSynthesisFallback(error: unknown, evidenceBundle: An
 function fallbackToolSynthesisResponse(args: {
   readonly session: CopilotSession;
   readonly turnId: string;
+  readonly question: string;
   readonly executions: readonly { readonly id: string; readonly plan: AnalyticalQueryPlan; readonly result: AnalyticalQueryResult }[];
   readonly queryResults: readonly CopilotSessionQueryResult[];
   readonly evidenceBundle: AnalyticalEvidenceBundle;
   readonly selectionMetadata: CopilotModelMetadata | null;
   readonly provenance: CustomerIntelligenceSnapshotContext;
-  readonly reason: string;
 }): { readonly sessionId: string; readonly turnId: string; readonly queryIds: readonly string[]; readonly sourceQueryIds: readonly string[] } & CustomerIntelligenceCopilotResponse {
   return withSession(
     { sessionId: args.session.sessionId, turnId: args.turnId, queryIds: args.queryResults.map((entry) => entry.queryId), sourceQueryIds: [] },
     answered(
       args.executions,
-      renderDeterministicEvidenceFallback(args.evidenceBundle),
+      renderDeterministicEvidenceFallback(args.evidenceBundle, args.question),
       args.selectionMetadata,
       null,
       args.provenance,
-      { used: true, reason: args.reason },
+      { used: true, populationContexts: args.evidenceBundle.populationContexts },
     ),
   );
 }
@@ -2130,8 +2262,15 @@ function fallbackToolSynthesisResponse(args: {
 // task MARKETING-R1-T05.8.6 Section 10: business-readable prose, never internal aliases (avg_r,
 // customer_count, query ids, "rank N"). Every grouped value the (already bounded) evidence bundle
 // retained must stay represented - no additional truncation is applied here.
-function renderDeterministicEvidenceFallback(bundle: AnalyticalEvidenceBundle): string {
-  const lines = ['El analisis se completo, pero la sintesis avanzada no estuvo disponible.'];
+function renderDeterministicEvidenceFallback(bundle: AnalyticalEvidenceBundle, question: string): string {
+  if (asksForAnalyticalRecommendation(question)) {
+    const recommendation = renderReactivationRecommendationFallback(bundle);
+    if (recommendation) return recommendation;
+  }
+
+  const lines = bundle.populationContexts
+    .map(renderPopulationContextLine)
+    .filter((line): line is string => line !== null);
 
   for (const distribution of bundle.distributions) {
     const metric = resolveBusinessMetricByName(distribution.metric);
@@ -2179,6 +2318,99 @@ function renderDeterministicEvidenceFallback(bundle: AnalyticalEvidenceBundle): 
 
   lines.push(...bundle.limitations);
   return lines.join('\n');
+}
+
+function renderReactivationRecommendationFallback(bundle: AnalyticalEvidenceBundle): string | null {
+  const recommendedEntity = bundle.anchor?.entityType === 'cluster' || bundle.anchor?.entityType === 'rfm_segment'
+    ? { entityType: bundle.anchor.entityType, entityId: bundle.anchor.entityId }
+    : firstRecommendationEntity(bundle);
+  if (!recommendedEntity || recommendedEntity.entityId === null) return null;
+
+  const entity = businessEntityLabel(recommendedEntity.entityType, recommendedEntity.entityId);
+  const supportingFacts = bundle.facts.filter((fact) =>
+    fact.entityType === recommendedEntity.entityType
+    && fact.entityId !== null
+    && String(fact.entityId) === String(recommendedEntity.entityId)
+    && fact.value !== null,
+  );
+  const supportingComparisons = bundle.comparisons.filter((comparison) =>
+    comparison.left.entityType === recommendedEntity.entityType
+    && comparison.left.entityId !== null
+    && String(comparison.left.entityId) === String(recommendedEntity.entityId),
+  );
+  const populationLines = bundle.populationContexts
+    .filter((context) => context.entityType === recommendedEntity.entityType && context.entityId !== null && String(context.entityId) === String(recommendedEntity.entityId))
+    .map(renderPopulationContextLine)
+    .filter((line): line is string => line !== null);
+
+  const valueSignals = supportingFacts.filter((fact) => isReactivationValueMetric(fact.metric));
+  const inactivitySignals = supportingFacts.filter((fact) => isReactivationInactivityMetric(fact.metric));
+  const factLine = supportingFacts
+    .slice(0, 2)
+    .map((fact) => {
+      const metric = resolveBusinessMetricByName(fact.metric);
+      return `${metric.label}: ${formatBusinessValue(fact.value, metric.format)}`;
+    })
+    .join('; ');
+  const comparisonLine = supportingComparisons[0]
+    ? renderReactivationComparisonLine(supportingComparisons[0])
+    : null;
+
+  const lines = [...populationLines];
+  lines.push(`FACT: ${entity}${factLine.length > 0 ? ` muestra ${factLine}.` : ' concentra las senales historicas mas fuertes observadas para esta decision.'}`);
+  lines.push(`INTERPRETACION: ${buildReactivationInterpretation(entity, valueSignals.length > 0, inactivitySignals.length > 0)}.`);
+  lines.push(`RECOMENDACION: Priorizaria ${entity} para una campana de reactivacion por combinar ${buildReactivationReason(valueSignals.length > 0, inactivitySignals.length > 0)}.`);
+  if (comparisonLine) lines.push(`FACT: ${comparisonLine}`);
+  lines.push('LIMITACION: Esta es una recomendacion basada en evidencia historica; no predice conversion ni garantiza resultados de campana.');
+  return lines.join('\n');
+}
+
+function firstRecommendationEntity(bundle: AnalyticalEvidenceBundle): { readonly entityType: 'cluster' | 'rfm_segment'; readonly entityId: string | number | null } | null {
+  const firstFact = bundle.facts.find((fact) => isPopulationEntityType(fact.entityType) && fact.entityId !== null);
+  if (firstFact && isPopulationEntityType(firstFact.entityType)) return { entityType: firstFact.entityType, entityId: firstFact.entityId };
+  const firstComparison = bundle.comparisons.find((comparison) => isPopulationEntityType(comparison.left.entityType) && comparison.left.entityId !== null);
+  if (firstComparison && isPopulationEntityType(firstComparison.left.entityType)) {
+    return { entityType: firstComparison.left.entityType, entityId: firstComparison.left.entityId };
+  }
+  return null;
+}
+
+function isPopulationEntityType(entityType: string | null): entityType is 'cluster' | 'rfm_segment' {
+  return entityType === 'cluster' || entityType === 'rfm_segment';
+}
+
+function isReactivationValueMetric(metric: string): boolean {
+  return metric === 'averageOrderValue'
+    || metric === 'totalSpent'
+    || metric === 'validOrderCount'
+    || metric === 'orders365d'
+    || metric === 'averageFrequencyScore'
+    || metric === 'averageMonetaryScore';
+}
+
+function isReactivationInactivityMetric(metric: string): boolean {
+  return metric === 'daysSinceLastOrder' || metric === 'averageRecencyScore';
+}
+
+function buildReactivationInterpretation(entity: string, hasValueSignal: boolean, hasInactivitySignal: boolean): string {
+  if (hasValueSignal && hasInactivitySignal) return `${entity} combina valor historico con senales de inactividad recientes o acumuladas`;
+  if (hasValueSignal) return `${entity} destaca por su valor historico y por eso puede ser un buen candidato de recuperacion`;
+  if (hasInactivitySignal) return `${entity} muestra inactividad suficiente como para justificar una reactivacion prioritaria`;
+  return `${entity} aparece como el mejor candidato disponible con la evidencia historica observada`;
+}
+
+function buildReactivationReason(hasValueSignal: boolean, hasInactivitySignal: boolean): string {
+  if (hasValueSignal && hasInactivitySignal) return 'valor historico e inactividad observada';
+  if (hasValueSignal) return 'valor historico observado';
+  if (hasInactivitySignal) return 'inactividad observada';
+  return 'las senales historicas disponibles';
+}
+
+function renderReactivationComparisonLine(comparison: AnalyticalEvidenceBundle['comparisons'][number]): string {
+  const metric = resolveBusinessMetricByName(comparison.metric);
+  const leftLabel = businessEntityLabel(comparison.left.entityType, comparison.left.entityId);
+  const rightLabel = businessEntityLabel(comparison.right.entityType, comparison.right.entityId);
+  return `${leftLabel} se compara con ${rightLabel} en ${metric.label.toLowerCase()}: ${formatBusinessValue(comparison.left.value, metric.format)} frente a ${formatBusinessValue(comparison.right.value, metric.format)}${buildRatioPhrase(Number(comparison.left.value), Number(comparison.right.value))}.`;
 }
 
 function buildRatioPhrase(leftValue: number, rightValue: number): string {
@@ -2251,12 +2483,14 @@ function directToolRuntimeResponse(
   if (isClarificationContent(message)) return terminal('clarification_required', message);
   return {
     status: 'responded_directly',
+    finalResponseState: 'success',
     answer: message,
     analysis: {
       contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION,
       decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
       decisionAction: 'respond_directly',
       orchestratorModel: modelName(metadata),
+      finalResponseState: 'success',
     },
     provenance,
   };
@@ -3127,26 +3361,31 @@ function plannerValidationErrorCategory(error: string): string {
 }
 
 function answered(
-  executions: readonly { readonly result: AnalyticalQueryResult }[],
+  executions: readonly { readonly id: string; readonly plan: AnalyticalQueryPlan; readonly result: AnalyticalQueryResult }[],
   answer: string,
   plannerMetadata: CopilotModelMetadata | null,
   answerMetadata: CopilotModelMetadata | null,
   provenance: CustomerIntelligenceSnapshotContext,
-  synthesisFallback?: { readonly used: boolean; readonly reason: string | null },
+  synthesisFallback?: { readonly used: boolean; readonly populationContexts?: readonly CopilotPopulationContext[] },
 ): CustomerIntelligenceCopilotResponse {
+  const populationContexts = synthesisFallback?.populationContexts ?? derivePopulationContexts(executions);
+  const finalResponseState = synthesisFallback?.used ? 'degraded_success' : 'success';
   return {
     status: 'answered',
+    finalResponseState,
     answer,
     analysis: {
       contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION,
       analysisPlanVersion: CUSTOMER_INTELLIGENCE_COPILOT_ANALYSIS_PLAN_VERSION,
+      finalResponseState,
       queryCount: executions.length,
       queryPlanHashes: executions.map((execution) => execution.result.queryPlanHash),
       resultRowCount: executions.reduce((sum, execution) => sum + execution.result.rowCount, 0),
       executionDurationMs: executions.reduce((sum, execution) => sum + execution.result.execution.durationMs, 0),
       plannerModel: modelName(plannerMetadata),
       answerModel: modelName(answerMetadata),
-      ...(synthesisFallback ? { synthesisFallbackUsed: synthesisFallback.used, synthesisFallbackReason: synthesisFallback.reason } : {}),
+      ...(synthesisFallback ? { synthesisFallbackUsed: synthesisFallback.used } : {}),
+      ...buildPopulationDiagnostics(populationContexts),
     },
     provenance,
   };
@@ -3172,7 +3411,9 @@ function appendTurn(
     createdAt: now.toISOString(),
     userQuestion: trimBounded(question, limits.maxQuestionChars),
     assistantStatus: response.status,
+    assistantFinalResponseState: response.finalResponseState,
     assistantAnswer,
+    ...('analysis' in response && 'synthesisFallbackUsed' in response.analysis ? { synthesisFallbackUsed: response.analysis.synthesisFallbackUsed } : {}),
     queryIds,
     sourceQueryIds,
   };
@@ -3209,15 +3450,15 @@ function uniqueQueryId(session: CopilotSession, queryId: string): string {
 }
 
 function terminal(status: 'clarification_required' | 'unsupported_data' | 'unsupported_operation', message: string): CustomerIntelligenceCopilotResponse {
-  return { status, message, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
+  return { status, finalResponseState: 'success', message, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
 }
 
 function orchestratorInvalid(errors: readonly string[]): CustomerIntelligenceCopilotResponse {
-  return { status: 'orchestrator_invalid', errors, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
+  return { status: 'orchestrator_invalid', finalResponseState: 'failure', errors, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
 }
 
 function plannerInvalid(errors: readonly string[]): CustomerIntelligenceCopilotResponse {
-  return { status: 'planner_invalid', errors, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
+  return { status: 'planner_invalid', finalResponseState: 'failure', errors, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
 }
 
 function answerGenerationFailed(error: unknown): CustomerIntelligenceCopilotResponse {
@@ -3225,6 +3466,7 @@ function answerGenerationFailed(error: unknown): CustomerIntelligenceCopilotResp
   if (provider) return provider;
   return {
     status: 'answer_generation_failed',
+    finalResponseState: 'failure',
     message: error instanceof Error ? error.message : 'Answer generation failed',
     contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION,
   };
@@ -3243,6 +3485,7 @@ function mapProviderError(error: unknown): CustomerIntelligenceCopilotResponse |
   ) {
     return {
       status: category,
+      finalResponseState: 'failure',
       message: error instanceof Error ? error.message : category,
       contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION,
     };
@@ -3251,12 +3494,12 @@ function mapProviderError(error: unknown): CustomerIntelligenceCopilotResponse |
 }
 
 function mapContextFailure(reason: string): AnalyticsUnavailableResponse {
-  return { status: 'analytics_unavailable', message: reason, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
+  return { status: 'analytics_unavailable', finalResponseState: 'failure', message: reason, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
 }
 
 function mapAnalyticsError(error: unknown): AnalyticsFailureResponse {
-  if (error instanceof AnalyticsTimeoutError) return { status: 'analytics_timeout', message: error.message, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
-  if (error instanceof AnalyticsUnavailableError || error instanceof AnalyticsSchemaIncompatibleError) return { status: 'analytics_unavailable', message: error.message, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
+  if (error instanceof AnalyticsTimeoutError) return { status: 'analytics_timeout', finalResponseState: 'failure', message: error.message, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
+  if (error instanceof AnalyticsUnavailableError || error instanceof AnalyticsSchemaIncompatibleError) return { status: 'analytics_unavailable', finalResponseState: 'failure', message: error.message, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
   throw error;
 }
 
@@ -3305,6 +3548,7 @@ function appendSystemEvent(turns: readonly CopilotSessionTurn[], now: Date, even
       createdAt: now.toISOString(),
       userQuestion: '',
       assistantStatus: `system_${event}`,
+      assistantFinalResponseState: 'success' as const,
       assistantAnswer: event === 'refresh' ? 'Snapshot context refreshed explicitly.' : null,
       queryIds: [],
       sourceQueryIds: [],
