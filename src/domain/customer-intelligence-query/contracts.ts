@@ -1,6 +1,7 @@
 import type { CustomerIntelligenceSnapshotContext } from '../customer-intelligence/index.js';
 
 export const CUSTOMER_INTELLIGENCE_QUERY_PLAN_VERSION = 'customer-intelligence-query-plan-v1';
+export const CUSTOMER_INTELLIGENCE_COMPACT_QUERY_VERSION = 'customer-intelligence-compact-query-v1';
 export const CUSTOMER_INTELLIGENCE_QUERY_RESULT_VERSION = 'customer-intelligence-query-v1';
 export const CUSTOMER_INTELLIGENCE_QUERY_SCHEMA_VERSION = 'customer-intelligence-query-schema-v1';
 
@@ -61,6 +62,40 @@ export type AnalyticalMetricSpec = {
 export type AnalyticalOrderBySpec = {
   readonly field: string;
   readonly direction: 'asc' | 'desc';
+};
+
+export type CompactAnalyticalFilterCondition = {
+  readonly field: string;
+  readonly op: AnalyticalFilterOperator;
+  readonly value?: AnalyticalFilterValue;
+};
+
+export type CompactAnalyticalFilterGroup =
+  | { readonly and: readonly CompactAnalyticalFilterNode[] }
+  | { readonly or: readonly CompactAnalyticalFilterNode[] };
+
+export type CompactAnalyticalFilterNode = CompactAnalyticalFilterCondition | CompactAnalyticalFilterGroup;
+export type CompactAnalyticalFilterInput = readonly CompactAnalyticalFilterNode[] | CompactAnalyticalFilterNode;
+
+export type CompactAnalyticalMetricSpec = {
+  readonly op: AnalyticalAggregation;
+  readonly field?: string;
+  readonly alias: string;
+};
+
+export type CompactAnalyticalOrderBySpec = {
+  readonly field: string;
+  readonly direction: 'asc' | 'desc';
+};
+
+export type CompactAnalyticalQuery = {
+  readonly contractVersion?: typeof CUSTOMER_INTELLIGENCE_COMPACT_QUERY_VERSION;
+  readonly select?: readonly string[];
+  readonly dimensions?: readonly string[];
+  readonly metrics?: readonly CompactAnalyticalMetricSpec[];
+  readonly filters?: CompactAnalyticalFilterInput;
+  readonly orderBy?: readonly CompactAnalyticalOrderBySpec[];
+  readonly limit?: number;
 };
 
 // The bounded, structured contract a future LLM (or this task's own CLI/tests) produces —

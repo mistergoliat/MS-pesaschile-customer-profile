@@ -226,6 +226,13 @@ function recordFromDiagnostics(args: {
     cacheHitTokens: sumCacheTokens(args.diagnostics, 'promptCacheHitTokens'),
     cacheMissTokens: sumCacheTokens(args.diagnostics, 'promptCacheMissTokens'),
     cacheHitRatio: cacheHitRatio(args.diagnostics),
+    compactToolContract: args.diagnostics.some((diagnostic) => diagnostic.compactToolContract === true),
+    toolSchemaChars: maxOptional(args.diagnostics, 'toolSchemaChars'),
+    toolArgumentChars: sumOptional(args.diagnostics, 'toolArgumentChars'),
+    contextProjectionChars: sumOptional(args.diagnostics, 'contextProjectionChars'),
+    resultSummaryChars: sumOptional(args.diagnostics, 'resultSummaryChars'),
+    toolSelectionPromptChars: maxOptional(args.diagnostics, 'toolSelectionPromptChars'),
+    toolSelectionPromptTokens: maxOptional(args.diagnostics, 'toolSelectionPromptTokens'),
     semanticPass: args.semanticPass,
     semanticFailureReason: args.semanticFailureReason,
   };
@@ -271,6 +278,15 @@ function cacheHitRatio(diagnostics: readonly CopilotStageLatencyDiagnostic[]): n
   const hit = sumCacheTokens(diagnostics, 'promptCacheHitTokens');
   const miss = sumCacheTokens(diagnostics, 'promptCacheMissTokens');
   return hit + miss > 0 ? hit / (hit + miss) : null;
+}
+
+function sumOptional(diagnostics: readonly CopilotStageLatencyDiagnostic[], key: 'toolArgumentChars' | 'contextProjectionChars' | 'resultSummaryChars'): number {
+  return diagnostics.reduce((sum, diagnostic) => sum + (diagnostic[key] ?? 0), 0);
+}
+
+function maxOptional(diagnostics: readonly CopilotStageLatencyDiagnostic[], key: 'toolSchemaChars' | 'toolSelectionPromptChars' | 'toolSelectionPromptTokens'): number | null {
+  const values = diagnostics.map((diagnostic) => diagnostic[key]).filter((value): value is number => typeof value === 'number');
+  return values.length > 0 ? Math.max(...values) : null;
 }
 
 function parseArgs(args: readonly string[]): Record<string, string> {

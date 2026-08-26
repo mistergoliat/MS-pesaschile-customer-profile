@@ -19,6 +19,13 @@ export type CopilotBenchmarkRecord = {
   readonly cacheHitTokens: number;
   readonly cacheMissTokens: number;
   readonly cacheHitRatio: number | null;
+  readonly compactToolContract: boolean;
+  readonly toolSchemaChars: number | null;
+  readonly toolArgumentChars: number;
+  readonly contextProjectionChars: number;
+  readonly resultSummaryChars: number;
+  readonly toolSelectionPromptChars: number | null;
+  readonly toolSelectionPromptTokens: number | null;
   readonly semanticPass: boolean;
   readonly semanticFailureReason: string | null;
 };

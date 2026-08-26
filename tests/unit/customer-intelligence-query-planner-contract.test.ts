@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { serializeAnalyticalQueryContractForCopilot } from '../../src/domain/customer-intelligence-copilot/index.js';
-import { validateAnalyticalQueryPlan } from '../../src/domain/customer-intelligence-query/index.js';
+import { expandCompactAnalyticalQuery, validateAnalyticalQueryPlan } from '../../src/domain/customer-intelligence-query/index.js';
 
 function expectOk(result: ReturnType<typeof validateAnalyticalQueryPlan>) {
   if (!result.ok) throw new Error(`expected ok, got errors: ${result.errors.join('; ')}`);
@@ -99,10 +99,10 @@ describe('AnalyticalQueryPlan planner contract regressions', () => {
   it('keeps every planner queryContract example valid against the runtime validator', () => {
     const contract = serializeAnalyticalQueryContractForCopilot();
 
-    expect(contract.planVersion).toBe('customer-intelligence-query-plan-v1');
-    expect(contract.metricSchema.alias.pattern).toBe('^[A-Za-z_][A-Za-z0-9_]*$');
+    expect(contract.contractVersion).toBe('customer-intelligence-compact-query-v1');
+    expect(contract.metrics.alias.pattern).toBe('^[A-Za-z_][A-Za-z0-9_]*$');
     for (const example of contract.examples) {
-      expect(validateAnalyticalQueryPlan(example.plan).ok).toBe(true);
+      expect(expandCompactAnalyticalQuery(example.query).ok).toBe(true);
     }
   });
 });

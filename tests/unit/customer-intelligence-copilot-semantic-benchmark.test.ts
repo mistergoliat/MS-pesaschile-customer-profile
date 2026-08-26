@@ -333,8 +333,14 @@ describe('Customer Intelligence Copilot semantic benchmark', () => {
   it('passes answerer prompt context for non-causal explanatory synthesis', async () => {
     const h = harness({
       decisions: [decision('run_analytics', { analyticalQuestion: 'Why does Cluster 3 have higher ticket? Gather observed differences only.' })],
-      plans: [plan([{ id: 'why_cluster_3', plan: avgTicketByCluster() }])],
-      executionResults: [result([{ clusterId: 3, avg_ticket: '150000.000000' }], '3'.repeat(64), ['clusterId', 'avg_ticket'])],
+      plans: [plan([
+        { id: 'ticket_by_cluster', plan: avgTicketByCluster() },
+        { id: 'orders_by_cluster', plan: { dimensions: ['cluster.clusterId'], filters: [{ field: 'cluster.clusterId', operator: 'is_not_null' }], metrics: [{ aggregation: 'avg', field: 'commercial.validOrders', alias: 'avg_orders' }] } },
+      ])],
+      executionResults: [
+        result([{ clusterId: 3, avg_ticket: '150000.000000' }], '3'.repeat(64), ['clusterId', 'avg_ticket']),
+        result([{ clusterId: 3, avg_orders: '2.500000' }], '4'.repeat(64), ['clusterId', 'avg_orders']),
+      ],
     });
     const sessionId = await createSession(h);
     await h.service.processSessionTurn({ sessionId, question: 'Por que el cluster 3 tiene mayor ticket?' });

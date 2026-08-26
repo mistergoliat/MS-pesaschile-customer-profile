@@ -1,4 +1,4 @@
-import type { AnalyticalQueryPlan, AnalyticalQueryResult, AnalyticalSchema } from '../customer-intelligence-query/index.js';
+import type { AnalyticalQueryPlan, AnalyticalQueryResult, AnalyticalSchema, CompactAnalyticalQuery } from '../customer-intelligence-query/index.js';
 import type { CustomerIntelligenceSnapshotContext } from '../customer-intelligence/index.js';
 
 export const CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION = 'customer-intelligence-copilot-v1';
@@ -18,7 +18,7 @@ export type CopilotPlanStatus = 'query_plan' | 'answer_from_context' | 'unsuppor
 
 export type CopilotQueryStep = {
   readonly id: string;
-  readonly plan: AnalyticalQueryPlan;
+  readonly plan: AnalyticalQueryPlan | CompactAnalyticalQuery;
 };
 
 export type CopilotAnalysisPlan =
@@ -115,53 +115,37 @@ export type CopilotConversationPlan =
     };
 
 export type CompactAnalyticalSchema = Pick<AnalyticalSchema, 'schemaVersion' | 'readModelVersion'> & {
-  readonly fields: readonly {
-    readonly logicalName: string;
-    readonly type: string;
-    readonly nullable: boolean;
-    readonly description: string;
-    readonly allowedOperators: readonly string[];
-    readonly allowedAggregations: readonly string[];
-  }[];
+  readonly fields: Readonly<Record<string, {
+    readonly f: string;
+    readonly t: string;
+    readonly n: boolean;
+    readonly d: string;
+    readonly ops: readonly string[];
+    readonly aggs: readonly string[];
+  }>>;
 };
 
 export type CompactAnalyticalQueryContract = {
-  readonly planVersion: string;
+  readonly contractVersion: string;
   readonly maxQueries: number;
-  readonly modes: {
-    readonly row: {
-      readonly useFor: readonly string[];
-      readonly required: readonly string[];
-      readonly forbidden: readonly string[];
-      readonly optional: readonly string[];
-    };
-    readonly aggregate: {
-      readonly useFor: readonly string[];
-      readonly required: readonly string[];
-      readonly forbidden: readonly string[];
-      readonly optional: readonly string[];
-    };
+  readonly queryShape: {
+    readonly aggregate: 'dimensions? + metrics';
+    readonly row: 'select + filters/orderBy/limit';
+    readonly fieldNames: 'use schema.fields keys';
+    readonly noSql: true;
   };
-  readonly metricSchema: {
-    readonly required: readonly string[];
-    readonly aggregation: {
-      readonly allowed: readonly string[];
-      readonly count: { readonly field: 'omit_for_count_all' };
-      readonly count_distinct: { readonly field: 'required' };
-      readonly sum: { readonly field: 'required_numeric' };
-      readonly avg: { readonly field: 'required_numeric' };
-      readonly min: { readonly field: 'required' };
-      readonly max: { readonly field: 'required' };
-    };
+  readonly metrics: {
+    readonly ops: readonly string[];
+    readonly shape: '{ op, field?, alias }';
+    readonly count: 'omit field';
+    readonly fieldRequiredFor: readonly string[];
     readonly alias: {
       readonly required: true;
       readonly pattern: string;
-      readonly validExamples: readonly string[];
-      readonly invalidExamples: readonly string[];
     };
   };
   readonly filters: {
-    readonly shape: string;
+    readonly shape: '{ field, op, value? } or bounded { and|or: [...] }';
     readonly operators: readonly string[];
     readonly maxLeaves: number;
     readonly maxDepth: number;
@@ -200,7 +184,7 @@ export type CompactAnalyticalQueryContract = {
   };
   readonly examples: readonly {
     readonly question: string;
-    readonly plan: AnalyticalQueryPlan;
+    readonly query: CompactAnalyticalQuery;
   }[];
 };
 

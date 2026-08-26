@@ -598,6 +598,66 @@ Result: PASS, 2 files, 46 tests.
 
 Live validation: NOT_RUN.
 
+## T05.8.2 Compact Analytical Tool Plans and Deterministic Fast Paths
+
+Motivation: T05.8.1 validated the native tool-calling architecture and semantics, but live evidence
+still showed too much model work around query selection and one avoidable grouped-ranking synthesis.
+
+Live T05.8.1 EC2 evidence with `deepseek-v4-flash`:
+
+- `simple_fact`: PASS, total 2.847s, tool selection 2.695s, analytics 137ms, synthesis 0,
+  semantic PASS.
+- `simple_grouped_ranking`: PASS, total 9.298s, tool selection 4.220s, analytics 58ms,
+  synthesis 5.015s, semantic PASS, cache hit ratio 0.875.
+- `contextual_deep_followup`: PASS, total 34.269s, tool selection 21.279s, analytics 193ms,
+  synthesis 12.790s, semantic PASS, cache hit ratio 0.763.
+
+Renderer issue:
+
+- A one-query aggregate grouped ranking such as `Cual cluster tiene mayor ticket promedio?` must
+  complete as tool selection -> analytics -> deterministic renderer when the validated plan/result
+  identify a winner.
+- The renderer decision is now based on validated query and result structure, including aggregate
+  mode, metric count, grouping, ordering, truncation, result columns, row count and tie detection.
+  It no longer depends on matching phrases in the user question.
+
+Compact contract architecture:
+
+- Native `run_analytical_queries` now exposes compact query objects directly as
+  `queries: [{ id, dimensions, metrics, filters, orderBy, limit }]`.
+- Compact metrics use `{ op, field?, alias }`; compact filters use `{ field, op, value? }`.
+- The model-facing field catalog is keyed by compact names such as `clusterId`,
+  `averageOrderValue`, `totalSpent` and `validOrderCount`, with terse machine-readable type,
+  nullability, operator and aggregation metadata.
+
+Deterministic expansion:
+
+- `CompactAnalyticalQuery` is expanded deterministically to full T03 `AnalyticalQueryPlan`.
+- The adapter injects `customer-intelligence-query-plan-v1`, maps compact field names to T03
+  logical fields, maps metric `op` to T03 `aggregation`, normalizes `orderBy`, expands compact
+  filters into the T03 filter AST, applies limits, rejects unsupported properties and then calls
+  the existing T03 validator. T03 remains authoritative; no SQL is generated from the model.
+- Legacy full `AnalyticalQueryPlan` execution remains supported for rollback and non-tool paths.
+
+Latency diagnostics:
+
+- Stage diagnostics now include `compactToolContract`, `toolSchemaChars`,
+  `toolSelectionPromptChars`, `toolSelectionPromptTokens` when provider usage exposes it,
+  `toolArgumentChars`, `contextProjectionChars` and `resultSummaryChars`.
+- Benchmark JSONL records now include the same compact-contract and size fields alongside
+  `toolSelectionMs`, `analyticsMs`, `toolSynthesisMs`, `cacheHitRatio` and `semanticPass`.
+- No latency improvement is claimed here without live measurement.
+
+Local focused validation:
+
+`npx vitest run tests/unit/customer-intelligence-compact-query-adapter.test.ts tests/unit/customer-intelligence-query-planner-contract.test.ts tests/unit/customer-intelligence-copilot-session.test.ts tests/unit/customer-intelligence-copilot-benchmark.test.ts`
+
+Result: PASS, 4 files, 63 tests.
+
+Live benchmark: NOT_RUN.
+
+Live validation: NOT_RUN.
+
 ## T05.5 Answer Generation Reliability and Latency Observability
 
 Live symptom: in a fresh T05.4 session, `Cual cluster tiene mayor ticket promedio?` completed

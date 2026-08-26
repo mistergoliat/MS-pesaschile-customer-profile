@@ -15,3 +15,11 @@ export {
 export { compileAnalyticalQuery, type AnalyticalQuerySnapshotIds } from './compiler.js';
 export { computeQueryPlanHash } from './plan-hash.js';
 export { assertNoPiiInAnalyticalValue } from './pii-guard.js';
+export {
+  expandCompactAnalyticalQuery,
+  isCompactAnalyticalQueryShape,
+  compactFieldNameForLogicalName,
+  logicalNameForCompactField,
+  getCompactFieldAliases,
+  type CompactAnalyticalQueryExpansionResult,
+} from './compact-query-adapter.js';

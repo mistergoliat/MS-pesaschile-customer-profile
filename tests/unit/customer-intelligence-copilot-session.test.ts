@@ -100,7 +100,7 @@ function toolRuntimeContent(content: string) {
   return { content, toolCalls: [], metadata: { provider: 'fake', model: 'tool' } };
 }
 
-function toolRuntimeCall(queries: readonly { id: string; plan: unknown }[], id = 'call_1') {
+function toolRuntimeCall(queries: readonly Record<string, unknown>[], id = 'call_1') {
   return {
     content: null,
     toolCalls: [{ id, name: CUSTOMER_INTELLIGENCE_COPILOT_RUN_ANALYTICAL_QUERIES_TOOL, arguments: { queries } }],
@@ -372,6 +372,51 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
     if (ratioResponse.status === 'ok') expect(ratioResponse.response.status).toBe('answered');
     expect(ratio.generateConversationalTurn).toHaveBeenCalledTimes(1);
     expect(ratio.stageLatencyDiagnostics.map((diagnostic) => diagnostic.stage)).toEqual(['tool_selection', 'analytics_execution', 'turn']);
+  });
+
+  it('renders a compact one-query grouped ranking deterministically without tool synthesis', async () => {
+    const h = harness({
+      toolRuntimeEnabled: true,
+      conversationalTurns: [
+        toolRuntimeCall([
+          {
+            id: 'avg_ticket_by_cluster',
+            dimensions: ['clusterId'],
+            filters: [{ field: 'clusterId', op: 'is_not_null' }],
+            metrics: [{ op: 'avg', field: 'averageOrderValue', alias: 'avg_ticket' }],
+            orderBy: [{ field: 'avg_ticket', direction: 'desc' }],
+            limit: 1,
+          },
+        ]),
+      ],
+      executionResults: [result([{ clusterId: 3, avg_ticket: '381304.040000' }], '9'.repeat(64), ['clusterId', 'avg_ticket'])],
+    });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Cual cluster tiene mayor ticket promedio?' });
+
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') {
+      expect(response.response.status).toBe('answered');
+      if (response.response.status === 'answered') expect(response.response.answer).toMatch(/cluster 3.*381304\.040000/i);
+    }
+    expect(h.generateConversationalTurn).toHaveBeenCalledTimes(1);
+    expect(h.generateAnswer).not.toHaveBeenCalled();
+    expect(h.executeAnalyticalQuery).toHaveBeenCalledWith(expect.objectContaining({
+      plan: expect.objectContaining({
+        planVersion: 'customer-intelligence-query-plan-v1',
+        dimensions: ['cluster.clusterId'],
+        filters: [{ field: 'cluster.clusterId', operator: 'is_not_null' }],
+        metrics: [{ aggregation: 'avg', field: 'commercial.averageOrderValueTaxIncl', alias: 'avg_ticket' }],
+        orderBy: [{ field: 'avg_ticket', direction: 'desc' }],
+        limit: 1,
+      }),
+    }));
+    expect(h.stageLatencyDiagnostics.map((diagnostic) => diagnostic.stage)).toEqual(['tool_selection', 'analytics_execution', 'turn']);
+    expect(h.stageLatencyDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: 'tool_selection', compactToolContract: true, toolSchemaChars: expect.any(Number), toolArgumentChars: expect.any(Number), toolSelectionPromptChars: expect.any(Number) }),
+      expect.objectContaining({ stage: 'analytics_execution', compactToolContract: true }),
+    ]));
   });
 
   it('runs multiple native tool queries concurrently and synthesizes exactly once', async () => {
@@ -1117,11 +1162,11 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
     expect(response.status).toBe('ok');
     if (response.status === 'ok') expect(response.response.status).toBe('answered');
     expect(h.repairAnalysisPlan).toHaveBeenCalledTimes(1);
-    const repairCalls = h.repairAnalysisPlan.mock.calls as unknown as [{ validationErrors: readonly string[]; queryContract: { metricSchema: { alias: { pattern: string } } } }][];
+    const repairCalls = h.repairAnalysisPlan.mock.calls as unknown as [{ validationErrors: readonly string[]; queryContract: { metrics: { alias: { pattern: string } } } }][];
     expect(repairCalls[0]?.[0].validationErrors).toEqual(
       expect.arrayContaining(['q1: each metric requires a string alias matching ^[A-Za-z_][A-Za-z0-9_]*$']),
     );
-    expect(repairCalls[0]?.[0].queryContract.metricSchema.alias.pattern).toBe('^[A-Za-z_][A-Za-z0-9_]*$');
+    expect(repairCalls[0]?.[0].queryContract.metrics.alias.pattern).toBe('^[A-Za-z_][A-Za-z0-9_]*$');
     expect(h.executeAnalyticalQuery).toHaveBeenCalledTimes(1);
     expect(h.plannerDiagnostics[0]).toMatchObject({
       initialStatus: 'query_plan',

@@ -87,7 +87,7 @@ function mockFetchJson(body: unknown, ok = true, status = 200) {
 function plannerInput(): GenerateAnalysisPlanInput {
   return {
     question: 'Cuantos clientes hay?',
-    schema: { schemaVersion: CUSTOMER_INTELLIGENCE_QUERY_SCHEMA_VERSION, readModelVersion: 'r', fields: [] },
+    schema: { schemaVersion: CUSTOMER_INTELLIGENCE_QUERY_SCHEMA_VERSION, readModelVersion: 'r', fields: {} },
     queryContract: serializeAnalyticalQueryContractForCopilot(),
     plannerPromptVersion: 'planner-v1',
     maxQueries: 3,
@@ -134,7 +134,7 @@ function orchestratorInput(): GenerateConversationDecisionInput {
 function unifiedPlannerInput(): GenerateConversationPlanInput {
   return {
     question: 'Cuantos clientes hay?',
-    schema: { schemaVersion: CUSTOMER_INTELLIGENCE_QUERY_SCHEMA_VERSION, readModelVersion: 'r', fields: [] },
+    schema: { schemaVersion: CUSTOMER_INTELLIGENCE_QUERY_SCHEMA_VERSION, readModelVersion: 'r', fields: {} },
     queryContract: serializeAnalyticalQueryContractForCopilot(),
     unifiedPlannerPromptVersion: 'unified-planner-v1',
     maxQueries: 3,
@@ -345,7 +345,7 @@ describe('openai_compatible Customer Intelligence Copilot model adapter', () => 
       task: 'generate_analysis_plan',
     });
     expect(JSON.parse(String((payload.messages as { content: string }[])[1]?.content))).toMatchObject({
-      input: { queryContract: { planVersion: 'customer-intelligence-query-plan-v1', metricSchema: { alias: { pattern: '^[A-Za-z_][A-Za-z0-9_]*$' } } } },
+      input: { queryContract: { contractVersion: 'customer-intelligence-compact-query-v1', metrics: { alias: { pattern: '^[A-Za-z_][A-Za-z0-9_]*$' } } } },
     });
   });
 
@@ -367,7 +367,7 @@ describe('openai_compatible Customer Intelligence Copilot model adapter', () => 
     expect(userInput.task).toBe('repair_analysis_plan');
     expect(userInput.input.previousPlan).toEqual({ bad: true });
     expect(userInput.input.validationErrors).toEqual(['query 0 requires a structured AnalyticalQueryPlan']);
-    expect(userInput.input.queryContract.modes.aggregate.required).toEqual(['planVersion', 'metrics']);
+    expect(userInput.input.queryContract.queryShape.aggregate).toBe('dimensions? + metrics');
   });
 
   it('extracts answer content and returns fixed provider metadata', async () => {

@@ -11,7 +11,12 @@ import {
   type CopilotAnalysisPlan,
   type CustomerIntelligenceCopilotResponse,
 } from '../../domain/customer-intelligence-copilot/index.js';
-import { validateAnalyticalQueryPlan, type AnalyticalQueryPlan } from '../../domain/customer-intelligence-query/index.js';
+import {
+  expandCompactAnalyticalQuery,
+  isCompactAnalyticalQueryShape,
+  validateAnalyticalQueryPlan,
+  type AnalyticalQueryPlan,
+} from '../../domain/customer-intelligence-query/index.js';
 import type {
   ResolveCurrentCustomerIntelligenceContext,
   ResolveCustomerIntelligenceContextForFeatureSnapshot,
@@ -190,14 +195,22 @@ function validatePlanEnvelopeAndQueries(rawPlan: unknown):
   const errors: string[] = [];
   const steps: ValidatedStep[] = [];
   for (const query of envelope.plan.queries) {
-    const validation = validateAnalyticalQueryPlan(query.plan);
+    const validation = validateCopilotAnalyticalQueryPlan(query.plan);
     if (!validation.ok) {
       errors.push(...validation.errors.map((error) => `${query.id}: ${error}`));
     } else {
-      steps.push({ id: query.id, plan: validation.plan.canonical });
+      steps.push({ id: query.id, plan: validation.plan });
     }
   }
   return errors.length === 0 ? { ok: true, plan: envelope.plan, steps } : { ok: false, errors };
+}
+
+function validateCopilotAnalyticalQueryPlan(rawPlan: unknown):
+  | { readonly ok: true; readonly plan: AnalyticalQueryPlan }
+  | { readonly ok: false; readonly errors: readonly string[] } {
+  if (isCompactAnalyticalQueryShape(rawPlan)) return expandCompactAnalyticalQuery(rawPlan);
+  const validation = validateAnalyticalQueryPlan(rawPlan);
+  return validation.ok ? { ok: true, plan: validation.plan.canonical } : validation;
 }
 
 function terminal(status: 'clarification_required' | 'unsupported_data' | 'unsupported_operation', message: string): CustomerIntelligenceCopilotResponse {
