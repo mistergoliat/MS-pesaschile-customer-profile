@@ -38,12 +38,21 @@ const SCENARIOS: readonly CopilotBenchmarkScenario[] = [
   {
     id: 'simple_fact',
     turns: ['Cuantos clientes tenemos?'],
-    semanticPass: ({ finalResponse }) => finalResponse.status === 'answered',
+    semanticPass: ({ finalResponse, stageDiagnostics }) => {
+      if (finalResponse.status !== 'answered') return false;
+      if (!hasBenchmarkStage(stageDiagnostics, 'tool_selection')) return true;
+      return hasBenchmarkStage(stageDiagnostics, 'analytics_execution') && countBenchmarkStage(stageDiagnostics, 'tool_synthesis') === 0;
+    },
   },
   {
     id: 'simple_grouped_ranking',
     turns: ['Cual cluster tiene mayor ticket promedio?'],
-    semanticPass: ({ finalResponse }) => finalResponse.status === 'answered',
+    semanticPass: ({ finalResponse, stageDiagnostics }) => {
+      if (finalResponse.status !== 'answered') return false;
+      if (!hasBenchmarkStage(stageDiagnostics, 'tool_selection')) return true;
+      const analytics = lastBenchmarkStage(stageDiagnostics, 'analytics_execution');
+      return analytics !== null && analytics.deterministicRendererEligible === true && countBenchmarkStage(stageDiagnostics, 'tool_synthesis') === 0;
+    },
   },
   {
     id: 'contextual_deep_followup',
@@ -56,7 +65,10 @@ const SCENARIOS: readonly CopilotBenchmarkScenario[] = [
         toolSelection !== undefined &&
         toolSelection.activeSemanticEntityType === 'cluster' &&
         String(toolSelection.activeSemanticEntityId) === '3' &&
-        (toolSelection.toolQueryCount ?? toolSelection.queryCount) >= 2;
+        (toolSelection.toolQueryCount ?? toolSelection.queryCount) >= 2 &&
+        countBenchmarkStage(stageDiagnostics, 'tool_synthesis') <= 1 &&
+        stageDiagnostics.some((diagnostic) => diagnostic.stage === 'analytics_execution') &&
+        stageDiagnostics.some((diagnostic) => diagnostic.semanticAnchorEntityType === 'cluster' && String(diagnostic.semanticAnchorEntityId) === '3');
       return plannerPass || toolPass;
     },
   },
@@ -84,6 +96,18 @@ const SCENARIOS: readonly CopilotBenchmarkScenario[] = [
       (finalResponse.status === 'answered' && /rentabilidad|margen|costo|profit/i.test(finalResponse.answer)),
   },
 ] as const;
+
+function hasBenchmarkStage(diagnostics: readonly CopilotStageLatencyDiagnostic[], stage: CopilotStageLatencyDiagnostic['stage']): boolean {
+  return diagnostics.some((diagnostic) => diagnostic.stage === stage);
+}
+
+function countBenchmarkStage(diagnostics: readonly CopilotStageLatencyDiagnostic[], stage: CopilotStageLatencyDiagnostic['stage']): number {
+  return diagnostics.filter((diagnostic) => diagnostic.stage === stage).length;
+}
+
+function lastBenchmarkStage(diagnostics: readonly CopilotStageLatencyDiagnostic[], stage: CopilotStageLatencyDiagnostic['stage']): CopilotStageLatencyDiagnostic | null {
+  return diagnostics.filter((diagnostic) => diagnostic.stage === stage).at(-1) ?? null;
+}
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
@@ -167,6 +191,7 @@ async function runScenario(args: {
     limits: config.marketingCopilot.session,
     toolRuntimeEnabled: args.runtime === 'config' ? config.marketingCopilot.toolRuntimeEnabled : args.runtime === 'tools',
     unifiedPlannerEnabled: args.runtime === 'config' ? config.marketingCopilot.unifiedPlannerEnabled : args.runtime === 'unified',
+    synthesisMaxTokens: config.marketingCopilot.synthesisMaxTokens,
     onPlannerDiagnostic: (diagnostic) => plannerDiagnostics.push(diagnostic),
     onStageLatencyDiagnostic: (diagnostic) => stageDiagnostics.push(diagnostic),
   });
@@ -233,6 +258,16 @@ function recordFromDiagnostics(args: {
     resultSummaryChars: sumOptional(args.diagnostics, 'resultSummaryChars'),
     toolSelectionPromptChars: maxOptional(args.diagnostics, 'toolSelectionPromptChars'),
     toolSelectionPromptTokens: maxOptional(args.diagnostics, 'toolSelectionPromptTokens'),
+    synthesisFallbackUsed: args.diagnostics.some((diagnostic) => diagnostic.synthesisFallbackUsed === true),
+    deterministicRendererEligible: lastOptionalBoolean(args.diagnostics, 'deterministicRendererEligible'),
+    deterministicRendererReason: lastOptionalString(args.diagnostics, 'deterministicRendererReason'),
+    semanticAnchorEntityType: lastOptionalString(args.diagnostics, 'semanticAnchorEntityType'),
+    semanticAnchorEntityId: lastOptionalStringOrNumber(args.diagnostics, 'semanticAnchorEntityId'),
+    evidenceBundleChars: maxOptional(args.diagnostics, 'evidenceBundleChars'),
+    evidenceFactCount: maxOptional(args.diagnostics, 'evidenceFactCount') ?? 0,
+    evidenceComparisonCount: maxOptional(args.diagnostics, 'evidenceComparisonCount') ?? 0,
+    synthesisPromptChars: maxOptional(args.diagnostics, 'synthesisPromptChars'),
+    synthesisCompletionTokens: maxOptional(args.diagnostics, 'synthesisCompletionTokens'),
     semanticPass: args.semanticPass,
     semanticFailureReason: args.semanticFailureReason,
   };
@@ -248,6 +283,20 @@ function semanticFailureReason(args: {
   readonly plannerDiagnostics: readonly CopilotPlannerDiagnostic[];
   readonly stageDiagnostics: readonly CopilotStageLatencyDiagnostic[];
 }): string {
+  if (args.scenarioId === 'simple_fact') {
+    if (args.finalResponse.status !== 'answered') return `final_status_${args.finalResponse.status}`;
+    if (hasBenchmarkStage(args.stageDiagnostics, 'tool_selection') && !hasBenchmarkStage(args.stageDiagnostics, 'analytics_execution')) return 'missing_analytics_execution';
+    if (countBenchmarkStage(args.stageDiagnostics, 'tool_synthesis') > 0) return 'unexpected_tool_synthesis';
+    return 'semantic_expectation_not_met';
+  }
+  if (args.scenarioId === 'simple_grouped_ranking') {
+    if (args.finalResponse.status !== 'answered') return `final_status_${args.finalResponse.status}`;
+    if (countBenchmarkStage(args.stageDiagnostics, 'tool_synthesis') > 0) return 'unexpected_tool_synthesis';
+    const analytics = lastBenchmarkStage(args.stageDiagnostics, 'analytics_execution');
+    if (analytics && analytics.deterministicRendererEligible !== true) return `deterministic_renderer_${analytics.deterministicRendererReason ?? 'not_eligible'}`;
+    if (!analytics && hasBenchmarkStage(args.stageDiagnostics, 'tool_selection')) return 'missing_analytics_execution';
+    return 'semantic_expectation_not_met';
+  }
   if (args.scenarioId !== 'contextual_deep_followup') return `final_status_${args.finalResponse.status}`;
   if (args.finalResponse.status === 'clarification_required') return 'unexpected_clarification_required';
   if (args.finalResponse.status !== 'answered') return `final_status_${args.finalResponse.status}`;
@@ -259,6 +308,8 @@ function semanticFailureReason(args: {
     if (toolSelection.activeSemanticEntityType !== 'cluster' || String(toolSelection.activeSemanticEntityId) !== '3') return 'active_cluster_3_not_preserved';
     if ((toolSelection.toolQueryCount ?? toolSelection.queryCount) < 2) return 'tool_query_count_below_2';
   }
+  if (countBenchmarkStage(args.stageDiagnostics, 'tool_synthesis') > 1) return 'tool_synthesis_count_above_1';
+  if (!args.stageDiagnostics.some((diagnostic) => diagnostic.semanticAnchorEntityType === 'cluster' && String(diagnostic.semanticAnchorEntityId) === '3')) return 'semantic_anchor_cluster_3_not_preserved';
   return 'semantic_expectation_not_met';
 }
 
@@ -284,9 +335,26 @@ function sumOptional(diagnostics: readonly CopilotStageLatencyDiagnostic[], key:
   return diagnostics.reduce((sum, diagnostic) => sum + (diagnostic[key] ?? 0), 0);
 }
 
-function maxOptional(diagnostics: readonly CopilotStageLatencyDiagnostic[], key: 'toolSchemaChars' | 'toolSelectionPromptChars' | 'toolSelectionPromptTokens'): number | null {
+function maxOptional(
+  diagnostics: readonly CopilotStageLatencyDiagnostic[],
+  key: 'toolSchemaChars' | 'toolSelectionPromptChars' | 'toolSelectionPromptTokens' | 'evidenceBundleChars' | 'evidenceFactCount' | 'evidenceComparisonCount' | 'synthesisPromptChars' | 'synthesisCompletionTokens',
+): number | null {
   const values = diagnostics.map((diagnostic) => diagnostic[key]).filter((value): value is number => typeof value === 'number');
   return values.length > 0 ? Math.max(...values) : null;
+}
+
+function lastOptionalBoolean(diagnostics: readonly CopilotStageLatencyDiagnostic[], key: 'deterministicRendererEligible'): boolean | null {
+  return [...diagnostics].reverse().find((diagnostic) => typeof diagnostic[key] === 'boolean')?.[key] ?? null;
+}
+
+function lastOptionalString(diagnostics: readonly CopilotStageLatencyDiagnostic[], key: 'deterministicRendererReason' | 'semanticAnchorEntityType'): string | null {
+  const value = [...diagnostics].reverse().find((diagnostic) => typeof diagnostic[key] === 'string')?.[key];
+  return typeof value === 'string' ? value : null;
+}
+
+function lastOptionalStringOrNumber(diagnostics: readonly CopilotStageLatencyDiagnostic[], key: 'semanticAnchorEntityId'): string | number | null {
+  const value = [...diagnostics].reverse().find((diagnostic) => typeof diagnostic[key] === 'string' || typeof diagnostic[key] === 'number')?.[key];
+  return typeof value === 'string' || typeof value === 'number' ? value : null;
 }
 
 function parseArgs(args: readonly string[]): Record<string, string> {

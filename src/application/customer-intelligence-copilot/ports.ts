@@ -49,6 +49,7 @@ export type GenerateConversationalTurnInput = {
   readonly tools: readonly CopilotToolDefinition[];
   readonly toolChoice: CopilotToolChoice;
   readonly stage: 'tool_selection' | 'tool_synthesis';
+  readonly maxTokens?: number;
 };
 
 export type GenerateConversationalTurnOutput = {

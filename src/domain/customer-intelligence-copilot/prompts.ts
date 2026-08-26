@@ -3,7 +3,7 @@ export const CUSTOMER_INTELLIGENCE_COPILOT_ANSWER_PROMPT_VERSION = 'customer-int
 export const CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_PROMPT_VERSION = 'customer-intelligence-copilot-orchestrator-v3';
 export const CUSTOMER_INTELLIGENCE_COPILOT_UNIFIED_PLANNER_PROMPT_VERSION = 'customer-intelligence-copilot-unified-planner-v1';
 export const CUSTOMER_INTELLIGENCE_COPILOT_TOOL_RUNTIME_PROMPT_VERSION = 'customer-intelligence-copilot-tool-runtime-v1';
-export const CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SYNTHESIS_PROMPT_VERSION = 'customer-intelligence-tool-synthesis-v2';
+export const CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SYNTHESIS_PROMPT_VERSION = 'customer-intelligence-tool-synthesis-v3';
 
 export const CUSTOMER_INTELLIGENCE_COPILOT_TOOL_RUNTIME_INSTRUCTIONS = [
   'You are the native tool-calling analytical runtime for Customer Intelligence.',
@@ -22,14 +22,15 @@ export const CUSTOMER_INTELLIGENCE_COPILOT_TOOL_RUNTIME_INSTRUCTIONS = [
 ] as const;
 
 export const CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SYNTHESIS_INSTRUCTIONS = [
-  'Answer the current Customer Intelligence question using only the supplied compact analytical result summaries.',
-  'Ground every factual statement in the supplied result summaries and exact values.',
-  'Keep fact, interpretation, hypothesis, recommendation, and limitation semantically distinct.',
-  'Correlation is not causality; never claim a cause unless supplied model output proves it.',
+  'Answer the current Customer Intelligence question directly using only the supplied AnalyticalEvidenceBundle.',
+  'Prioritize the strongest supplied evidence and avoid narrating every result.',
+  'The semanticAnchor is the current turn referent; do not replace it with later top rows.',
+  'Separate observed facts from interpretation or hypotheses.',
+  'Correlation is not causality; never claim a cause from these comparisons.',
   'Do not infer profitability without margin, cost, or profit fields.',
-  'Do not invent unavailable product, category, demographic, or future-prediction behavior.',
-  'Mention material limitations when evidence is insufficient or coverage is partial.',
-  'Prefer a concise commercial explanation and avoid restating the full dataset or methodology unless directly relevant.',
+  'Mention uncertainty or limitations only when material.',
+  'Avoid repeating methodology, schemas, query plans, or tool behavior.',
+  'Use concise commercial style, usually 100 to 300 words unless the user explicitly asks for depth.',
 ] as const;
 
 export const CUSTOMER_INTELLIGENCE_COPILOT_UNIFIED_PLANNER_INSTRUCTIONS = [

@@ -28,6 +28,8 @@ import {
   type CopilotConversationDecisionActionConstraints,
   type CopilotConversationDecision,
   type CopilotConversationPlan,
+  type AnalyticalEvidenceBundle,
+  type CopilotSemanticAnchor,
   type CustomerIntelligenceCopilotResponse,
 } from '../../domain/customer-intelligence-copilot/index.js';
 import {
@@ -168,6 +170,20 @@ type CopilotLatencyStage =
   | 'turn';
 
 type CopilotExecutionMode = 'fast_path' | 'direct_response' | 'simple_analysis' | 'deep_analysis';
+const DEFAULT_SYNTHESIS_MAX_TOKENS = 500;
+const ANALYTICAL_EVIDENCE_BUNDLE_MAX_CHARS = 4000;
+type DeterministicRendererReason =
+  | 'eligible'
+  | 'multiple_queries'
+  | 'multiple_metrics'
+  | 'unsupported_dimension'
+  | 'missing_order'
+  | 'order_metric_mismatch'
+  | 'limit_not_supported'
+  | 'tie_detected'
+  | 'truncated_result'
+  | 'unexpected_result_shape'
+  | 'explanatory_question_requires_synthesis';
 
 export type CopilotStageLatencyDiagnostic = {
   readonly event: 'customer_intelligence_copilot_stage_latency';
@@ -197,6 +213,19 @@ export type CopilotStageLatencyDiagnostic = {
   readonly toolSelectionPromptTokens?: number;
   readonly toolArgumentChars?: number;
   readonly toolArgumentTokens?: number;
+  readonly deterministicRendererEligible?: boolean;
+  readonly deterministicRendererReason?: DeterministicRendererReason;
+  readonly semanticAnchorEntityType?: string | null;
+  readonly semanticAnchorEntityId?: string | number | null;
+  readonly semanticAnchorMetric?: string | null;
+  readonly semanticAnchorFindingType?: string | null;
+  readonly evidenceBundleChars?: number;
+  readonly evidenceFactCount?: number;
+  readonly evidenceComparisonCount?: number;
+  readonly synthesisPromptChars?: number;
+  readonly synthesisPromptTokens?: number;
+  readonly synthesisCompletionTokens?: number;
+  readonly synthesisFallbackUsed?: boolean;
   readonly activeSemanticEntityType?: string | null;
   readonly activeSemanticEntityId?: string | number | null;
   readonly activeMetric?: string | null;
@@ -229,6 +258,7 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
   readonly limits: CopilotSessionLimits;
   readonly toolRuntimeEnabled?: boolean;
   readonly unifiedPlannerEnabled?: boolean;
+  readonly synthesisMaxTokens?: number;
   readonly onOrchestratorDiagnostic?: (diagnostic: CopilotOrchestratorDiagnostic) => void;
   readonly onPlannerDiagnostic?: (diagnostic: CopilotPlannerDiagnostic) => void;
   readonly onStageLatencyDiagnostic?: (diagnostic: CopilotStageLatencyDiagnostic) => void;
@@ -321,6 +351,7 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
           store: deps.store,
           clock: deps.clock,
           limits: deps.limits,
+          synthesisMaxTokens: deps.synthesisMaxTokens,
           onStageLatencyDiagnostic: deps.onStageLatencyDiagnostic,
           turnStartedAt,
         });
@@ -1241,9 +1272,11 @@ async function processToolRuntimeTurn(args: {
   readonly store: CopilotSessionStore;
   readonly clock: Clock;
   readonly limits: CopilotSessionLimits;
+  readonly synthesisMaxTokens?: number;
   readonly onStageLatencyDiagnostic?: (diagnostic: CopilotStageLatencyDiagnostic) => void;
   readonly turnStartedAt: number;
 }): Promise<ProcessCopilotSessionTurnResult> {
+  const semanticAnchor = semanticAnchorFromSessionContext(args.sessionContext);
   const messages = toolRuntimeMessages(args);
   const tools = analyticalToolDefinitions();
   const selectionProjectionChars = messageProjectionChars(messages);
@@ -1261,6 +1294,7 @@ async function processToolRuntimeTurn(args: {
       executionMode: 'direct_response',
       diagnosticContext: {
         ...toolRuntimeSemanticDiagnostic(args.sessionContext),
+        ...semanticAnchorDiagnostic(semanticAnchor),
         contextProjectionChars: selectionProjectionChars,
         compactToolContract: true,
         toolSchemaChars,
@@ -1357,6 +1391,7 @@ async function processToolRuntimeTurn(args: {
   }
 
   analyticsExecutionDurationMs = sumAnalyticsExecutionDurationMs(executions);
+  const deterministicEligibility = deterministicRendererEligibility(executions, semanticAnchor);
   emitStageLatency(args.onStageLatencyDiagnostic, {
     stage: 'analytics_execution',
     provider: null,
@@ -1370,6 +1405,9 @@ async function processToolRuntimeTurn(args: {
     totalTurnDurationMs: durationSince(args.turnStartedAt),
     executionMode,
     ...toolDiagnostic,
+    ...semanticAnchorDiagnostic(semanticAnchor),
+    deterministicRendererEligible: deterministicEligibility.eligible,
+    deterministicRendererReason: deterministicEligibility.reason,
   });
 
   const queryResults = executions.map((execution) => ({
@@ -1378,7 +1416,7 @@ async function processToolRuntimeTurn(args: {
     plan: execution.plan,
     result: retainedResult(execution.result, args.limits),
   }));
-  const deterministicAnswer = shouldUseDeterministicAnswer(executions) ? renderDeterministicSimpleAnswer(executions, args.session.pinnedContext) : null;
+  const deterministicAnswer = deterministicEligibility.eligible ? renderDeterministicSimpleAnswer(executions, args.session.pinnedContext) : null;
   if (deterministicAnswer) {
     const response = withSession(
       { sessionId: args.session.sessionId, turnId: args.turnId, queryIds: queryResults.map((entry) => entry.queryId), sourceQueryIds: [] },
@@ -1386,17 +1424,32 @@ async function processToolRuntimeTurn(args: {
     );
     const updated = appendResults(appendTurn(args.session, response, args.question, queryResults.map((entry) => entry.queryId), [], args.clock.now(), args.limits), queryResults, args.limits);
     await args.store.save(updated, args.clock.now());
-    emitTurnLatency(args.onStageLatencyDiagnostic, { turnStartedAt: args.turnStartedAt, queryCount: executions.length, analyticsExecutionDurationMs, success: true, failureStatus: null, executionMode: 'simple_analysis' });
+    emitTurnLatency(args.onStageLatencyDiagnostic, {
+      turnStartedAt: args.turnStartedAt,
+      queryCount: executions.length,
+      analyticsExecutionDurationMs,
+      success: true,
+      failureStatus: null,
+      executionMode: 'simple_analysis',
+      diagnosticContext: {
+        ...semanticAnchorDiagnostic(semanticAnchor),
+        deterministicRendererEligible: true,
+        deterministicRendererReason: 'eligible',
+      },
+    });
     return { status: 'ok', response, sessionContext: args.sessionContext };
   }
 
+  const evidenceBundle = buildAnalyticalEvidenceBundle({ semanticAnchor, executions, provenance: args.session.pinnedContext });
+  const evidenceBundleChars = JSON.stringify(evidenceBundle).length;
   try {
     const synthesisMessages = toolSynthesisMessages({
       question: args.question,
       sessionContext: args.sessionContext,
-      executions,
+      semanticAnchor,
+      evidenceBundle,
     });
-    const resultSummaryChars = messageProjectionChars(synthesisMessages);
+    const synthesisPromptChars = messageProjectionChars(synthesisMessages);
     const synthesis = await timeCopilotStage({
       stage: 'tool_synthesis',
       onDiagnostic: args.onStageLatencyDiagnostic,
@@ -1408,21 +1461,55 @@ async function processToolRuntimeTurn(args: {
       diagnosticContext: {
         ...toolRuntimeSemanticDiagnostic(args.sessionContext),
         ...toolDiagnostic,
-        resultSummaryChars,
+        ...semanticAnchorDiagnostic(semanticAnchor),
+        evidenceBundleChars,
+        evidenceFactCount: evidenceBundle.facts.length,
+        evidenceComparisonCount: evidenceBundle.comparisons.length,
+        resultSummaryChars: evidenceBundleChars,
+        synthesisPromptChars,
         synthesisInputResultCount: executions.length,
       },
+      outputDiagnosticContext: (output) => ({
+        ...(typeof output.metadata?.promptTokens === 'number' ? { synthesisPromptTokens: output.metadata.promptTokens } : {}),
+        ...(typeof output.metadata?.completionTokens === 'number' ? { synthesisCompletionTokens: output.metadata.completionTokens } : {}),
+      }),
       call: () =>
         args.model.generateConversationalTurn!({
           messages: synthesisMessages,
           tools: [],
           toolChoice: 'none',
           stage: 'tool_synthesis',
+          maxTokens: args.synthesisMaxTokens ?? DEFAULT_SYNTHESIS_MAX_TOKENS,
         }),
     });
     if (synthesis.toolCalls.length > 0 || !synthesis.content) {
-      const response = withSession({ sessionId: args.session.sessionId, turnId: args.turnId }, answerGenerationFailed(new Error('Tool synthesis returned an unexpected tool call or empty answer')));
-      await args.store.save(appendTurn(args.session, response, args.question, [], [], args.clock.now(), args.limits), args.clock.now());
-      emitTurnLatency(args.onStageLatencyDiagnostic, { turnStartedAt: args.turnStartedAt, queryCount: executions.length, analyticsExecutionDurationMs, success: false, failureStatus: 'tool_call_invalid_arguments', executionMode: 'deep_analysis' });
+      const response = fallbackToolSynthesisResponse({
+        session: args.session,
+        turnId: args.turnId,
+        executions,
+        queryResults,
+        evidenceBundle,
+        selectionMetadata: selection.metadata,
+        provenance: args.session.pinnedContext,
+        reason: 'invalid_synthesis_output',
+      });
+      const updated = appendResults(appendTurn(args.session, response, args.question, queryResults.map((entry) => entry.queryId), [], args.clock.now(), args.limits), queryResults, args.limits);
+      await args.store.save(updated, args.clock.now());
+      emitTurnLatency(args.onStageLatencyDiagnostic, {
+        turnStartedAt: args.turnStartedAt,
+        queryCount: executions.length,
+        analyticsExecutionDurationMs,
+        success: true,
+        failureStatus: 'answered_degraded_synthesis',
+        executionMode: 'deep_analysis',
+        diagnosticContext: {
+          ...semanticAnchorDiagnostic(semanticAnchor),
+          synthesisFallbackUsed: true,
+          evidenceBundleChars,
+          evidenceFactCount: evidenceBundle.facts.length,
+          evidenceComparisonCount: evidenceBundle.comparisons.length,
+        },
+      });
       return { status: 'ok', response, sessionContext: args.sessionContext };
     }
     const response = withSession(
@@ -1431,9 +1518,53 @@ async function processToolRuntimeTurn(args: {
     );
     const updated = appendResults(appendTurn(args.session, response, args.question, queryResults.map((entry) => entry.queryId), [], args.clock.now(), args.limits), queryResults, args.limits);
     await args.store.save(updated, args.clock.now());
-    emitTurnLatency(args.onStageLatencyDiagnostic, { turnStartedAt: args.turnStartedAt, queryCount: executions.length, analyticsExecutionDurationMs, success: true, failureStatus: null, executionMode: 'deep_analysis' });
+    emitTurnLatency(args.onStageLatencyDiagnostic, {
+      turnStartedAt: args.turnStartedAt,
+      queryCount: executions.length,
+      analyticsExecutionDurationMs,
+      success: true,
+      failureStatus: null,
+      executionMode: 'deep_analysis',
+      diagnosticContext: {
+        ...semanticAnchorDiagnostic(semanticAnchor),
+        synthesisFallbackUsed: false,
+        evidenceBundleChars,
+        evidenceFactCount: evidenceBundle.facts.length,
+        evidenceComparisonCount: evidenceBundle.comparisons.length,
+      },
+    });
     return { status: 'ok', response, sessionContext: args.sessionContext };
   } catch (error) {
+    if (canUseDeterministicSynthesisFallback(error, evidenceBundle)) {
+      const response = fallbackToolSynthesisResponse({
+        session: args.session,
+        turnId: args.turnId,
+        executions,
+        queryResults,
+        evidenceBundle,
+        selectionMetadata: selection.metadata,
+        provenance: args.session.pinnedContext,
+        reason: diagnosticFailureStatus(error) ?? 'tool_synthesis_provider_failure',
+      });
+      const updated = appendResults(appendTurn(args.session, response, args.question, queryResults.map((entry) => entry.queryId), [], args.clock.now(), args.limits), queryResults, args.limits);
+      await args.store.save(updated, args.clock.now());
+      emitTurnLatency(args.onStageLatencyDiagnostic, {
+        turnStartedAt: args.turnStartedAt,
+        queryCount: executions.length,
+        analyticsExecutionDurationMs,
+        success: true,
+        failureStatus: 'answered_degraded_synthesis',
+        executionMode: 'deep_analysis',
+        diagnosticContext: {
+          ...semanticAnchorDiagnostic(semanticAnchor),
+          synthesisFallbackUsed: true,
+          evidenceBundleChars,
+          evidenceFactCount: evidenceBundle.facts.length,
+          evidenceComparisonCount: evidenceBundle.comparisons.length,
+        },
+      });
+      return { status: 'ok', response, sessionContext: args.sessionContext };
+    }
     const response = withSession({ sessionId: args.session.sessionId, turnId: args.turnId }, mapProviderError(error) ?? answerGenerationFailed(error));
     await args.store.save(appendTurn(args.session, response, args.question, [], [], args.clock.now(), args.limits), args.clock.now());
     emitTurnLatency(args.onStageLatencyDiagnostic, { turnStartedAt: args.turnStartedAt, queryCount: executions.length, analyticsExecutionDurationMs, success: false, failureStatus: diagnosticFailureStatus(error) ?? response.status, executionMode: 'deep_analysis' });
@@ -1538,7 +1669,8 @@ function compactRecentResults(sessionContext: ReturnType<typeof buildCopilotSess
 function toolSynthesisMessages(args: {
   readonly question: string;
   readonly sessionContext: ReturnType<typeof buildCopilotSessionContext>;
-  readonly executions: readonly { readonly id: string; readonly plan: AnalyticalQueryPlan; readonly result: AnalyticalQueryResult }[];
+  readonly semanticAnchor: CopilotSemanticAnchor | null;
+  readonly evidenceBundle: AnalyticalEvidenceBundle;
 }): readonly CopilotConversationalMessage[] {
   return [
     { role: 'system', content: CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SYNTHESIS_INSTRUCTIONS.join('\n') },
@@ -1547,19 +1679,13 @@ function toolSynthesisMessages(args: {
       content: JSON.stringify({
         synthesisPromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SYNTHESIS_PROMPT_VERSION,
         question: args.question,
+        semanticAnchor: args.semanticAnchor,
         semanticFocus: compactSemanticFocus(args.sessionContext),
-        currentFinding: args.sessionContext.semanticFocus.activeFinding ?? null,
-        executedAnalyticalObjectives: args.executions.map((execution) => ({
-          queryId: execution.id,
-          dimensions: execution.plan.dimensions ?? [],
-          metrics: execution.plan.metrics?.map((metric) => ({ aggregation: metric.aggregation, field: metric.field ?? null, alias: metric.alias })) ?? [],
-          filters: filterFieldNames(execution.plan),
-        })),
-        results: compactSynthesisResults(args.executions),
+        evidence: args.evidenceBundle,
         epistemicBoundaries: [
           'Observed differences are not causal proof.',
           'Do not infer profitability without margin, cost, or profit fields.',
-          'Mention insufficient evidence or partial coverage when material.',
+          'Mention insufficient evidence or partial coverage only when material.',
         ],
       }),
     },
@@ -1576,37 +1702,208 @@ function compactSemanticFocus(sessionContext: ReturnType<typeof buildCopilotSess
   };
 }
 
-function compactSynthesisResults(
-  executions: readonly { readonly id: string; readonly plan: AnalyticalQueryPlan; readonly result: AnalyticalQueryResult }[],
-): readonly Record<string, unknown>[] {
-  return executions.map((execution) => {
-    const fields = fieldsForSynthesis(execution.plan);
+function semanticAnchorFromSessionContext(sessionContext: ReturnType<typeof buildCopilotSessionContext>): CopilotSemanticAnchor | null {
+  const finding = sessionContext.semanticFocus.activeFinding;
+  if (finding) {
     return {
-      queryId: execution.id,
-      queryPlanHash: execution.result.queryPlanHash,
-      dimensions: execution.plan.dimensions ?? [],
-      metrics: execution.plan.metrics?.map((metric) => ({ aggregation: metric.aggregation, field: metric.field ?? null, alias: metric.alias })) ?? [],
-      rowCount: execution.result.rowCount,
-      truncated: execution.result.execution.truncated,
-      rows: execution.result.rows.slice(0, 8).map((row) => pickFields(row, fields)),
+      entityType: finding.entityType,
+      entityId: finding.entityId,
+      metric: finding.metric,
+      findingType: finding.findingType,
+      sourceQueryId: finding.sourceQueryId,
     };
+  }
+  const entity = sessionContext.semanticFocus.activeEntity;
+  const metric = sessionContext.semanticFocus.activeMetric;
+  if (!entity && !metric) return null;
+  return {
+    entityType: entity?.type ?? null,
+    entityId: entity?.id ?? null,
+    metric: metric?.name ?? null,
+    findingType: null,
+    sourceQueryId: entity?.sourceQueryId ?? metric?.sourceQueryId ?? null,
+  };
+}
+
+function semanticAnchorDiagnostic(anchor: CopilotSemanticAnchor | null) {
+  return {
+    semanticAnchorEntityType: anchor?.entityType ?? null,
+    semanticAnchorEntityId: anchor?.entityId ?? null,
+    semanticAnchorMetric: anchor?.metric ?? null,
+    semanticAnchorFindingType: anchor?.findingType ?? null,
+  };
+}
+
+function buildAnalyticalEvidenceBundle(args: {
+  readonly semanticAnchor: CopilotSemanticAnchor | null;
+  readonly executions: readonly { readonly id: string; readonly plan: AnalyticalQueryPlan; readonly result: AnalyticalQueryResult }[];
+  readonly provenance: CustomerIntelligenceSnapshotContext;
+}): AnalyticalEvidenceBundle {
+  const facts: AnalyticalEvidenceBundle['facts'][number][] = [];
+  const comparisons: AnalyticalEvidenceBundle['comparisons'][number][] = [];
+  const limitations: string[] = [];
+
+  for (const execution of args.executions) {
+    if (execution.result.execution.truncated) limitations.push(`${execution.id}: result truncated`);
+    const entity = entityDescriptorForPlan(execution.plan);
+    for (const metric of execution.plan.metrics ?? []) {
+      const metricName = semanticMetricName(metric.field ?? null, metric.alias);
+      if (!entity) {
+        const value = scalarValue(execution.result.rows[0], metric.alias);
+        if (isEvidenceValue(value)) {
+          facts.push({ queryId: execution.id, metric: metricName, entityType: 'audience', entityId: null, value, comparison: 'observed' });
+        }
+        continue;
+      }
+
+      const rankedRows = rankedRowsForMetric(execution, metric.alias);
+      const anchorIndex = args.semanticAnchor && args.semanticAnchor.entityType === entity.type
+        ? rankedRows.findIndex((row) => sameEntityId(scalarValue(row, entity.resultField), args.semanticAnchor?.entityId ?? null))
+        : -1;
+      const selectedIndex = anchorIndex >= 0 ? anchorIndex : 0;
+      const selected = rankedRows[selectedIndex];
+      if (!selected) continue;
+      const entityId = scalarValue(selected, entity.resultField);
+      const value = scalarValue(selected, metric.alias);
+      if (!isEvidenceValue(value)) continue;
+      const comparison = selectedIndex === 0 ? comparisonForMetricOrder(execution.plan, metric.alias) : 'observed';
+      facts.push({
+        queryId: execution.id,
+        metric: metricName,
+        entityType: entity.type,
+        entityId: entityId === null || typeof entityId === 'boolean' ? null : entityId,
+        value,
+        rank: selectedIndex + 1,
+        comparison,
+      });
+
+      if (anchorIndex >= 0) {
+        const numericValues = rankedRows.map((row) => numericComparableValue(scalarValue(row, metric.alias))).filter((v): v is number => v !== null);
+        comparisons.push({
+          queryId: execution.id,
+          metric: metricName,
+          entityType: entity.type,
+          entityId: args.semanticAnchor?.entityId ?? null,
+          anchorValue: value,
+          peerMin: numericValues.length > 0 ? formatEvidenceNumber(Math.min(...numericValues)) : null,
+          peerMax: numericValues.length > 0 ? formatEvidenceNumber(Math.max(...numericValues)) : null,
+          anchorRank: anchorIndex + 1,
+        });
+      }
+    }
+  }
+
+  if (args.provenance.population.clusterCoveragePct < 100) limitations.push(`cluster coverage ${formatEvidenceNumber(args.provenance.population.clusterCoveragePct)}%`);
+  if (args.provenance.population.rfmCoveragePct < 100) limitations.push(`RFM coverage ${formatEvidenceNumber(args.provenance.population.rfmCoveragePct)}%`);
+
+  return compactEvidenceBundle({
+    anchor: args.semanticAnchor ? { entityType: args.semanticAnchor.entityType, entityId: args.semanticAnchor.entityId, metric: args.semanticAnchor.metric } : null,
+    facts: facts.slice(0, 12),
+    comparisons: comparisons.slice(0, 8),
+    limitations: [...new Set(limitations)].slice(0, 4),
   });
 }
 
-function fieldsForSynthesis(plan: AnalyticalQueryPlan): readonly string[] {
-  return [
-    ...(plan.dimensions ?? []).map(resultColumnName),
-    ...(plan.metrics ?? []).map((metric) => metric.alias),
-    ...(plan.select ?? []).map(resultColumnName),
-  ];
+function compactEvidenceBundle(bundle: AnalyticalEvidenceBundle): AnalyticalEvidenceBundle {
+  let compacted = bundle;
+  while (JSON.stringify(compacted).length > ANALYTICAL_EVIDENCE_BUNDLE_MAX_CHARS && (compacted.comparisons.length > 0 || compacted.facts.length > 1 || compacted.limitations.length > 0)) {
+    if (compacted.comparisons.length > 0) {
+      compacted = { ...compacted, comparisons: compacted.comparisons.slice(0, -1) };
+    } else if (compacted.facts.length > 1) {
+      compacted = { ...compacted, facts: compacted.facts.slice(0, -1) };
+    } else {
+      compacted = { ...compacted, limitations: compacted.limitations.slice(0, -1) };
+    }
+  }
+  return compacted;
 }
 
-function pickFields(row: AnalyticalQueryResult['rows'][number], fields: readonly string[]): Record<string, unknown> {
-  const picked: Record<string, unknown> = {};
-  for (const field of fields) {
-    if (field in row) picked[field] = row[field];
+function entityDescriptorForPlan(plan: AnalyticalQueryPlan): { readonly type: 'cluster' | 'rfm_segment'; readonly resultField: string } | null {
+  const dimensions = plan.dimensions ?? [];
+  if (dimensions.includes('cluster.clusterId')) return { type: 'cluster', resultField: 'clusterId' };
+  if (dimensions.includes('cluster.label')) return { type: 'cluster', resultField: 'label' };
+  if (dimensions.includes('rfm.segmentCode')) return { type: 'rfm_segment', resultField: 'segmentCode' };
+  return null;
+}
+
+function rankedRowsForMetric(
+  execution: { readonly plan: AnalyticalQueryPlan; readonly result: AnalyticalQueryResult },
+  metricAlias: string,
+): readonly AnalyticalQueryResult['rows'][number][] {
+  const rows = execution.result.rows.slice(0, 12);
+  if (execution.plan.orderBy?.some((order) => order.field === metricAlias)) return rows;
+  return [...rows].sort((a, b) => {
+    const left = numericComparableValue(scalarValue(a, metricAlias));
+    const right = numericComparableValue(scalarValue(b, metricAlias));
+    if (left === null || right === null) return 0;
+    return right - left;
+  });
+}
+
+function comparisonForMetricOrder(plan: AnalyticalQueryPlan, metricAlias: string): 'highest' | 'lowest' | 'observed' {
+  const order = plan.orderBy?.find((candidate) => candidate.field === metricAlias);
+  if (!order) return 'highest';
+  return order.direction === 'asc' ? 'lowest' : 'highest';
+}
+
+function sameEntityId(left: string | number | boolean | null, right: string | number | null): boolean {
+  if (left === null || typeof left === 'boolean' || right === null) return false;
+  return String(left) === String(right);
+}
+
+function isEvidenceValue(value: unknown): value is string | number | boolean | null {
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value === null;
+}
+
+function canUseDeterministicSynthesisFallback(error: unknown, evidenceBundle: AnalyticalEvidenceBundle): boolean {
+  if (evidenceBundle.facts.length === 0 && evidenceBundle.comparisons.length === 0) return false;
+  if (!error || typeof error !== 'object') return false;
+  const category = (error as { readonly category?: unknown }).category;
+  return category === 'provider_timeout' || category === 'provider_network_error' || category === 'provider_invalid_response';
+}
+
+function fallbackToolSynthesisResponse(args: {
+  readonly session: CopilotSession;
+  readonly turnId: string;
+  readonly executions: readonly { readonly id: string; readonly plan: AnalyticalQueryPlan; readonly result: AnalyticalQueryResult }[];
+  readonly queryResults: readonly CopilotSessionQueryResult[];
+  readonly evidenceBundle: AnalyticalEvidenceBundle;
+  readonly selectionMetadata: CopilotModelMetadata | null;
+  readonly provenance: CustomerIntelligenceSnapshotContext;
+  readonly reason: string;
+}): { readonly sessionId: string; readonly turnId: string; readonly queryIds: readonly string[]; readonly sourceQueryIds: readonly string[] } & CustomerIntelligenceCopilotResponse {
+  return withSession(
+    { sessionId: args.session.sessionId, turnId: args.turnId, queryIds: args.queryResults.map((entry) => entry.queryId), sourceQueryIds: [] },
+    answered(
+      args.executions,
+      renderDeterministicEvidenceFallback(args.evidenceBundle),
+      args.selectionMetadata,
+      null,
+      args.provenance,
+      { used: true, reason: args.reason },
+    ),
+  );
+}
+
+function renderDeterministicEvidenceFallback(bundle: AnalyticalEvidenceBundle): string {
+  const lines = ['El analisis se completo, pero la sintesis avanzada no estuvo disponible.', 'Principales resultados observados:'];
+  for (const fact of bundle.facts.slice(0, 5)) {
+    const entity = fact.entityType === 'cluster' && fact.entityId !== null
+      ? `cluster ${String(fact.entityId)}`
+      : fact.entityType === 'rfm_segment' && fact.entityId !== null
+        ? `segmento RFM ${String(fact.entityId)}`
+        : 'poblacion analizada';
+    const rank = fact.rank ? `, rank ${fact.rank}` : '';
+    const comparison = fact.comparison && fact.comparison !== 'observed' ? ` (${fact.comparison})` : '';
+    lines.push(`- ${entity}: ${fact.metric} = ${String(fact.value)}${rank}${comparison}.`);
   }
-  return picked;
+  for (const comparison of bundle.comparisons.slice(0, 3)) {
+    lines.push(`- ${comparison.metric}: el ancla tiene ${String(comparison.anchorValue)}, con rango observado ${String(comparison.peerMin)} a ${String(comparison.peerMax)}.`);
+  }
+  if (bundle.limitations.length > 0) {
+    lines.push(`Limitaciones: ${bundle.limitations.join('; ')}.`);
+  }
+  return lines.join('\n');
 }
 
 function messageProjectionChars(messages: readonly CopilotConversationalMessage[]): number {
@@ -2116,13 +2413,37 @@ function executionModeForSteps(steps: readonly ValidatedStep[]): CopilotExecutio
 }
 
 function canRenderDeterministicSimpleAnswer(plan: AnalyticalQueryPlan | undefined): boolean {
-  if (!plan || plan.select || !plan.metrics || plan.metrics.length !== 1) return false;
-  const metric = plan.metrics[0];
+  if (!plan || plan.select || !plan.metrics || plan.metrics.length === 0) return false;
+  const metric = primaryDeterministicMetric(plan);
   if (!metric) return false;
-  const dimensionCount = plan.dimensions?.length ?? 0;
-  if (dimensionCount === 0) return true;
+  const dimension = primaryDeterministicDimension(plan);
+  const dimensionCount = semanticDimensionCount(plan);
+  if (dimensionCount === 0) return plan.metrics.length === 1;
+  if (!dimension) return false;
   if (metric.aggregation === 'count') return true;
   return isSimpleTopMetricRankingPlan(plan);
+}
+
+function deterministicRendererEligibility(
+  executions: readonly { readonly plan: AnalyticalQueryPlan; readonly result: AnalyticalQueryResult }[],
+  semanticAnchor: CopilotSemanticAnchor | null = null,
+): { readonly eligible: boolean; readonly reason: DeterministicRendererReason } {
+  if (executions.length !== 1) return { eligible: false, reason: 'multiple_queries' };
+  const execution = executions[0];
+  if (!execution) return { eligible: false, reason: 'unexpected_result_shape' };
+  if (semanticAnchor?.findingType !== null && semanticAnchor?.findingType !== undefined) return { eligible: false, reason: 'explanatory_question_requires_synthesis' };
+  if (execution.result.execution.truncated) return { eligible: false, reason: 'truncated_result' };
+  if (execution.plan.select || !execution.plan.metrics || execution.plan.metrics.length === 0) return { eligible: false, reason: 'unexpected_result_shape' };
+  const dimensionCount = semanticDimensionCount(execution.plan);
+  if (dimensionCount === 0 && execution.plan.metrics.length !== 1) return { eligible: false, reason: 'multiple_metrics' };
+  const metric = primaryDeterministicMetric(execution.plan);
+  if (!metric) return { eligible: false, reason: execution.plan.metrics.length > 1 ? 'multiple_metrics' : 'unexpected_result_shape' };
+  if (dimensionCount > 0 && !primaryDeterministicDimension(execution.plan)) return { eligible: false, reason: 'unsupported_dimension' };
+  if (dimensionCount > 0 && metric.aggregation !== 'count' && !execution.plan.orderBy?.length) return { eligible: false, reason: 'missing_order' };
+  if (dimensionCount > 0 && metric.aggregation !== 'count' && !isSimpleTopMetricRankingPlan(execution.plan)) return { eligible: false, reason: 'order_metric_mismatch' };
+  const resultReason = deterministicResultRejectionReason(execution, metric);
+  if (resultReason) return { eligible: false, reason: resultReason };
+  return { eligible: true, reason: 'eligible' };
 }
 
 function renderDeterministicSimpleAnswer(
@@ -2132,7 +2453,7 @@ function renderDeterministicSimpleAnswer(
   if (executions.length !== 1) return null;
   const execution = executions[0];
   if (!execution || execution.result.execution.truncated || !canRenderDeterministicSimpleAnswer(execution.plan) || !resultSupportsDeterministicAnswer(execution)) return null;
-  const metric = execution.plan.metrics?.[0];
+  const metric = primaryDeterministicMetric(execution.plan);
   if (!metric) return null;
   if ((execution.plan.dimensions?.length ?? 0) === 0 && metric.aggregation === 'count') {
     const value = scalarValue(execution.result.rows[0], metric.alias);
@@ -2145,7 +2466,7 @@ function renderDeterministicSimpleAnswer(
     const value = typeof metricValue === 'number' ? formatNumber(metricValue) : String(metricValue);
     return `El valor observado de ${metricDisplayName(metric)} es ${value}. La referencia es el snapshot ${provenance.featureSnapshot.snapshotId}.`;
   }
-  const dimension = execution.plan.dimensions?.[0];
+  const dimension = primaryDeterministicDimension(execution.plan);
   if (!dimension || execution.result.rows.length === 0) return null;
   const row = execution.result.rows[0];
   const dimensionValue = scalarValue(row, resultColumnName(dimension));
@@ -2172,12 +2493,11 @@ function renderDeterministicSimpleAnswer(
 function shouldUseDeterministicAnswer(
   executions: readonly { readonly plan: AnalyticalQueryPlan; readonly result: AnalyticalQueryResult }[],
 ): boolean {
-  const execution = executions[0];
-  return executions.length === 1 && !!execution && canRenderDeterministicSimpleAnswer(execution.plan) && resultSupportsDeterministicAnswer(execution);
+  return deterministicRendererEligibility(executions).eligible;
 }
 
 function isSimpleTopMetricRankingPlan(plan: AnalyticalQueryPlan): boolean {
-  const metric = plan.metrics?.[0];
+  const metric = primaryDeterministicMetric(plan);
   const order = plan.orderBy?.[0];
   if (!metric || !order || order.field !== metric.alias) return false;
   if (metric.aggregation === 'min') return order.direction === 'asc';
@@ -2185,10 +2505,10 @@ function isSimpleTopMetricRankingPlan(plan: AnalyticalQueryPlan): boolean {
 }
 
 function resultSupportsDeterministicAnswer(execution: { readonly plan: AnalyticalQueryPlan; readonly result: AnalyticalQueryResult }): boolean {
-  const metric = execution.plan.metrics?.[0];
+  const metric = primaryDeterministicMetric(execution.plan);
   if (!metric) return false;
   if (!execution.result.columns.some((column) => column.name === metric.alias)) return false;
-  const dimension = execution.plan.dimensions?.[0] ?? null;
+  const dimension = primaryDeterministicDimension(execution.plan);
   if (dimension && !execution.result.columns.some((column) => column.name === resultColumnName(dimension))) return false;
   if ((execution.plan.dimensions?.length ?? 0) === 0) return execution.result.rows.length === 1;
   if (!isSimpleTopMetricRankingPlan(execution.plan)) return execution.result.rows.length > 0;
@@ -2197,6 +2517,48 @@ function resultSupportsDeterministicAnswer(execution: { readonly plan: Analytica
   const second = numericComparableValue(scalarValue(execution.result.rows[1], metric.alias));
   if (first === null || second === null) return true;
   return first !== second;
+}
+
+function deterministicResultRejectionReason(
+  execution: { readonly plan: AnalyticalQueryPlan; readonly result: AnalyticalQueryResult },
+  metric: NonNullable<AnalyticalQueryPlan['metrics']>[number],
+): DeterministicRendererReason | null {
+  if (!execution.result.columns.some((column) => column.name === metric.alias)) return 'unexpected_result_shape';
+  const dimension = primaryDeterministicDimension(execution.plan);
+  if (dimension && !execution.result.columns.some((column) => column.name === resultColumnName(dimension))) return 'unexpected_result_shape';
+  if ((execution.plan.dimensions?.length ?? 0) === 0) return execution.result.rows.length === 1 ? null : 'unexpected_result_shape';
+  if (execution.result.rows.length === 0) return 'unexpected_result_shape';
+  if (!isSimpleTopMetricRankingPlan(execution.plan)) return null;
+  if (execution.result.rows.length === 1) return scalarValue(execution.result.rows[0], metric.alias) !== null ? null : 'unexpected_result_shape';
+  const first = numericComparableValue(scalarValue(execution.result.rows[0], metric.alias));
+  const second = numericComparableValue(scalarValue(execution.result.rows[1], metric.alias));
+  return first !== null && second !== null && first === second ? 'tie_detected' : null;
+}
+
+function primaryDeterministicMetric(plan: AnalyticalQueryPlan): NonNullable<AnalyticalQueryPlan['metrics']>[number] | null {
+  const metrics = plan.metrics ?? [];
+  if (metrics.length === 1) return metrics[0] ?? null;
+  const orderedMetricAliases = new Set((plan.orderBy ?? []).map((order) => order.field));
+  const orderedMetrics = metrics.filter((metric) => orderedMetricAliases.has(metric.alias));
+  return orderedMetrics.length === 1 ? orderedMetrics[0]! : null;
+}
+
+function primaryDeterministicDimension(plan: AnalyticalQueryPlan): string | null {
+  const dimensions = plan.dimensions ?? [];
+  if (dimensions.includes('cluster.clusterId')) return 'cluster.clusterId';
+  if (dimensions.includes('rfm.segmentCode')) return 'rfm.segmentCode';
+  if (dimensions.length === 1 && dimensions[0] === 'cluster.label') return 'cluster.label';
+  return null;
+}
+
+function semanticDimensionCount(plan: AnalyticalQueryPlan): number {
+  const dimensions = plan.dimensions ?? [];
+  const entityDimensions = [
+    dimensions.some((dimension) => dimension === 'cluster.clusterId' || dimension === 'cluster.label'),
+    dimensions.includes('rfm.segmentCode'),
+  ].filter(Boolean).length;
+  if (entityDimensions > 0) return entityDimensions;
+  return dimensions.length;
 }
 
 function numericComparableValue(value: string | number | boolean | null): number | null {
@@ -2229,8 +2591,23 @@ function metricDisplayName(metric: NonNullable<AnalyticalQueryPlan['metrics']>[n
   return metric.alias;
 }
 
+function semanticMetricName(field: string | null, alias: string): string {
+  if (field === 'commercial.averageOrderValueTaxIncl') return 'averageOrderValue';
+  if (field === 'commercial.totalSpentTaxIncl') return 'totalSpent';
+  if (field === 'commercial.validOrders') return 'validOrderCount';
+  if (field === 'commercial.orders365d') return 'orders365d';
+  if (field === 'commercial.daysSinceLastOrder') return 'daysSinceLastOrder';
+  if (field === 'commercial.effectiveDiversity') return 'effectiveDiversity';
+  if (field === 'commercial.repeatProductRate') return 'repeatProductRate';
+  return alias;
+}
+
 function formatNumber(value: number): string {
   return new Intl.NumberFormat('es-CL', { maximumFractionDigits: 2 }).format(value);
+}
+
+function formatEvidenceNumber(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(2);
 }
 
 function emitPlannerDiagnostic(
@@ -2318,6 +2695,7 @@ function emitTurnLatency(
     readonly success: boolean;
     readonly failureStatus: string | null;
     readonly executionMode?: CopilotExecutionMode;
+    readonly diagnosticContext?: Partial<Omit<CopilotStageLatencyDiagnostic, 'event' | 'stage' | 'provider' | 'model' | 'durationMs' | 'success' | 'failureStatus' | 'repairAttempted' | 'queryCount' | 'analyticsExecutionDurationMs' | 'totalTurnDurationMs' | 'executionMode'>>;
   },
 ): void {
   emitStageLatency(onDiagnostic, {
@@ -2332,6 +2710,7 @@ function emitTurnLatency(
     analyticsExecutionDurationMs: args.analyticsExecutionDurationMs,
     totalTurnDurationMs: durationSince(args.turnStartedAt),
     executionMode: args.executionMode ?? null,
+    ...args.diagnosticContext,
   });
 }
 
@@ -2468,6 +2847,7 @@ function answered(
   plannerMetadata: CopilotModelMetadata | null,
   answerMetadata: CopilotModelMetadata | null,
   provenance: CustomerIntelligenceSnapshotContext,
+  synthesisFallback?: { readonly used: boolean; readonly reason: string | null },
 ): CustomerIntelligenceCopilotResponse {
   return {
     status: 'answered',
@@ -2481,6 +2861,7 @@ function answered(
       executionDurationMs: executions.reduce((sum, execution) => sum + execution.result.execution.durationMs, 0),
       plannerModel: modelName(plannerMetadata),
       answerModel: modelName(answerMetadata),
+      ...(synthesisFallback ? { synthesisFallbackUsed: synthesisFallback.used, synthesisFallbackReason: synthesisFallback.reason } : {}),
     },
     provenance,
   };

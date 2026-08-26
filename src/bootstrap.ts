@@ -279,6 +279,7 @@ export function bootstrap(): Bootstrap {
       limits: config.marketingCopilot.session,
       toolRuntimeEnabled: config.marketingCopilot.toolRuntimeEnabled,
       unifiedPlannerEnabled: config.marketingCopilot.unifiedPlannerEnabled,
+      synthesisMaxTokens: config.marketingCopilot.synthesisMaxTokens,
       onOrchestratorDiagnostic: (diagnostic) => {
         console.info(diagnostic, 'customer intelligence copilot orchestrator decision');
       },

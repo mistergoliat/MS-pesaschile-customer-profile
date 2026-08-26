@@ -181,7 +181,8 @@ function harness(opts: {
   conversationPlans?: unknown[];
   repairConversationPlan?: unknown;
   conversationPlanError?: unknown;
-  conversationalTurns?: { content: string | null; toolCalls: readonly { id: string; name: string; arguments: unknown; argumentsParseError?: string }[]; metadata: { provider: string; model: string; promptCacheHitTokens?: number; promptCacheMissTokens?: number } | null }[];
+  conversationalTurns?: { content: string | null; toolCalls: readonly { id: string; name: string; arguments: unknown; argumentsParseError?: string }[]; metadata: { provider: string; model: string; promptCacheHitTokens?: number; promptCacheMissTokens?: number; promptTokens?: number; completionTokens?: number } | null }[];
+  conversationalTurnErrors?: readonly (unknown | null)[];
   conversationalTurnError?: unknown;
   plans?: unknown[];
   repairPlan?: unknown;
@@ -194,6 +195,7 @@ function harness(opts: {
   context?: Extract<ResolveCustomerIntelligenceContextResult, { status: 'available' }>;
   toolRuntimeEnabled?: boolean;
   unifiedPlannerEnabled?: boolean;
+  synthesisMaxTokens?: number;
 } = {}) {
   const clock = new FakeClock();
   const limits = { ...LIMITS, ...opts.limits };
@@ -201,7 +203,10 @@ function harness(opts: {
   const conversationPlans = [...(opts.conversationPlans ?? [unifiedRunAnalytics([{ id: 'q1', plan: bestClusterPlan }])])];
   const plans = [...(opts.plans ?? [queryPlan([{ id: 'q1', plan: bestClusterPlan }])])];
   const conversationalTurns = [...(opts.conversationalTurns ?? [toolRuntimeCall([{ id: 'q1', plan: bestClusterPlan }]), toolRuntimeContent('Respuesta grounded.')])];
+  const conversationalTurnErrors = [...(opts.conversationalTurnErrors ?? [])];
   const generateConversationalTurn = vi.fn(async (_input: GenerateConversationalTurnInput) => {
+    const nextError = conversationalTurnErrors.shift();
+    if (nextError) throw nextError;
     if (opts.conversationalTurnError) throw opts.conversationalTurnError;
     return conversationalTurns.shift() ?? toolRuntimeContent('Respuesta grounded.');
   });
@@ -244,6 +249,7 @@ function harness(opts: {
     limits,
     toolRuntimeEnabled: opts.toolRuntimeEnabled ?? false,
     unifiedPlannerEnabled: opts.unifiedPlannerEnabled ?? false,
+    synthesisMaxTokens: opts.synthesisMaxTokens,
     onOrchestratorDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
     onPlannerDiagnostic: (diagnostic) => plannerDiagnostics.push(diagnostic),
     onStageLatencyDiagnostic: (diagnostic) => stageLatencyDiagnostics.push(diagnostic),
@@ -274,6 +280,16 @@ function providerTimeout(stage: string) {
     metadata: { provider: string; model: string; stage: string };
   };
   error.category = 'provider_timeout';
+  error.metadata = { provider: 'fake', model: stage, stage };
+  return error;
+}
+
+function providerNetworkError(stage: string) {
+  const error = new Error('Copilot model provider network error') as Error & {
+    category: string;
+    metadata: { provider: string; model: string; stage: string };
+  };
+  error.category = 'provider_network_error';
   error.metadata = { provider: 'fake', model: stage, stage };
   return error;
 }
@@ -346,6 +362,10 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
     }
     expect(ranking.generateConversationalTurn).toHaveBeenCalledTimes(1);
     expect(ranking.stageLatencyDiagnostics.map((diagnostic) => diagnostic.stage)).toEqual(['tool_selection', 'analytics_execution', 'turn']);
+    expect(ranking.stageLatencyDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: 'analytics_execution', deterministicRendererEligible: true, deterministicRendererReason: 'eligible' }),
+      expect.objectContaining({ stage: 'turn', deterministicRendererEligible: true, deterministicRendererReason: 'eligible' }),
+    ]));
 
     const groupedCount = harness({
       toolRuntimeEnabled: true,
@@ -415,7 +435,7 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
     expect(h.stageLatencyDiagnostics.map((diagnostic) => diagnostic.stage)).toEqual(['tool_selection', 'analytics_execution', 'turn']);
     expect(h.stageLatencyDiagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({ stage: 'tool_selection', compactToolContract: true, toolSchemaChars: expect.any(Number), toolArgumentChars: expect.any(Number), toolSelectionPromptChars: expect.any(Number) }),
-      expect.objectContaining({ stage: 'analytics_execution', compactToolContract: true }),
+      expect.objectContaining({ stage: 'analytics_execution', compactToolContract: true, deterministicRendererEligible: true, deterministicRendererReason: 'eligible' }),
     ]));
   });
 
@@ -431,18 +451,23 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
     });
     const executeAnalyticalQuery = vi.fn(async () => {
       started += 1;
+      const callIndex = started;
       if (started === 2) bothStarted();
       await releasePromise;
-      return { status: 'ok', result: started === 1 ? result([{ clusterId: 3, avg_ticket: '150000.000000' }], '1'.repeat(64), ['clusterId', 'avg_ticket']) : result([{ clusterId: 3, avg_spend: '250000.000000' }], '2'.repeat(64), ['clusterId', 'avg_spend']) };
+      return { status: 'ok', result: callIndex === 1 ? result([{ clusterId: 3, avg_ticket: '150000.000000' }], '1'.repeat(64), ['clusterId', 'avg_ticket']) : result([{ clusterId: 3, avg_spend: '250000.000000' }], '2'.repeat(64), ['clusterId', 'avg_spend']) };
     }) as unknown as ExecuteAnalyticalQueryWithResolvedContext;
     const h = harness({
       toolRuntimeEnabled: true,
+      synthesisMaxTokens: 321,
       conversationalTurns: [
         toolRuntimeCall([
           { id: 'ticket_by_cluster', plan: { dimensions: ['cluster.clusterId'], filters: [{ field: 'cluster.clusterId', operator: 'is_not_null' }], metrics: [{ aggregation: 'avg', field: 'commercial.averageOrderValueTaxIncl', alias: 'avg_ticket' }] } },
           { id: 'spend_by_cluster', plan: { dimensions: ['cluster.clusterId'], filters: [{ field: 'cluster.clusterId', operator: 'is_not_null' }], metrics: [{ aggregation: 'avg', field: 'commercial.totalSpentTaxIncl', alias: 'avg_spend' }] } },
         ]),
-        toolRuntimeContent('Cluster 3 lidera en ticket promedio; la frecuencia observada ayuda a contextualizarlo sin probar causalidad.'),
+        {
+          ...toolRuntimeContent('Cluster 3 lidera en ticket promedio; la frecuencia observada ayuda a contextualizarlo sin probar causalidad.'),
+          metadata: { provider: 'fake', model: 'tool', promptTokens: 123, completionTokens: 45 },
+        },
       ],
       executeAnalyticalQuery,
     });
@@ -460,15 +485,146 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
     if (response.status === 'ok') expect(response.response.status).toBe('answered');
     expect(h.generateConversationalTurn).toHaveBeenCalledTimes(2);
     expect(h.generateConversationalTurn.mock.calls[1]?.[0]).toMatchObject({ toolChoice: 'none', stage: 'tool_synthesis' });
+    expect(h.generateConversationalTurn.mock.calls[1]?.[0].maxTokens).toBe(321);
     expect(h.generateConversationalTurn.mock.calls[1]?.[0].tools).toEqual([]);
-    expect(String(h.generateConversationalTurn.mock.calls[1]?.[0].messages[1]?.content)).not.toContain('queryContract');
-    expect(String(h.generateConversationalTurn.mock.calls[1]?.[0].messages[1]?.content)).not.toContain('schemaVersion');
+    const synthesisContent = String(h.generateConversationalTurn.mock.calls[1]?.[0].messages[1]?.content);
+    const synthesisPayload = JSON.parse(synthesisContent);
+    expect(synthesisPayload).toMatchObject({
+      synthesisPromptVersion: 'customer-intelligence-tool-synthesis-v3',
+      question: 'Por que el cluster 3 tiene mayor ticket promedio?',
+      evidence: { facts: expect.any(Array), comparisons: expect.any(Array), limitations: expect.any(Array) },
+    });
+    expect(synthesisPayload).not.toHaveProperty('queryContract');
+    expect(synthesisPayload).not.toHaveProperty('schema');
+    expect(synthesisPayload).not.toHaveProperty('tools');
+    expect(synthesisPayload).not.toHaveProperty('executedAnalyticalObjectives');
+    expect(synthesisContent).not.toContain('schemaVersion');
+    expect(synthesisContent).not.toContain('"rows"');
+    expect(synthesisContent.length).toBeLessThan(4000);
     expect(h.generateAnswer).not.toHaveBeenCalled();
     expect(executeAnalyticalQuery).toHaveBeenCalledTimes(2);
     expect(h.stageLatencyDiagnostics.map((diagnostic) => diagnostic.stage)).toEqual(['tool_selection', 'analytics_execution', 'tool_synthesis', 'turn']);
     expect(h.stageLatencyDiagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({ stage: 'tool_synthesis', resultSummaryChars: expect.any(Number), synthesisInputResultCount: 2 }),
+      expect.objectContaining({
+        stage: 'tool_synthesis',
+        resultSummaryChars: expect.any(Number),
+        evidenceBundleChars: expect.any(Number),
+        evidenceFactCount: expect.any(Number),
+        evidenceComparisonCount: expect.any(Number),
+        synthesisPromptChars: expect.any(Number),
+        synthesisPromptTokens: 123,
+        synthesisCompletionTokens: 45,
+        synthesisInputResultCount: 2,
+      }),
       expect.objectContaining({ stage: 'analytics_execution', toolQueryIds: ['ticket_by_cluster', 'spend_by_cluster'] }),
+    ]));
+  });
+
+  it('returns deterministic degraded evidence when tool synthesis times out or loses network after analytics', async () => {
+    const cases = [
+      { error: providerTimeout('tool_synthesis'), failureStatus: 'tool_synthesis_provider_timeout' },
+      { error: providerNetworkError('tool_synthesis'), failureStatus: 'tool_synthesis_provider_network_error' },
+    ];
+
+    for (const entry of cases) {
+      const h = harness({
+        toolRuntimeEnabled: true,
+        conversationalTurns: [toolRuntimeCall([
+          { id: 'cluster_count', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'count', alias: 'customers' }] } },
+          { id: 'ticket_by_cluster', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'avg', field: 'commercial.averageOrderValueTaxIncl', alias: 'avg_ticket' }] } },
+        ])],
+        conversationalTurnErrors: [null, entry.error],
+        executionResults: [
+          result([{ clusterId: 3, customers: 4 }], 'c'.repeat(64), ['clusterId', 'customers']),
+          result([{ clusterId: 3, avg_ticket: '150000.000000' }], 'd'.repeat(64), ['clusterId', 'avg_ticket']),
+        ],
+      });
+      const sessionId = await createSession(h);
+
+      const response = await h.service.processSessionTurn({ sessionId, question: 'Que ves interesante en mis clientes?' });
+
+      expect(response.status).toBe('ok');
+      if (response.status !== 'ok') throw new Error('expected ok');
+      expect(response.response.status).toBe('answered');
+      if (response.response.status !== 'answered') throw new Error('expected answered');
+      expect(response.response.answer).toContain('El analisis se completo, pero la sintesis avanzada no estuvo disponible.');
+      expect(response.response.answer).toContain('cluster 3');
+      expect(response.response.answer).not.toMatch(/\b(recomiendo|causa|hipotesis|oportunidad)\b/i);
+      expect(response.response.analysis.synthesisFallbackUsed).toBe(true);
+      expect(response.response.analysis.synthesisFallbackReason).toBe(entry.failureStatus);
+      expect(response.response.provenance.featureSnapshot.snapshotId).toBe('17');
+      expect(response.response.queryIds).toEqual(['cluster_count', 'ticket_by_cluster']);
+      expect(h.generateConversationalTurn).toHaveBeenCalledTimes(2);
+      expect(h.generateAnswer).not.toHaveBeenCalled();
+      expect(h.generateConversationDecision).not.toHaveBeenCalled();
+      expect(h.generateAnalysisPlan).not.toHaveBeenCalled();
+      expect(h.stageLatencyDiagnostics).toEqual(expect.arrayContaining([
+        expect.objectContaining({ stage: 'analytics_execution', success: true, deterministicRendererEligible: false, deterministicRendererReason: 'multiple_queries' }),
+        expect.objectContaining({ stage: 'tool_synthesis', success: false, failureStatus: entry.failureStatus, evidenceBundleChars: expect.any(Number), evidenceFactCount: 2 }),
+        expect.objectContaining({ stage: 'turn', success: true, failureStatus: 'answered_degraded_synthesis', synthesisFallbackUsed: true }),
+      ]));
+    }
+  });
+
+  it('routes tied grouped rankings to bounded synthesis and records deterministic renderer rejection', async () => {
+    const h = harness({
+      toolRuntimeEnabled: true,
+      conversationalTurns: [
+        toolRuntimeCall([{ id: 'avg_ticket_by_cluster', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'avg', field: 'commercial.averageOrderValueTaxIncl', alias: 'avg_ticket' }], orderBy: [{ field: 'avg_ticket', direction: 'desc' }] } }]),
+        toolRuntimeContent('Hay empate observado entre clusters para ticket promedio.'),
+      ],
+      executionResults: [result([
+        { clusterId: 3, avg_ticket: '381304.040000' },
+        { clusterId: 1, avg_ticket: '381304.040000' },
+      ], 'e'.repeat(64), ['clusterId', 'avg_ticket'])],
+    });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Cual cluster tiene mayor ticket promedio?' });
+
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') expect(response.response.status).toBe('answered');
+    expect(h.generateConversationalTurn).toHaveBeenCalledTimes(2);
+    expect(h.generateConversationalTurn.mock.calls[1]?.[0]).toMatchObject({ stage: 'tool_synthesis', toolChoice: 'none', maxTokens: 500 });
+    expect(h.stageLatencyDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: 'analytics_execution', deterministicRendererEligible: false, deterministicRendererReason: 'tie_detected' }),
+      expect.objectContaining({ stage: 'tool_synthesis', evidenceBundleChars: expect.any(Number), evidenceFactCount: 1, synthesisPromptChars: expect.any(Number) }),
+    ]));
+  });
+
+  it('uses synthesis for anchored follow-ups even when the new result shape is otherwise deterministic', async () => {
+    const h = harness({
+      toolRuntimeEnabled: true,
+      conversationalTurns: [
+        toolRuntimeCall([{ id: 'avg_ticket_by_cluster', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'avg', field: 'commercial.averageOrderValueTaxIncl', alias: 'avg_ticket' }], orderBy: [{ field: 'avg_ticket', direction: 'desc' }], limit: 1 } }]),
+        toolRuntimeCall([{ id: 'followup_ticket_by_cluster', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'avg', field: 'commercial.averageOrderValueTaxIncl', alias: 'avg_ticket' }], orderBy: [{ field: 'avg_ticket', direction: 'desc' }], limit: 1 } }]),
+        toolRuntimeContent('Cluster 3 sigue siendo el referente semantico del turno.'),
+      ],
+      executionResults: [
+        result([{ clusterId: 3, avg_ticket: '381304.040000' }], 'f'.repeat(64), ['clusterId', 'avg_ticket']),
+        result([{ clusterId: 1, avg_ticket: '500000.000000' }, { clusterId: 3, avg_ticket: '381304.040000' }], '0'.repeat(64), ['clusterId', 'avg_ticket']),
+      ],
+    });
+    const sessionId = await createSession(h);
+    await h.service.processSessionTurn({ sessionId, question: 'Cual cluster tiene mayor ticket promedio?' });
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Y que significa eso?' });
+
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') expect(response.response.status).toBe('answered');
+    const calls = h.generateConversationalTurn.mock.calls as unknown as [GenerateConversationalTurnInput][];
+    expect(calls).toHaveLength(3);
+    expect(calls[2]?.[0]).toMatchObject({ stage: 'tool_synthesis', toolChoice: 'none' });
+    const synthesisPayload = JSON.parse(String(calls[2]?.[0].messages[1]?.content));
+    expect(synthesisPayload.semanticAnchor).toMatchObject({ entityType: 'cluster', entityId: 3 });
+    expect(h.stageLatencyDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 'analytics_execution',
+        deterministicRendererEligible: false,
+        deterministicRendererReason: 'explanatory_question_requires_synthesis',
+        semanticAnchorEntityType: 'cluster',
+        semanticAnchorEntityId: 3,
+      }),
     ]));
   });
 
@@ -525,8 +681,8 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
       ],
       executionResults: [
         result([{ clusterId: 3, avg_ticket: '381304.040000' }], '3'.repeat(64), ['clusterId', 'avg_ticket']),
-        result([{ clusterId: 3, avg_ticket: '381304.040000' }], '4'.repeat(64), ['clusterId', 'avg_ticket']),
-        result([{ clusterId: 3, total_spent: '900000.000000' }], '5'.repeat(64), ['clusterId', 'total_spent']),
+        result([{ clusterId: 1, avg_ticket: '500000.000000' }, { clusterId: 3, avg_ticket: '381304.040000' }], '4'.repeat(64), ['clusterId', 'avg_ticket']),
+        result([{ clusterId: 1, total_spent: '1000000.000000' }, { clusterId: 3, total_spent: '900000.000000' }], '5'.repeat(64), ['clusterId', 'total_spent']),
       ],
     });
     const sessionId = await createSession(h);
@@ -552,6 +708,14 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
     expect(calls).toHaveLength(3);
     expect(calls[2]?.[0]).toMatchObject({ stage: 'tool_synthesis', toolChoice: 'none' });
     expect(calls[2]?.[0].tools).toEqual([]);
+    const synthesisPayload = JSON.parse(String(calls[2]?.[0].messages[1]?.content));
+    expect(synthesisPayload.semanticAnchor).toMatchObject({ entityType: 'cluster', entityId: 3, metric: 'averageOrderValue' });
+    expect(synthesisPayload.semanticFocus).toMatchObject({ entityType: 'cluster', entityId: 3, metric: 'averageOrderValue' });
+    expect(synthesisPayload.evidence.anchor).toMatchObject({ entityType: 'cluster', entityId: 3, metric: 'averageOrderValue' });
+    expect(synthesisPayload.evidence.facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ entityType: 'cluster', entityId: 3, metric: 'averageOrderValue' }),
+      expect.objectContaining({ entityType: 'cluster', entityId: 3, metric: 'totalSpent' }),
+    ]));
     expect(h.executeAnalyticalQuery).toHaveBeenCalledTimes(3);
     const executeCalls = (h.executeAnalyticalQuery as unknown as { readonly mock: { readonly calls: readonly [{ readonly plan: { readonly filters?: unknown } }][] } }).mock.calls;
     expect(executeCalls.slice(1)).toHaveLength(2);
@@ -562,6 +726,8 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
       expect.objectContaining({
         stage: 'analytics_execution',
         toolQueryCount: 2,
+        semanticAnchorEntityType: 'cluster',
+        semanticAnchorEntityId: 3,
         toolQueries: expect.arrayContaining([
           expect.objectContaining({ id: 'ticket_by_cluster', filterFieldNames: ['cluster.clusterId'] }),
           expect.objectContaining({ id: 'spend_by_cluster', filterFieldNames: ['cluster.clusterId'] }),

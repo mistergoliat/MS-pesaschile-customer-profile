@@ -86,6 +86,7 @@ export function createOpenAiCompatibleCopilotModel(config: OpenAiCompatibleCopil
         tools: input.tools,
         toolChoice: input.toolChoice,
         stage: input.stage,
+        maxTokens: input.maxTokens,
       });
       return conversationalTurnOutput(output, input.stage);
     },
@@ -183,6 +184,7 @@ async function postChatCompletion(
     readonly tools?: readonly CopilotToolDefinition[];
     readonly toolChoice?: 'auto' | 'none';
     readonly stage: CopilotProviderCallStage;
+    readonly maxTokens?: number;
   },
 ): Promise<ChatCompletionOutput> {
   const controller = new AbortController();
@@ -200,6 +202,7 @@ async function postChatCompletion(
     if (request.responseFormat) body.response_format = { type: request.responseFormat };
     if (request.tools && request.tools.length > 0) body.tools = request.tools;
     if (request.toolChoice) body.tool_choice = request.toolChoice;
+    if (request.maxTokens !== undefined) body.max_tokens = request.maxTokens;
 
     const response = await fetch(config.endpoint, {
       method: 'POST',

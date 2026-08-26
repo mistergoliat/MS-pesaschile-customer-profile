@@ -86,6 +86,7 @@ const envSchema = z.object({
     .enum(['true', 'false', '1', '0'])
     .default('false')
     .transform((value) => value === 'true' || value === '1'),
+  CUSTOMER_INTELLIGENCE_COPILOT_SYNTHESIS_MAX_TOKENS: z.coerce.number().int().positive().max(2000).default(500),
 
   PRESTASHOP_DB_HOST: z.string().min(1),
   PRESTASHOP_DB_PORT: z.coerce.number().int().positive().default(3306),
@@ -303,6 +304,7 @@ export const config = {
     internalToken: raw.MARKETING_COPILOT_INTERNAL_TOKEN ?? null,
     unifiedPlannerEnabled: raw.CUSTOMER_INTELLIGENCE_COPILOT_UNIFIED_PLANNER_ENABLED,
     toolRuntimeEnabled: raw.CUSTOMER_INTELLIGENCE_COPILOT_TOOL_RUNTIME_ENABLED,
+    synthesisMaxTokens: raw.CUSTOMER_INTELLIGENCE_COPILOT_SYNTHESIS_MAX_TOKENS,
     session: {
       ttlMinutes: raw.CUSTOMER_INTELLIGENCE_COPILOT_SESSION_TTL_MINUTES,
       maxActiveSessions: raw.CUSTOMER_INTELLIGENCE_COPILOT_MAX_ACTIVE_SESSIONS,

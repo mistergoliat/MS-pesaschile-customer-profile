@@ -26,6 +26,16 @@ export type CopilotBenchmarkRecord = {
   readonly resultSummaryChars: number;
   readonly toolSelectionPromptChars: number | null;
   readonly toolSelectionPromptTokens: number | null;
+  readonly synthesisFallbackUsed: boolean;
+  readonly deterministicRendererEligible: boolean | null;
+  readonly deterministicRendererReason: string | null;
+  readonly semanticAnchorEntityType: string | null;
+  readonly semanticAnchorEntityId: string | number | null;
+  readonly evidenceBundleChars: number | null;
+  readonly evidenceFactCount: number;
+  readonly evidenceComparisonCount: number;
+  readonly synthesisPromptChars: number | null;
+  readonly synthesisCompletionTokens: number | null;
   readonly semanticPass: boolean;
   readonly semanticFailureReason: string | null;
 };

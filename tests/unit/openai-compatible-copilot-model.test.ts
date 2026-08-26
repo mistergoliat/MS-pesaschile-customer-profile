@@ -224,6 +224,7 @@ describe('openai_compatible Customer Intelligence Copilot model adapter', () => 
 
     await model.generateConversationalTurn!({
       ...conversationalTurnInput('tool_synthesis'),
+      maxTokens: 321,
       messages: [
         ...conversationalTurnInput('tool_synthesis').messages,
         {
@@ -237,6 +238,7 @@ describe('openai_compatible Customer Intelligence Copilot model adapter', () => 
 
     const { payload } = firstPayload(fetchMock);
     expect(payload.tool_choice).toBe('none');
+    expect(payload.max_tokens).toBe(321);
     expect(payload.messages).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: 'tool', tool_call_id: 'call_1', content: '{"queries":[]}' }),
     ]));

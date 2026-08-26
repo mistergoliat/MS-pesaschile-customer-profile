@@ -658,6 +658,77 @@ Live benchmark: NOT_RUN.
 
 Live validation: NOT_RUN.
 
+## T05.8.3 Bounded Synthesis and Semantic Anchor Integrity
+
+Motivation: T05.8.2 made simple grouped rankings eligible for deterministic rendering, but that
+claim still needs live measurement. This slice does not broaden optimization scope; it makes the
+remaining synthesis path bounded, auditable and semantically anchored before running the next live
+benchmark.
+
+Semantic anchor contract:
+
+- Each tool-runtime turn captures an immutable `semanticAnchor` from the pre-execution session
+  context before new analytics can introduce a different top row.
+- `semanticAnchor` is separate from `semanticFocus`; synthesis receives both, and the anchor is the
+  authoritative referent for follow-up interpretation.
+- Follow-up turns with an active finding are not allowed to be answered by the simple deterministic
+  renderer, even if the new query result shape is otherwise renderable. This avoids replacing
+  Cluster 3 / active finding with a later top-ranked row.
+
+Deterministic renderer diagnostics:
+
+- Stage diagnostics now include `deterministicRendererEligible` and
+  `deterministicRendererReason`.
+- Reasons are drawn from a fixed set: `eligible`, `multiple_queries`, `multiple_metrics`,
+  `unsupported_dimension`, `missing_order`, `order_metric_mismatch`, `limit_not_supported`,
+  `tie_detected`, `truncated_result`, `unexpected_result_shape` and
+  `explanatory_question_requires_synthesis`.
+- Renderer eligibility is based on validated query/result shape, not user phrase matching.
+- Diagnostics remain metadata-only and do not include raw result rows.
+
+Bounded synthesis v3:
+
+- Tool synthesis now receives only the current question, immutable semantic anchor, compact
+  semantic focus, deterministic `AnalyticalEvidenceBundle` and concise epistemic boundaries.
+- The v3 payload excludes schema, query contract, raw plans, full history, raw rows, tool
+  definitions and provider metadata.
+- The evidence bundle is built deterministically from validated results and capped at 4000 chars.
+- Synthesis completion is bounded by
+  `CUSTOMER_INTELLIGENCE_COPILOT_SYNTHESIS_MAX_TOKENS` with default `500`.
+
+Synthesis fallback:
+
+- If analytics succeeds but `tool_synthesis` times out, loses network or returns an invalid model
+  response, the service returns a deterministic degraded evidence answer instead of surfacing a
+  provider failure.
+- The degraded answer preserves query ids and snapshot provenance, marks
+  `analysis.synthesisFallbackUsed = true`, and does not call legacy planner/answerer paths.
+
+Benchmark harness:
+
+- JSONL records now include `synthesisFallbackUsed`, `deterministicRendererEligible`,
+  `deterministicRendererReason`, `semanticAnchorEntityType`, `semanticAnchorEntityId`,
+  `evidenceBundleChars`, `evidenceFactCount`, `evidenceComparisonCount`,
+  `synthesisPromptChars` and `synthesisCompletionTokens`.
+- Tool-runtime semantic pass is stricter for the key scenarios:
+  `simple_fact` requires tool selection + analytics + zero synthesis,
+  `simple_grouped_ranking` requires deterministic renderer eligibility + zero synthesis, and
+  `contextual_deep_followup` requires Cluster 3 semantic anchor preservation with at most one
+  synthesis.
+- Live benchmark remains `NOT_RUN`. The next required work is measurement, especially verifying
+  that `simple_grouped_ranking` eliminates the previous ~5s synthesis and that deep follow-up keeps
+  Cluster 3 semantics intact.
+
+Local focused validation:
+
+`npm test -- --run tests/unit/customer-intelligence-copilot-session.test.ts tests/unit/customer-intelligence-copilot-benchmark.test.ts tests/unit/config.test.ts tests/unit/openai-compatible-copilot-model.test.ts`
+
+Result: PASS, 4 files, 91 tests.
+
+Live benchmark: NOT_RUN.
+
+Live validation: NOT_RUN.
+
 ## T05.5 Answer Generation Reliability and Latency Observability
 
 Live symptom: in a fresh T05.4 session, `Cual cluster tiene mayor ticket promedio?` completed

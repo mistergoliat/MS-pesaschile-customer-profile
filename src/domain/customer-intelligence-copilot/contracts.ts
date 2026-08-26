@@ -243,6 +243,38 @@ export type CopilotSemanticFocus = {
   } | null;
 };
 
+export type CopilotSemanticAnchor = {
+  readonly entityType: 'cluster' | 'rfm_segment' | 'audience' | 'comparison_set' | null;
+  readonly entityId: string | number | null;
+  readonly metric: string | null;
+  readonly findingType: 'top_rank' | 'single_value' | null;
+  readonly sourceQueryId: string | null;
+};
+
+export type AnalyticalEvidenceBundle = {
+  readonly anchor: Pick<CopilotSemanticAnchor, 'entityType' | 'entityId' | 'metric'> | null;
+  readonly facts: readonly {
+    readonly queryId: string;
+    readonly metric: string;
+    readonly entityType: string | null;
+    readonly entityId: string | number | null;
+    readonly value: string | number | boolean | null;
+    readonly rank?: number;
+    readonly comparison?: 'highest' | 'lowest' | 'observed';
+  }[];
+  readonly comparisons: readonly {
+    readonly queryId: string;
+    readonly metric: string;
+    readonly entityType: string | null;
+    readonly entityId: string | number | null;
+    readonly anchorValue: string | number | boolean | null;
+    readonly peerMin: string | number | null;
+    readonly peerMax: string | number | null;
+    readonly anchorRank: number | null;
+  }[];
+  readonly limitations: readonly string[];
+};
+
 export type CopilotSessionContext = {
   readonly contextVersion: typeof CUSTOMER_INTELLIGENCE_COPILOT_SESSION_CONTEXT_VERSION;
   readonly pinnedContext: CustomerIntelligenceSnapshotContext;
@@ -278,6 +310,8 @@ export type CustomerIntelligenceCopilotResponse =
         readonly executionDurationMs: number;
         readonly plannerModel: string | null;
         readonly answerModel: string | null;
+        readonly synthesisFallbackUsed?: boolean;
+        readonly synthesisFallbackReason?: string | null;
       };
       readonly provenance: CustomerIntelligenceSnapshotContext;
     }
