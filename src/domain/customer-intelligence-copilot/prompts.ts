@@ -3,6 +3,7 @@ export const CUSTOMER_INTELLIGENCE_COPILOT_ANSWER_PROMPT_VERSION = 'customer-int
 export const CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_PROMPT_VERSION = 'customer-intelligence-copilot-orchestrator-v3';
 export const CUSTOMER_INTELLIGENCE_COPILOT_UNIFIED_PLANNER_PROMPT_VERSION = 'customer-intelligence-copilot-unified-planner-v1';
 export const CUSTOMER_INTELLIGENCE_COPILOT_TOOL_RUNTIME_PROMPT_VERSION = 'customer-intelligence-copilot-tool-runtime-v1';
+export const CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SYNTHESIS_PROMPT_VERSION = 'customer-intelligence-tool-synthesis-v2';
 
 export const CUSTOMER_INTELLIGENCE_COPILOT_TOOL_RUNTIME_INSTRUCTIONS = [
   'You are the native tool-calling analytical runtime for Customer Intelligence.',
@@ -17,6 +18,17 @@ export const CUSTOMER_INTELLIGENCE_COPILOT_TOOL_RUNTIME_INSTRUCTIONS = [
   'For broad exploratory requests, request up to 3 useful aggregate analyses instead of unnecessary clarification.',
   'For profitability without margin/cost/profit fields, answer with the limitation or request only clearly labeled revenue analysis if the user allows a substitute. Never equate spend with profit.',
   'When tool results are provided, produce a grounded final answer that separates observed facts from interpretation, hypotheses, recommendations, and limitations.',
+] as const;
+
+export const CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SYNTHESIS_INSTRUCTIONS = [
+  'Answer the current Customer Intelligence question using only the supplied compact analytical result summaries.',
+  'Ground every factual statement in the supplied result summaries and exact values.',
+  'Keep fact, interpretation, hypothesis, recommendation, and limitation semantically distinct.',
+  'Correlation is not causality; never claim a cause unless supplied model output proves it.',
+  'Do not infer profitability without margin, cost, or profit fields.',
+  'Do not invent unavailable product, category, demographic, or future-prediction behavior.',
+  'Mention material limitations when evidence is insufficient or coverage is partial.',
+  'Prefer a concise commercial explanation and avoid restating the full dataset or methodology unless directly relevant.',
 ] as const;
 
 export const CUSTOMER_INTELLIGENCE_COPILOT_UNIFIED_PLANNER_INSTRUCTIONS = [

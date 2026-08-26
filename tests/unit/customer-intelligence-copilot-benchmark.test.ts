@@ -24,6 +24,7 @@ function record(overrides: Partial<CopilotBenchmarkRecord>): CopilotBenchmarkRec
     cacheMissTokens: 0,
     cacheHitRatio: null,
     semanticPass: true,
+    semanticFailureReason: null,
     ...overrides,
   };
 }

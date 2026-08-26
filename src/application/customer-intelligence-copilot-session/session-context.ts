@@ -88,7 +88,7 @@ function findingFromResult(entry: CopilotSessionQueryResult): CopilotSemanticFoc
       findingType: isTopRankPlan(entry.plan) ? 'top_rank' : 'single_value',
       entityType: 'cluster',
       entityId: typeof row.clusterId === 'string' || typeof row.clusterId === 'number' ? row.clusterId : null,
-      metric: metric?.field ?? metric?.name ?? null,
+      metric: metric?.name ?? metric?.field ?? null,
       value: normalizedValue,
     };
   }
@@ -98,7 +98,7 @@ function findingFromResult(entry: CopilotSessionQueryResult): CopilotSemanticFoc
       findingType: isTopRankPlan(entry.plan) ? 'top_rank' : 'single_value',
       entityType: 'rfm_segment',
       entityId: typeof row.segmentCode === 'string' || typeof row.segmentCode === 'number' ? row.segmentCode : null,
-      metric: metric?.field ?? metric?.name ?? null,
+      metric: metric?.name ?? metric?.field ?? null,
       value: normalizedValue,
     };
   }
@@ -108,7 +108,7 @@ function findingFromResult(entry: CopilotSessionQueryResult): CopilotSemanticFoc
       findingType: 'single_value',
       entityType: 'audience',
       entityId: null,
-      metric: metric?.field ?? metric?.name ?? null,
+      metric: metric?.name ?? metric?.field ?? null,
       value: normalizedValue,
     };
   }
@@ -117,7 +117,7 @@ function findingFromResult(entry: CopilotSessionQueryResult): CopilotSemanticFoc
 
 function isTopRankPlan(plan: AnalyticalQueryPlan): boolean {
   const metricAlias = plan.metrics?.[0]?.alias;
-  return (plan.dimensions?.length ?? 0) > 0 && plan.limit === 1 && !!metricAlias && plan.orderBy?.[0]?.field === metricAlias && plan.orderBy[0]?.direction === 'desc';
+  return (plan.dimensions?.length ?? 0) > 0 && !!metricAlias && plan.orderBy?.[0]?.field === metricAlias && plan.orderBy[0]?.direction === 'desc';
 }
 
 function latestResult(entries: readonly CopilotSessionQueryResult[]): CopilotSessionQueryResult | null {
@@ -154,10 +154,10 @@ function entityFromRow(
 ): CopilotSemanticFocus['activeEntity'] {
   if (!row) return null;
   if (typeof row.clusterId === 'number') {
-    return { type: comparison ? 'comparison_set' : 'cluster', id: row.clusterId, sourceQueryId };
+    return { type: 'cluster', id: row.clusterId, sourceQueryId };
   }
   if (typeof row.segmentCode === 'string' && row.segmentCode.length > 0) {
-    return { type: comparison ? 'comparison_set' : 'rfm_segment', id: row.segmentCode, sourceQueryId };
+    return { type: 'rfm_segment', id: row.segmentCode, sourceQueryId };
   }
   return comparison ? { type: 'comparison_set', id: comparison.entityIds[0] ?? null, sourceQueryId } : null;
 }
@@ -166,11 +166,17 @@ function metricFromPlan(plan: AnalyticalQueryPlan, sourceQueryId: string): Copil
   const metric = plan.metrics?.[0];
   if (!metric) return null;
   return {
-    name: metric.alias,
+    name: semanticMetricName(metric.field ?? null, metric.alias),
     field: metric.field ?? null,
     aggregation: metric.aggregation,
     sourceQueryId,
   };
+}
+
+function semanticMetricName(field: string | null, alias: string): string {
+  if (field === 'commercial.averageOrderValueTaxIncl') return 'averageOrderValue';
+  if (field === 'commercial.totalSpentTaxIncl') return 'totalSpent';
+  return alias;
 }
 
 type TopRowFacts = NonNullable<CopilotSemanticFocus['lastAnalyticalResult']>['topRowFacts'];

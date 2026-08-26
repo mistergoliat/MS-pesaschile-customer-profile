@@ -20,6 +20,7 @@ export type CopilotBenchmarkRecord = {
   readonly cacheMissTokens: number;
   readonly cacheHitRatio: number | null;
   readonly semanticPass: boolean;
+  readonly semanticFailureReason: string | null;
 };
 
 export function aggregateBenchmark(records: readonly CopilotBenchmarkRecord[]) {

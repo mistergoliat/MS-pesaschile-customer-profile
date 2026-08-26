@@ -28,6 +28,7 @@ type CopilotBenchmarkScenario = {
   readonly semanticPass: (result: {
     readonly finalResponse: CustomerIntelligenceCopilotResponse;
     readonly plannerDiagnostics: readonly CopilotPlannerDiagnostic[];
+    readonly stageDiagnostics: readonly CopilotStageLatencyDiagnostic[];
   }) => boolean;
 };
 
@@ -47,10 +48,17 @@ const SCENARIOS: readonly CopilotBenchmarkScenario[] = [
   {
     id: 'contextual_deep_followup',
     turns: ['Cual cluster tiene mayor ticket promedio?', 'Por que?'],
-    semanticPass: ({ finalResponse, plannerDiagnostics }) =>
-      finalResponse.status === 'answered' &&
-      plannerDiagnostics.at(-1)?.selectedStatus === 'query_plan' &&
-      (plannerDiagnostics.at(-1)?.queryStepIds.length ?? 0) >= 2,
+    semanticPass: ({ finalResponse, plannerDiagnostics, stageDiagnostics }) => {
+      if (finalResponse.status !== 'answered') return false;
+      const plannerPass = plannerDiagnostics.at(-1)?.selectedStatus === 'query_plan' && (plannerDiagnostics.at(-1)?.queryStepIds.length ?? 0) >= 2;
+      const toolSelection = stageDiagnostics.filter((diagnostic) => diagnostic.stage === 'tool_selection').at(-1);
+      const toolPass =
+        toolSelection !== undefined &&
+        toolSelection.activeSemanticEntityType === 'cluster' &&
+        String(toolSelection.activeSemanticEntityId) === '3' &&
+        (toolSelection.toolQueryCount ?? toolSelection.queryCount) >= 2;
+      return plannerPass || toolPass;
+    },
   },
   {
     id: 'clarification_continuation',
@@ -174,13 +182,15 @@ async function runScenario(args: {
     finalResponse = turn.response;
   }
   if (!finalResponse) return emptyRecord(args, 'no_turns', false, stageDiagnostics);
+  const semanticPass = args.scenario.semanticPass({ finalResponse, plannerDiagnostics, stageDiagnostics });
   return recordFromDiagnostics({
     model: args.model,
     runtime: args.runtime,
     scenarioId: args.scenario.id,
     run: args.run,
     status: finalResponse.status,
-    semanticPass: args.scenario.semanticPass({ finalResponse, plannerDiagnostics }),
+    semanticPass,
+    semanticFailureReason: semanticPass ? null : semanticFailureReason({ scenarioId: args.scenario.id, finalResponse, plannerDiagnostics, stageDiagnostics }),
     diagnostics: stageDiagnostics,
   });
 }
@@ -192,6 +202,7 @@ function recordFromDiagnostics(args: {
   readonly run: number;
   readonly status: string;
   readonly semanticPass: boolean;
+  readonly semanticFailureReason: string | null;
   readonly diagnostics: readonly CopilotStageLatencyDiagnostic[];
 }): CopilotBenchmarkRecord {
   return {
@@ -216,11 +227,32 @@ function recordFromDiagnostics(args: {
     cacheMissTokens: sumCacheTokens(args.diagnostics, 'promptCacheMissTokens'),
     cacheHitRatio: cacheHitRatio(args.diagnostics),
     semanticPass: args.semanticPass,
+    semanticFailureReason: args.semanticFailureReason,
   };
 }
 
 function emptyRecord(args: { readonly model: string; readonly runtime: CopilotBenchmarkRuntime; readonly scenario: CopilotBenchmarkScenario; readonly run: number }, status: string, semanticPass: boolean, diagnostics: readonly CopilotStageLatencyDiagnostic[]): CopilotBenchmarkRecord {
-  return recordFromDiagnostics({ model: args.model, runtime: args.runtime, scenarioId: args.scenario.id, run: args.run, status, semanticPass, diagnostics });
+  return recordFromDiagnostics({ model: args.model, runtime: args.runtime, scenarioId: args.scenario.id, run: args.run, status, semanticPass, semanticFailureReason: semanticPass ? null : status, diagnostics });
+}
+
+function semanticFailureReason(args: {
+  readonly scenarioId: string;
+  readonly finalResponse: CustomerIntelligenceCopilotResponse;
+  readonly plannerDiagnostics: readonly CopilotPlannerDiagnostic[];
+  readonly stageDiagnostics: readonly CopilotStageLatencyDiagnostic[];
+}): string {
+  if (args.scenarioId !== 'contextual_deep_followup') return `final_status_${args.finalResponse.status}`;
+  if (args.finalResponse.status === 'clarification_required') return 'unexpected_clarification_required';
+  if (args.finalResponse.status !== 'answered') return `final_status_${args.finalResponse.status}`;
+  const plannerDiagnostic = args.plannerDiagnostics.at(-1);
+  if (plannerDiagnostic && plannerDiagnostic.selectedStatus !== 'query_plan') return `planner_selected_${plannerDiagnostic.selectedStatus}`;
+  if (plannerDiagnostic && plannerDiagnostic.queryStepIds.length < 2) return 'planner_query_count_below_2';
+  const toolSelection = args.stageDiagnostics.filter((diagnostic) => diagnostic.stage === 'tool_selection').at(-1);
+  if (toolSelection) {
+    if (toolSelection.activeSemanticEntityType !== 'cluster' || String(toolSelection.activeSemanticEntityId) !== '3') return 'active_cluster_3_not_preserved';
+    if ((toolSelection.toolQueryCount ?? toolSelection.queryCount) < 2) return 'tool_query_count_below_2';
+  }
+  return 'semantic_expectation_not_met';
 }
 
 function sumStage(diagnostics: readonly CopilotStageLatencyDiagnostic[], stage: CopilotStageLatencyDiagnostic['stage']): number {

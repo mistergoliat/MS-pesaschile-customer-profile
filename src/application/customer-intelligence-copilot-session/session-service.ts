@@ -13,6 +13,8 @@ import {
   CUSTOMER_INTELLIGENCE_COPILOT_ANSWER_PROMPT_VERSION,
   CUSTOMER_INTELLIGENCE_COPILOT_TOOL_RUNTIME_INSTRUCTIONS,
   CUSTOMER_INTELLIGENCE_COPILOT_TOOL_RUNTIME_PROMPT_VERSION,
+  CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SYNTHESIS_INSTRUCTIONS,
+  CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SYNTHESIS_PROMPT_VERSION,
   CUSTOMER_INTELLIGENCE_COPILOT_RUN_ANALYTICAL_QUERIES_TOOL,
   CUSTOMER_INTELLIGENCE_COPILOT_SESSION_VERSION,
   asksForFreshBusinessFact,
@@ -28,7 +30,7 @@ import {
   type CopilotConversationPlan,
   type CustomerIntelligenceCopilotResponse,
 } from '../../domain/customer-intelligence-copilot/index.js';
-import { validateAnalyticalQueryPlan, type AnalyticalQueryPlan, type AnalyticalQueryResult } from '../../domain/customer-intelligence-query/index.js';
+import { validateAnalyticalQueryPlan, type AnalyticalFilterNode, type AnalyticalQueryPlan, type AnalyticalQueryResult } from '../../domain/customer-intelligence-query/index.js';
 import type { CustomerIntelligenceSnapshotContext } from '../../domain/customer-intelligence/index.js';
 import type { Clock } from '../customer-profile/ports.js';
 import type {
@@ -179,6 +181,26 @@ export type CopilotStageLatencyDiagnostic = {
   readonly totalTokens?: number;
   readonly promptCacheHitTokens?: number;
   readonly promptCacheMissTokens?: number;
+  readonly contextProjectionChars?: number;
+  readonly resultSummaryChars?: number;
+  readonly activeSemanticEntityType?: string | null;
+  readonly activeSemanticEntityId?: string | number | null;
+  readonly activeMetric?: string | null;
+  readonly activeFindingType?: string | null;
+  readonly activeFindingSourceQueryId?: string | null;
+  readonly unresolvedClarificationPresent?: boolean;
+  readonly toolCallCount?: number;
+  readonly toolQueryIds?: readonly string[];
+  readonly toolQueryCount?: number;
+  readonly toolQueries?: readonly {
+    readonly id: string;
+    readonly dimensions: readonly string[];
+    readonly metrics: readonly string[];
+    readonly filterFieldNames: readonly string[];
+    readonly orderByFields: readonly string[];
+  }[];
+  readonly synthesisInputResultCount?: number;
+  readonly semanticFailureReason?: string | null;
 };
 
 export function createCustomerIntelligenceCopilotSessionService(deps: {
@@ -641,7 +663,7 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
           execution: { ...execution.result.execution, truncated: execution.result.execution.truncated || execution.result.rows.length > deps.limits.maxResultRowsRetained },
         },
       }));
-      const deterministicAnswer = renderDeterministicSimpleAnswer(executions, session.pinnedContext);
+      const deterministicAnswer = shouldUseDeterministicAnswer(question, executions) ? renderDeterministicSimpleAnswer(executions, session.pinnedContext) : null;
       if (deterministicAnswer) {
         const response = withSession(
           { sessionId: session.sessionId, turnId, queryIds: queryResults.map((entry) => entry.queryId), sourceQueryIds: [] },
@@ -1210,6 +1232,7 @@ async function processToolRuntimeTurn(args: {
 }): Promise<ProcessCopilotSessionTurnResult> {
   const messages = toolRuntimeMessages(args);
   const tools = analyticalToolDefinitions();
+  const selectionProjectionChars = messageProjectionChars(messages);
   let selection: Awaited<ReturnType<NonNullable<CustomerIntelligenceCopilotModel['generateConversationalTurn']>>>;
   try {
     selection = await timeCopilotStage({
@@ -1221,6 +1244,10 @@ async function processToolRuntimeTurn(args: {
       analyticsExecutionDurationMs: 0,
       queryCountFromOutput: (output) => queryCountFromToolCalls(output.toolCalls),
       executionMode: 'direct_response',
+      diagnosticContext: {
+        ...toolRuntimeSemanticDiagnostic(args.sessionContext),
+        contextProjectionChars: selectionProjectionChars,
+      },
       call: () =>
         args.model.generateConversationalTurn!({
           messages,
@@ -1244,6 +1271,7 @@ async function processToolRuntimeTurn(args: {
   }
 
   const validatedToolCall = validateRunAnalyticalQueriesToolCall(selection.toolCalls);
+  const toolDiagnostic = validatedToolCall.ok ? toolCallDiagnostic(validatedToolCall.steps) : {};
   if (!validatedToolCall.ok) {
     const response = withSession({ sessionId: args.session.sessionId, turnId: args.turnId }, plannerInvalid(validatedToolCall.errors));
     await args.store.save(appendTurn(args.session, response, args.question, [], [], args.clock.now(), args.limits), args.clock.now());
@@ -1276,6 +1304,7 @@ async function processToolRuntimeTurn(args: {
         analyticsExecutionDurationMs,
         totalTurnDurationMs: durationSince(args.turnStartedAt),
         executionMode,
+        ...toolDiagnostic,
       });
       await args.store.save(appendTurn(args.session, response, args.question, [], [], args.clock.now(), args.limits), args.clock.now());
       emitTurnLatency(args.onStageLatencyDiagnostic, { turnStartedAt: args.turnStartedAt, queryCount: validatedToolCall.steps.length, analyticsExecutionDurationMs, success: false, failureStatus: 'tool_call_query_validation_failed', executionMode });
@@ -1297,6 +1326,7 @@ async function processToolRuntimeTurn(args: {
       analyticsExecutionDurationMs,
       totalTurnDurationMs: durationSince(args.turnStartedAt),
       executionMode,
+      ...toolDiagnostic,
     });
     const response = withSession({ sessionId: args.session.sessionId, turnId: args.turnId }, mapAnalyticsError(error));
     await args.store.save(appendTurn(args.session, response, args.question, [], [], args.clock.now(), args.limits), args.clock.now());
@@ -1317,6 +1347,7 @@ async function processToolRuntimeTurn(args: {
     analyticsExecutionDurationMs,
     totalTurnDurationMs: durationSince(args.turnStartedAt),
     executionMode,
+    ...toolDiagnostic,
   });
 
   const queryResults = executions.map((execution) => ({
@@ -1325,7 +1356,7 @@ async function processToolRuntimeTurn(args: {
     plan: execution.plan,
     result: retainedResult(execution.result, args.limits),
   }));
-  const deterministicAnswer = renderDeterministicSimpleAnswer(executions, args.session.pinnedContext);
+  const deterministicAnswer = shouldUseDeterministicAnswer(args.question, executions) ? renderDeterministicSimpleAnswer(executions, args.session.pinnedContext) : null;
   if (deterministicAnswer) {
     const response = withSession(
       { sessionId: args.session.sessionId, turnId: args.turnId, queryIds: queryResults.map((entry) => entry.queryId), sourceQueryIds: [] },
@@ -1338,6 +1369,12 @@ async function processToolRuntimeTurn(args: {
   }
 
   try {
+    const synthesisMessages = toolSynthesisMessages({
+      question: args.question,
+      sessionContext: args.sessionContext,
+      executions,
+    });
+    const resultSummaryChars = messageProjectionChars(synthesisMessages);
     const synthesis = await timeCopilotStage({
       stage: 'tool_synthesis',
       onDiagnostic: args.onStageLatencyDiagnostic,
@@ -1346,14 +1383,16 @@ async function processToolRuntimeTurn(args: {
       queryCount: executions.length,
       analyticsExecutionDurationMs,
       executionMode: 'deep_analysis',
+      diagnosticContext: {
+        ...toolRuntimeSemanticDiagnostic(args.sessionContext),
+        ...toolDiagnostic,
+        resultSummaryChars,
+        synthesisInputResultCount: executions.length,
+      },
       call: () =>
         args.model.generateConversationalTurn!({
-          messages: [
-            ...messages,
-            { role: 'assistant', content: selection.content, toolCalls: selection.toolCalls },
-            { role: 'tool', toolCallId: validatedToolCall.toolCall.id, content: JSON.stringify(toolResultPayload(executions, args.session.pinnedContext)) },
-          ],
-          tools,
+          messages: synthesisMessages,
+          tools: [],
           toolChoice: 'none',
           stage: 'tool_synthesis',
         }),
@@ -1389,19 +1428,25 @@ function toolRuntimeMessages(args: {
   return [
     { role: 'system', content: CUSTOMER_INTELLIGENCE_COPILOT_TOOL_RUNTIME_INSTRUCTIONS.join('\n') },
     {
-      role: 'user',
+      role: 'system',
       content: JSON.stringify({
         toolRuntimePromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_TOOL_RUNTIME_PROMPT_VERSION,
         schema: args.schema,
         queryContract: args.queryContract,
-        pinnedSnapshotContext: args.sessionContext.pinnedContext,
+        maxQueries: CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES,
+      }),
+    },
+    {
+      role: 'user',
+      content: JSON.stringify({
+        pinnedSnapshotContext: compactPinnedSnapshotContext(args.sessionContext.pinnedContext),
         conversationSummary: args.sessionContext.conversationSummary ?? null,
         semanticFocus: args.sessionContext.semanticFocus,
         unresolvedClarification: args.sessionContext.semanticFocus.unresolvedClarification,
-        analyticalReferences: args.sessionContext.analyticalReferences,
+        analyticalReferences: args.sessionContext.analyticalReferences.slice(0, CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES),
         recentFindings: recentFindingsFromContext(args.sessionContext),
-        recentResults: args.sessionContext.recentResults,
-        recentTurns: args.sessionContext.recentTurns,
+        recentResults: compactRecentResults(args.sessionContext),
+        recentTurns: args.sessionContext.recentTurns.slice(-3),
         currentQuestion: args.question,
       }),
     },
@@ -1446,6 +1491,150 @@ function analyticalToolDefinitions(): readonly CopilotToolDefinition[] {
 
 function recentFindingsFromContext(sessionContext: ReturnType<typeof buildCopilotSessionContext>): readonly NonNullable<ReturnType<typeof buildCopilotSessionContext>['semanticFocus']['activeFinding']>[] {
   return sessionContext.semanticFocus.activeFinding ? [sessionContext.semanticFocus.activeFinding] : [];
+}
+
+function compactPinnedSnapshotContext(context: CustomerIntelligenceSnapshotContext): Record<string, unknown> {
+  return {
+    featureSnapshot: context.featureSnapshot,
+    rfmSnapshot: context.rfmSnapshot,
+    clusterSnapshot: context.clusterSnapshot,
+    population: context.population,
+    contractVersion: context.contractVersion,
+  };
+}
+
+function compactRecentResults(sessionContext: ReturnType<typeof buildCopilotSessionContext>): readonly Record<string, unknown>[] {
+  return sessionContext.recentResults.slice(-2).map((result) => ({
+    queryId: result.queryId,
+    queryPlanHash: result.queryPlanHash,
+    columns: result.columns.map((column) => column.name),
+    rowCount: result.rowCount,
+    truncated: result.truncated,
+  }));
+}
+
+function toolSynthesisMessages(args: {
+  readonly question: string;
+  readonly sessionContext: ReturnType<typeof buildCopilotSessionContext>;
+  readonly executions: readonly { readonly id: string; readonly plan: AnalyticalQueryPlan; readonly result: AnalyticalQueryResult }[];
+}): readonly CopilotConversationalMessage[] {
+  return [
+    { role: 'system', content: CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SYNTHESIS_INSTRUCTIONS.join('\n') },
+    {
+      role: 'user',
+      content: JSON.stringify({
+        synthesisPromptVersion: CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SYNTHESIS_PROMPT_VERSION,
+        question: args.question,
+        semanticFocus: compactSemanticFocus(args.sessionContext),
+        currentFinding: args.sessionContext.semanticFocus.activeFinding ?? null,
+        executedAnalyticalObjectives: args.executions.map((execution) => ({
+          queryId: execution.id,
+          dimensions: execution.plan.dimensions ?? [],
+          metrics: execution.plan.metrics?.map((metric) => ({ aggregation: metric.aggregation, field: metric.field ?? null, alias: metric.alias })) ?? [],
+          filters: filterFieldNames(execution.plan),
+        })),
+        results: compactSynthesisResults(args.executions),
+        epistemicBoundaries: [
+          'Observed differences are not causal proof.',
+          'Do not infer profitability without margin, cost, or profit fields.',
+          'Mention insufficient evidence or partial coverage when material.',
+        ],
+      }),
+    },
+  ];
+}
+
+function compactSemanticFocus(sessionContext: ReturnType<typeof buildCopilotSessionContext>): Record<string, unknown> {
+  return {
+    entityType: sessionContext.semanticFocus.activeEntity?.type ?? sessionContext.semanticFocus.activeFinding?.entityType ?? null,
+    entityId: sessionContext.semanticFocus.activeEntity?.id ?? sessionContext.semanticFocus.activeFinding?.entityId ?? null,
+    metric: sessionContext.semanticFocus.activeMetric?.name ?? sessionContext.semanticFocus.activeFinding?.metric ?? null,
+    activeFindingType: sessionContext.semanticFocus.activeFinding?.findingType ?? null,
+    activeFindingSourceQueryId: sessionContext.semanticFocus.activeFinding?.sourceQueryId ?? null,
+  };
+}
+
+function compactSynthesisResults(
+  executions: readonly { readonly id: string; readonly plan: AnalyticalQueryPlan; readonly result: AnalyticalQueryResult }[],
+): readonly Record<string, unknown>[] {
+  return executions.map((execution) => {
+    const fields = fieldsForSynthesis(execution.plan);
+    return {
+      queryId: execution.id,
+      queryPlanHash: execution.result.queryPlanHash,
+      dimensions: execution.plan.dimensions ?? [],
+      metrics: execution.plan.metrics?.map((metric) => ({ aggregation: metric.aggregation, field: metric.field ?? null, alias: metric.alias })) ?? [],
+      rowCount: execution.result.rowCount,
+      truncated: execution.result.execution.truncated,
+      rows: execution.result.rows.slice(0, 8).map((row) => pickFields(row, fields)),
+    };
+  });
+}
+
+function fieldsForSynthesis(plan: AnalyticalQueryPlan): readonly string[] {
+  return [
+    ...(plan.dimensions ?? []).map(resultColumnName),
+    ...(plan.metrics ?? []).map((metric) => metric.alias),
+    ...(plan.select ?? []).map(resultColumnName),
+  ];
+}
+
+function pickFields(row: AnalyticalQueryResult['rows'][number], fields: readonly string[]): Record<string, unknown> {
+  const picked: Record<string, unknown> = {};
+  for (const field of fields) {
+    if (field in row) picked[field] = row[field];
+  }
+  return picked;
+}
+
+function messageProjectionChars(messages: readonly CopilotConversationalMessage[]): number {
+  return messages.reduce((sum, message) => {
+    if (message.role === 'assistant') return sum + (message.content?.length ?? 0) + (message.toolCalls ? JSON.stringify(message.toolCalls).length : 0);
+    return sum + message.content.length;
+  }, 0);
+}
+
+function toolRuntimeSemanticDiagnostic(sessionContext: ReturnType<typeof buildCopilotSessionContext>) {
+  return {
+    activeSemanticEntityType: sessionContext.semanticFocus.activeEntity?.type ?? null,
+    activeSemanticEntityId: sessionContext.semanticFocus.activeEntity?.id ?? null,
+    activeMetric: sessionContext.semanticFocus.activeMetric?.name ?? null,
+    activeFindingType: sessionContext.semanticFocus.activeFinding?.findingType ?? null,
+    activeFindingSourceQueryId: sessionContext.semanticFocus.activeFinding?.sourceQueryId ?? null,
+    unresolvedClarificationPresent: sessionContext.semanticFocus.unresolvedClarification !== null,
+  };
+}
+
+function toolCallDiagnostic(steps: readonly ValidatedStep[]) {
+  return {
+    toolCallCount: 1,
+    toolQueryIds: steps.map((step) => step.id),
+    toolQueryCount: steps.length,
+    toolQueries: steps.map((step) => ({
+      id: step.id,
+      dimensions: step.plan.dimensions ?? [],
+      metrics: step.plan.metrics?.map((metric) => metric.alias) ?? [],
+      filterFieldNames: filterFieldNames(step.plan),
+      orderByFields: step.plan.orderBy?.map((order) => order.field) ?? [],
+    })),
+  };
+}
+
+function filterFieldNames(plan: AnalyticalQueryPlan): readonly string[] {
+  const fields: string[] = [];
+  const filters = plan.filters;
+  if (Array.isArray(filters)) {
+    for (const filter of filters) collectFilterFields(filter, fields);
+  } else if (filters) {
+    collectFilterFields(filters as AnalyticalFilterNode, fields);
+  }
+  return [...new Set(fields)];
+}
+
+function collectFilterFields(filter: AnalyticalFilterNode, fields: string[]): void {
+  if ('field' in filter) fields.push(filter.field);
+  if ('and' in filter) for (const child of filter.and) collectFilterFields(child, fields);
+  if ('or' in filter) for (const child of filter.or) collectFilterFields(child, fields);
 }
 
 function directToolRuntimeResponse(
@@ -1546,25 +1735,6 @@ function queryCountFromToolCalls(toolCalls: readonly CopilotToolCall[]): number 
   if (!first || first.arguments === null || typeof first.arguments !== 'object' || Array.isArray(first.arguments)) return 0;
   const queries = (first.arguments as { readonly queries?: unknown }).queries;
   return Array.isArray(queries) ? queries.length : 0;
-}
-
-function toolResultPayload(
-  executions: readonly { readonly id: string; readonly plan: AnalyticalQueryPlan; readonly result: AnalyticalQueryResult }[],
-  provenance: CustomerIntelligenceSnapshotContext,
-): Record<string, unknown> {
-  return {
-    tool: CUSTOMER_INTELLIGENCE_COPILOT_RUN_ANALYTICAL_QUERIES_TOOL,
-    provenance,
-    queries: executions.map((execution) => ({
-      id: execution.id,
-      plan: execution.plan,
-      queryPlanHash: execution.result.queryPlanHash,
-      columns: execution.result.columns,
-      rows: execution.result.rows,
-      rowCount: execution.result.rowCount,
-      execution: execution.result.execution,
-    })),
-  };
 }
 
 async function decideAndPlanConversation(args: {
@@ -1798,7 +1968,7 @@ async function executePlannedAnalyticsTurn(args: {
     plan: execution.plan,
     result: retainedResult(execution.result, args.limits),
   }));
-  const deterministicAnswer = renderDeterministicSimpleAnswer(executions, args.session.pinnedContext);
+  const deterministicAnswer = shouldUseDeterministicAnswer(args.question, executions) ? renderDeterministicSimpleAnswer(executions, args.session.pinnedContext) : null;
   if (deterministicAnswer) {
     const response = withSession(
       { sessionId: args.session.sessionId, turnId: args.turnId, queryIds: queryResults.map((entry) => entry.queryId), sourceQueryIds: [] },
@@ -1915,11 +2085,9 @@ function canRenderDeterministicSimpleAnswer(plan: AnalyticalQueryPlan | undefine
   const metric = plan.metrics[0];
   if (!metric) return false;
   const dimensionCount = plan.dimensions?.length ?? 0;
-  if (dimensionCount === 0) return metric.aggregation === 'count';
-  if (dimensionCount !== 1) return false;
+  if (dimensionCount === 0) return true;
   if (metric.aggregation === 'count') return true;
-  const order = plan.orderBy?.[0];
-  return plan.limit === 1 && order?.field === metric.alias && order.direction === 'desc';
+  return isSimpleTopMetricRankingPlan(plan);
 }
 
 function renderDeterministicSimpleAnswer(
@@ -1936,6 +2104,12 @@ function renderDeterministicSimpleAnswer(
     if (typeof value !== 'number') return null;
     return `Hay ${formatNumber(value)} clientes en la poblacion actual de Customer Intelligence. La referencia es el snapshot ${provenance.featureSnapshot.snapshotId}.`;
   }
+  if ((execution.plan.dimensions?.length ?? 0) === 0) {
+    const metricValue = scalarValue(execution.result.rows[0], metric.alias);
+    if (metricValue === null || typeof metricValue === 'boolean') return null;
+    const value = typeof metricValue === 'number' ? formatNumber(metricValue) : String(metricValue);
+    return `El valor observado de ${metricDisplayName(metric)} es ${value}. La referencia es el snapshot ${provenance.featureSnapshot.snapshotId}.`;
+  }
   const dimension = execution.plan.dimensions?.[0];
   if (!dimension || execution.result.rows.length === 0) return null;
   const row = execution.result.rows[0];
@@ -1946,9 +2120,37 @@ function renderDeterministicSimpleAnswer(
   const metricLabel = metricDisplayName(metric);
   const value = typeof metricValue === 'number' ? formatNumber(metricValue) : String(metricValue);
   if (metric.aggregation === 'count') {
+    if (!isSimpleTopMetricRankingPlan(execution.plan) && execution.result.rows.length > 1) {
+      const dimensionName = resultColumnName(dimension);
+      const items = execution.result.rows.slice(0, 10).map((entry) => {
+        const entryDimensionValue = scalarValue(entry, dimensionName);
+        const entryMetricValue = scalarValue(entry, metric.alias);
+        return `${entityLabel(dimension, entryDimensionValue ?? 'sin_asignacion')}: ${String(entryMetricValue ?? 0)}`;
+      });
+      return `Distribucion observada: ${items.join('; ')} clientes. La referencia es el snapshot ${provenance.featureSnapshot.snapshotId}.`;
+    }
     return `${entity} concentra el mayor conteo observado: ${value} clientes. La referencia es el snapshot ${provenance.featureSnapshot.snapshotId}.`;
   }
   return `${entity} lidera en ${metricLabel}: ${value}. La referencia es el snapshot ${provenance.featureSnapshot.snapshotId}.`;
+}
+
+function shouldUseDeterministicAnswer(
+  question: string,
+  executions: readonly { readonly plan: AnalyticalQueryPlan; readonly result: AnalyticalQueryResult }[],
+): boolean {
+  return !asksForAnalyticalExplanation(question) && executions.length === 1 && canRenderDeterministicSimpleAnswer(executions[0]?.plan);
+}
+
+function asksForAnalyticalExplanation(question: string): boolean {
+  return /\b(por que|porque|why|reason|reasons|explica|explain|motivo|motivos|causa|causas)\b/.test(normalizeText(question));
+}
+
+function isSimpleTopMetricRankingPlan(plan: AnalyticalQueryPlan): boolean {
+  const metric = plan.metrics?.[0];
+  const order = plan.orderBy?.[0];
+  if (!metric || !order || order.field !== metric.alias) return false;
+  if (metric.aggregation === 'min') return order.direction === 'asc';
+  return order.direction === 'desc';
 }
 
 function scalarValue(row: AnalyticalQueryResult['rows'][number] | undefined, key: string): string | number | boolean | null {
@@ -2010,6 +2212,7 @@ async function timeCopilotStage<T extends { readonly metadata: CopilotModelMetad
   readonly analyticsExecutionDurationMs: number;
   readonly queryCountFromOutput?: (output: T) => number;
   readonly executionMode?: CopilotExecutionMode;
+  readonly diagnosticContext?: Partial<Omit<CopilotStageLatencyDiagnostic, 'event' | 'stage' | 'provider' | 'model' | 'durationMs' | 'success' | 'failureStatus' | 'repairAttempted' | 'queryCount' | 'analyticsExecutionDurationMs' | 'totalTurnDurationMs' | 'executionMode'>>;
   readonly call: () => Promise<T>;
 }): Promise<T> {
   const startedAt = Date.now();
@@ -2028,6 +2231,7 @@ async function timeCopilotStage<T extends { readonly metadata: CopilotModelMetad
       totalTurnDurationMs: durationSince(args.turnStartedAt),
       executionMode: args.executionMode ?? null,
       ...metadataSize(output.metadata),
+      ...args.diagnosticContext,
     });
     return output;
   } catch (error) {
@@ -2044,6 +2248,7 @@ async function timeCopilotStage<T extends { readonly metadata: CopilotModelMetad
       analyticsExecutionDurationMs: args.analyticsExecutionDurationMs,
       totalTurnDurationMs: durationSince(args.turnStartedAt),
       executionMode: args.executionMode ?? null,
+      ...args.diagnosticContext,
     });
     throw error;
   }

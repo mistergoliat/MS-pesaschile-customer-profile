@@ -198,7 +198,7 @@ async function postChatCompletion(
       stream: false,
     };
     if (request.responseFormat) body.response_format = { type: request.responseFormat };
-    if (request.tools) body.tools = request.tools;
+    if (request.tools && request.tools.length > 0) body.tools = request.tools;
     if (request.toolChoice) body.tool_choice = request.toolChoice;
 
     const response = await fetch(config.endpoint, {

@@ -535,6 +535,69 @@ an analytics DB.
 
 Live validation: NOT_RUN.
 
+## T05.8.1 Tool Runtime Latency and Semantic Hardening
+
+Motivation: fresh T05.8 live evidence showed the native tool runtime reached analytics but still
+spent unnecessary time in synthesis for simple grouped ranking, and the deep follow-up `Por que?`
+did not reliably preserve the Cluster 3 analytical focus through the tool path.
+
+Live T05.8 baseline evidence:
+
+- `simple_fact`: PASS, total 1.588s, tool selection 1.492s, analytics 84ms,
+  `toolSynthesisMs = 0`.
+- `simple_grouped_ranking`: PASS, total 8.561s, tool selection 2.816s, analytics 60ms,
+  synthesis 5.682s. The synthesis call was unnecessary because the ordered grouped aggregate
+  already identified the winner deterministically.
+- `contextual_deep_followup`: HTTP/runtime answered, semantic FAIL, total 34.096s, tool selection
+  11.777s, analytics 230ms, synthesis 22.079s, no timeout.
+
+Runtime changes:
+
+- Simple grouped rankings now use the deterministic renderer when there is one grouped aggregate
+  metric ordered by that metric. This covers the `Cual cluster tiene mayor ticket promedio?` path
+  without a synthesis model call.
+- Grouped count distributions without an explicit top ranking render as bounded distribution
+  summaries instead of inventing a "winner".
+- Tool selection now sends a stable system prefix plus a compact dynamic suffix. Recent retained
+  results are projected as metadata only in selection, without rows.
+- Deep synthesis now uses a dedicated compact prompt and result summary payload. It no longer
+  reuses the tool-selection prompt, query contract, schema, tool definitions, or raw tool result
+  envelope.
+- OpenAI-compatible tool synthesis sends no `tools` field when tool definitions are empty.
+
+Semantic hardening:
+
+- Derived semantic focus now keeps `activeEntity = cluster 3` for top cluster results even when the
+  result also has comparison dimensions.
+- The active metric name is normalized to stable semantic names such as `averageOrderValue`.
+- `activeFinding` carries top-rank source query context so deep follow-ups can reference the
+  original analytical finding without chain-of-thought or raw provider payloads.
+- The benchmark contextual follow-up evaluator accepts either planner diagnostics or safe native
+  tool runtime diagnostics, and JSONL records include `semanticFailureReason` when an evaluator can
+  identify the failed condition.
+
+Observability:
+
+- Stage diagnostics now include compact semantic focus fields, context projection size, tool query
+  ids/counts, bounded query summaries, synthesis result-summary size, synthesis input result count,
+  provider/model metadata, success/failure, repair flag, analytics execution time and total turn
+  time.
+- Diagnostics continue to exclude raw prompts, provider payloads, SQL, credentials, result rows,
+  PII and chain-of-thought.
+
+Feature flags:
+
+- `CUSTOMER_INTELLIGENCE_COPILOT_TOOL_RUNTIME_ENABLED=false` remains the default.
+- `CUSTOMER_INTELLIGENCE_COPILOT_UNIFIED_PLANNER_ENABLED=false` remains the default.
+
+Local focused validation:
+
+`npm test -- --run tests/unit/customer-intelligence-copilot-session.test.ts tests/unit/customer-intelligence-copilot-benchmark.test.ts`
+
+Result: PASS, 2 files, 46 tests.
+
+Live validation: NOT_RUN.
+
 ## T05.5 Answer Generation Reliability and Latency Observability
 
 Live symptom: in a fresh T05.4 session, `Cual cluster tiene mayor ticket promedio?` completed
