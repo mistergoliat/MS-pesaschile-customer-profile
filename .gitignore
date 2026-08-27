@@ -19,6 +19,11 @@ scripts/audits/commercial-summary/outputs/*
 scripts/audits/product-classification/outputs/*
 !scripts/audits/product-classification/outputs/.gitkeep
 
+# CUSTOMER-INTELLIGENCE-R2-A00 product exploration exports may contain full product catalog
+# evidence from live PrestaShop reads. Keep generated CSV/XLSX/JSON artifacts local.
+scripts/audits/product-intelligence-exploration/outputs/*
+!scripts/audits/product-intelligence-exploration/outputs/.gitkeep
+
 # CP-R1-T10A audit outputs may contain aggregate real-data counts from a live DB run.
 # never committed. See docs/audits/rfm-population/.
 scripts/audits/rfm-population/outputs/*
