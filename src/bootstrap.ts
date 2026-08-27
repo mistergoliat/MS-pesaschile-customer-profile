@@ -36,6 +36,21 @@ import {
   getRfmClusterCrossTabNotConfigured,
   getRfmClusterCrossTabRfmNotConfigured,
 } from './application/customer-clustering/cluster-analytics-not-configured.js';
+import {
+  createGetDashboardContext,
+  createGetDashboardOverview,
+  createGetDashboardRfm,
+  createGetDashboardClusters,
+  getDashboardContextNotConfigured,
+  getDashboardOverviewNotConfigured,
+  getDashboardRfmNotConfigured,
+  getDashboardClustersNotConfigured,
+  type GetDashboardContext,
+  type GetDashboardOverview,
+  type GetDashboardRfm,
+  type GetDashboardClusters,
+} from './application/customer-intelligence-dashboard/index.js';
+import { createMysqlDashboardAnalyticsReader } from './infrastructure/customer-intelligence-dashboard/mysql-dashboard-analytics-reader.js';
 import { createGetCustomerProfile, type GetCustomerProfile } from './application/customer-profile/get-customer-profile.js';
 import {
   createAnswerCustomerIntelligenceQuestion,
@@ -106,6 +121,10 @@ export type Bootstrap = {
   readonly getCustomerCluster: GetCustomerCluster;
   readonly getClusterSnapshotSummary: GetClusterSnapshotSummary;
   readonly getRfmClusterCrossTab: GetRfmClusterCrossTab;
+  readonly getDashboardContext: GetDashboardContext;
+  readonly getDashboardOverview: GetDashboardOverview;
+  readonly getDashboardRfm: GetDashboardRfm;
+  readonly getDashboardClusters: GetDashboardClusters;
   readonly answerCustomerIntelligenceQuestion: AnswerCustomerIntelligenceQuestion;
   readonly customerIntelligenceCopilotSessionService?: CustomerIntelligenceCopilotSessionService;
   readonly checkReadiness: ReadinessCheck;
@@ -239,6 +258,11 @@ export function bootstrap(): Bootstrap {
     getRfmClusterCrossTab = getRfmClusterCrossTabNotConfigured;
   }
 
+  let getDashboardContext: GetDashboardContext = getDashboardContextNotConfigured;
+  let getDashboardOverview: GetDashboardOverview = getDashboardOverviewNotConfigured;
+  let getDashboardRfm: GetDashboardRfm = getDashboardRfmNotConfigured;
+  let getDashboardClusters: GetDashboardClusters = getDashboardClustersNotConfigured;
+
   let answerCustomerIntelligenceQuestion: AnswerCustomerIntelligenceQuestion = async () => ({
     status: 'analytics_unavailable',
     finalResponseState: 'failure',
@@ -247,7 +271,7 @@ export function bootstrap(): Bootstrap {
   });
   let customerIntelligenceCopilotSessionService: CustomerIntelligenceCopilotSessionService | undefined;
   const copilotModel = createConfiguredCustomerIntelligenceCopilotModel();
-  if (config.analyticsDb && copilotModel.status === 'configured') {
+  if (config.analyticsDb) {
     const analyticsPool = getAnalyticsPool();
     const intelligenceReader = createMysqlCustomerIntelligenceReader(analyticsPool);
     const resolvers = createCustomerIntelligenceContextResolvers({
@@ -255,44 +279,79 @@ export function bootstrap(): Bootstrap {
       snapshotHeaderReader: createMysqlSnapshotHeaderReader(analyticsPool),
       intelligenceReader,
     });
-    const analyticalQueryExecutor = createMysqlAnalyticalQueryExecutor(getAnalyticsQueryExecutor());
-    const executeAnalyticalQuery = createExecuteAnalyticalQueryWithResolvedContext({
-      queryExecutor: analyticalQueryExecutor,
-    });
-    answerCustomerIntelligenceQuestion = createAnswerCustomerIntelligenceQuestion({
-      getAnalyticalSchema,
+
+    // Customer Intelligence Dashboard core readers (MARKETING-R1-T06.2) - gated purely on
+    // config.analyticsDb, the same capability boundary the read model itself uses (task Section
+    // 1). Deliberately NOT nested inside the copilotModel.status==='configured' check below -
+    // the dashboard has no LLM dependency and must keep working even when no LLM key is set.
+    const clusterAnalyticsReader = createMysqlClusterAnalyticsReader(analyticsPool);
+    const dashboardAnalyticsReader = createMysqlDashboardAnalyticsReader(analyticsPool);
+    getDashboardContext = createGetDashboardContext({
       resolveCurrent: resolvers.resolveCurrent,
       resolveForFeatureSnapshot: resolvers.resolveForFeatureSnapshot,
-      executeAnalyticalQuery,
-      model: copilotModel.model,
+      clusterAnalyticsReader,
     });
-    customerIntelligenceCopilotSessionService = createCustomerIntelligenceCopilotSessionService({
-      getAnalyticalSchema,
+    getDashboardOverview = createGetDashboardOverview({
       resolveCurrent: resolvers.resolveCurrent,
       resolveForFeatureSnapshot: resolvers.resolveForFeatureSnapshot,
-      executeAnalyticalQuery,
-      executeAnalyticalQueryForExport: createExecuteAnalyticalQueryForExport({
+      clusterAnalyticsReader,
+      dashboardAnalyticsReader,
+    });
+    getDashboardRfm = createGetDashboardRfm({
+      resolveCurrent: resolvers.resolveCurrent,
+      resolveForFeatureSnapshot: resolvers.resolveForFeatureSnapshot,
+      clusterAnalyticsReader,
+      dashboardAnalyticsReader,
+    });
+    getDashboardClusters = createGetDashboardClusters({
+      resolveCurrent: resolvers.resolveCurrent,
+      resolveForFeatureSnapshot: resolvers.resolveForFeatureSnapshot,
+      clusterAnalyticsReader,
+      dashboardAnalyticsReader,
+    });
+
+    // The Copilot additionally requires an LLM model to be configured - the dashboard readers
+    // above have no such dependency and are already wired regardless of copilotModel.status.
+    if (copilotModel.status === 'configured') {
+      const analyticalQueryExecutor = createMysqlAnalyticalQueryExecutor(getAnalyticsQueryExecutor());
+      const executeAnalyticalQuery = createExecuteAnalyticalQueryWithResolvedContext({
         queryExecutor: analyticalQueryExecutor,
-      }),
-      model: copilotModel.model,
-      store: createMysqlCopilotSessionStore(analyticsPool),
-      clock: systemClock,
-      limits: config.marketingCopilot.session,
-      toolRuntimeEnabled: config.marketingCopilot.toolRuntimeEnabled,
-      unifiedPlannerEnabled: config.marketingCopilot.unifiedPlannerEnabled,
-      synthesisMaxTokens: config.marketingCopilot.synthesisMaxTokens,
-      toolSelectionTimeoutMs: copilotModel.toolSelectionTimeoutMs,
-      toolSynthesisTimeoutMs: copilotModel.toolSynthesisTimeoutMs,
-      onOrchestratorDiagnostic: (diagnostic) => {
-        console.info(diagnostic, 'customer intelligence copilot orchestrator decision');
-      },
-      onPlannerDiagnostic: (diagnostic) => {
-        console.info(diagnostic, 'customer intelligence copilot planner validation');
-      },
-      onStageLatencyDiagnostic: (diagnostic) => {
-        console.info(diagnostic, 'customer intelligence copilot stage latency');
-      },
-    });
+      });
+      answerCustomerIntelligenceQuestion = createAnswerCustomerIntelligenceQuestion({
+        getAnalyticalSchema,
+        resolveCurrent: resolvers.resolveCurrent,
+        resolveForFeatureSnapshot: resolvers.resolveForFeatureSnapshot,
+        executeAnalyticalQuery,
+        model: copilotModel.model,
+      });
+      customerIntelligenceCopilotSessionService = createCustomerIntelligenceCopilotSessionService({
+        getAnalyticalSchema,
+        resolveCurrent: resolvers.resolveCurrent,
+        resolveForFeatureSnapshot: resolvers.resolveForFeatureSnapshot,
+        executeAnalyticalQuery,
+        executeAnalyticalQueryForExport: createExecuteAnalyticalQueryForExport({
+          queryExecutor: analyticalQueryExecutor,
+        }),
+        model: copilotModel.model,
+        store: createMysqlCopilotSessionStore(analyticsPool),
+        clock: systemClock,
+        limits: config.marketingCopilot.session,
+        toolRuntimeEnabled: config.marketingCopilot.toolRuntimeEnabled,
+        unifiedPlannerEnabled: config.marketingCopilot.unifiedPlannerEnabled,
+        synthesisMaxTokens: config.marketingCopilot.synthesisMaxTokens,
+        toolSelectionTimeoutMs: copilotModel.toolSelectionTimeoutMs,
+        toolSynthesisTimeoutMs: copilotModel.toolSynthesisTimeoutMs,
+        onOrchestratorDiagnostic: (diagnostic) => {
+          console.info(diagnostic, 'customer intelligence copilot orchestrator decision');
+        },
+        onPlannerDiagnostic: (diagnostic) => {
+          console.info(diagnostic, 'customer intelligence copilot planner validation');
+        },
+        onStageLatencyDiagnostic: (diagnostic) => {
+          console.info(diagnostic, 'customer intelligence copilot stage latency');
+        },
+      });
+    }
   }
 
   const checkReadiness: ReadinessCheck = async () => {
@@ -315,6 +374,10 @@ export function bootstrap(): Bootstrap {
     getCustomerCluster,
     getClusterSnapshotSummary,
     getRfmClusterCrossTab,
+    getDashboardContext,
+    getDashboardOverview,
+    getDashboardRfm,
+    getDashboardClusters,
     answerCustomerIntelligenceQuestion,
     customerIntelligenceCopilotSessionService,
     checkReadiness,

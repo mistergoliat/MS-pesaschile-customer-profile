@@ -3,6 +3,7 @@ import {
   resolveBusinessMetric,
   resolveBusinessMetricByName,
   businessEntityLabel,
+  resolveRfmSegmentBusinessLabel,
   formatBusinessValue,
   formatBusinessRank,
   formatRatio,
@@ -46,8 +47,22 @@ describe('Customer Intelligence Copilot business semantics registry (task MARKET
     expect(businessEntityLabel('cluster', 3)).toBe('Cluster 3 - Clientes recurrentes de alto valor y compra diversificada');
     expect(businessEntityLabel('cluster', 'LONG_TENURE_DORMANT_SPREAD_OUT_REPEAT_BUYERS')).toBe('Clientes recurrentes historicos actualmente inactivos');
     expect(businessEntityLabel('cluster', null)).toBe('Clientes sin cluster asignado');
-    expect(businessEntityLabel('rfm_segment', 'AT_RISK_HIGH_VALUE')).toBe('Segmento RFM AT_RISK_HIGH_VALUE');
+    expect(businessEntityLabel('rfm_segment', 'AT_RISK_HIGH_VALUE')).toBe('AT_RISK_HIGH_VALUE - Clientes de alto valor en riesgo de fuga');
+    expect(businessEntityLabel('rfm_segment', 'CHAMPION')).toBe('CHAMPION - Clientes campeones: compra reciente, frecuente y de alto valor');
     expect(businessEntityLabel('rfm_segment', null)).toBe('Clientes sin segmento RFM');
+  });
+
+  it('resolveRfmSegmentBusinessLabel returns the plain label for all 8 segment codes, and a safe fallback for unassigned/unknown (task MARKETING-R1-T06.2 Section 6)', () => {
+    expect(resolveRfmSegmentBusinessLabel('CHAMPION')).toBe('Clientes campeones: compra reciente, frecuente y de alto valor');
+    expect(resolveRfmSegmentBusinessLabel('LOYAL')).toBe('Clientes leales: compra frecuente y reciente');
+    expect(resolveRfmSegmentBusinessLabel('POTENTIAL_LOYAL')).toBe('Clientes con potencial de fidelizacion');
+    expect(resolveRfmSegmentBusinessLabel('RECENT_HIGH_VALUE')).toBe('Clientes nuevos de alto valor');
+    expect(resolveRfmSegmentBusinessLabel('RECENT_ONE_TIME')).toBe('Clientes recientes de una sola compra');
+    expect(resolveRfmSegmentBusinessLabel('NEEDS_ATTENTION')).toBe('Clientes que requieren atencion');
+    expect(resolveRfmSegmentBusinessLabel('AT_RISK_HIGH_VALUE')).toBe('Clientes de alto valor en riesgo de fuga');
+    expect(resolveRfmSegmentBusinessLabel('HIBERNATING')).toBe('Clientes inactivos');
+    expect(resolveRfmSegmentBusinessLabel(null)).toBe('Clientes sin segmento RFM');
+    expect(resolveRfmSegmentBusinessLabel('SOME_FUTURE_CODE')).toBe('Segmento RFM SOME_FUTURE_CODE');
   });
 
   it('resolveBusinessMetricByName resolves a canonical semantic name (e.g. from PrimaryFinding.metric) without the original AnalyticalMetricSpec', () => {

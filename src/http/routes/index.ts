@@ -9,6 +9,10 @@ import type { GetCustomerRfmByCustomerId } from '../../application/customer-rfm/
 import type { GetCustomerCluster } from '../../application/customer-clustering/get-customer-cluster.js';
 import type { GetClusterSnapshotSummary } from '../../application/customer-clustering/get-cluster-snapshot-summary.js';
 import type { GetRfmClusterCrossTab } from '../../application/customer-clustering/get-rfm-cluster-cross-tab.js';
+import type { GetDashboardContext } from '../../application/customer-intelligence-dashboard/get-dashboard-context.js';
+import type { GetDashboardOverview } from '../../application/customer-intelligence-dashboard/get-dashboard-overview.js';
+import type { GetDashboardRfm } from '../../application/customer-intelligence-dashboard/get-dashboard-rfm.js';
+import type { GetDashboardClusters } from '../../application/customer-intelligence-dashboard/get-dashboard-clusters.js';
 import type { GetCustomerOrderStatus } from '../../application/customer-order-status/get-customer-order-status.js';
 import type { GetCustomerProfile } from '../../application/customer-profile/get-customer-profile.js';
 import { CUSTOMER_PROFILE_CONTRACT_VERSION, type CustomerIdentity } from '../../domain/customer-identity/index.js';
@@ -30,6 +34,16 @@ import {
   type GetClusterSnapshotSummaryResult,
   type GetRfmClusterCrossTabResult,
 } from '../../domain/customer-clustering/index.js';
+import {
+  CUSTOMER_INTELLIGENCE_DASHBOARD_CONTEXT_VERSION,
+  CUSTOMER_INTELLIGENCE_DASHBOARD_OVERVIEW_VERSION,
+  CUSTOMER_INTELLIGENCE_DASHBOARD_RFM_VERSION,
+  CUSTOMER_INTELLIGENCE_DASHBOARD_CLUSTERS_VERSION,
+  type DashboardContextResult,
+  type DashboardOverviewResult,
+  type DashboardRfmResult,
+  type DashboardClustersResult,
+} from '../../domain/customer-intelligence-dashboard/index.js';
 import type { GetCustomerOrderStatusResult } from '../../domain/customer-order-status/index.js';
 import type { CustomerProfileLookupResult } from '../../domain/customer-profile/index.js';
 import type {
@@ -49,6 +63,10 @@ const numericId = z
 
 const customerIdParams = z.object({ customerId: numericId });
 const snapshotIdParams = z.object({ snapshotId: numericId });
+// Explicit pinning (task MARKETING-R1-T06.2 Section 2/3): reuses the exact same optional
+// featureSnapshotId convention the Copilot already exposes (copilotRequestBody below), never a
+// new pinning token/mechanism. Omitted => latest published feature snapshot.
+const dashboardQuery = z.object({ featureSnapshotId: numericId.optional() }).strict();
 
 const orderReference = z
   .string()
@@ -116,6 +134,13 @@ export type RouteDependencies = {
   // docs/releases/CP-R2-T03-clustering-analytics-observability.md.
   readonly getClusterSnapshotSummary: GetClusterSnapshotSummary;
   readonly getRfmClusterCrossTab: GetRfmClusterCrossTab;
+  // Customer Intelligence Dashboard core readers (MARKETING-R1-T06.2) - dedicated, deterministic
+  // reads over the same customer-intelligence-read-model-v1 the Copilot uses, gated on the same
+  // config.analyticsDb capability. See docs/releases/MARKETING-R1-T06-2-...md.
+  readonly getDashboardContext: GetDashboardContext;
+  readonly getDashboardOverview: GetDashboardOverview;
+  readonly getDashboardRfm: GetDashboardRfm;
+  readonly getDashboardClusters: GetDashboardClusters;
   readonly answerCustomerIntelligenceQuestion?: AnswerCustomerIntelligenceQuestion;
   readonly customerIntelligenceCopilotSessionService?: CustomerIntelligenceCopilotSessionService;
   readonly marketingCopilot?: {
@@ -751,6 +776,131 @@ export function buildRoutes(deps: RouteDependencies): Router {
     }
   });
 
+  // Customer Intelligence Dashboard core readers (MARKETING-R1-T06.2) - each endpoint resolves
+  // its own snapshot context server-side (task Section 2: "section endpoints may resolve current
+  // context internally"), optionally pinned via ?featureSnapshotId= (task Section 2's "clean
+  // existing pattern" - the same optional id the Copilot already accepts). No Commercial
+  // Affinity field appears anywhere below - explicitly out of scope for this slice.
+  router.get('/v1/customer-intelligence/dashboard/context', async (request: Request, response: Response) => {
+    const parsedQuery = dashboardQuery.safeParse(request.query);
+    if (!parsedQuery.success) {
+      response.status(400).json({ error: 'invalid_query_params' });
+      return;
+    }
+    if (request.body !== undefined) {
+      response.status(400).json({ error: 'unsupported_body' });
+      return;
+    }
+
+    const featureSnapshotId = parsedQuery.data.featureSnapshotId ?? null;
+    const startedAt = Date.now();
+    try {
+      const result = await deps.getDashboardContext({ featureSnapshotId });
+      logDashboardContextLookup(featureSnapshotId, result, Date.now() - startedAt);
+      response.status(statusForDashboardContextResult(result)).json(result);
+    } catch (error) {
+      console.error({
+        event: 'dashboard_context_request_failed',
+        endpoint: 'dashboard-context',
+        featureSnapshotId,
+        contractVersion: CUSTOMER_INTELLIGENCE_DASHBOARD_CONTEXT_VERSION,
+        durationMs: Date.now() - startedAt,
+        errorType: classifyErrorForLog(error),
+      });
+      response.status(500).json({ error: 'internal_error' });
+    }
+  });
+
+  router.get('/v1/customer-intelligence/dashboard/overview', async (request: Request, response: Response) => {
+    const parsedQuery = dashboardQuery.safeParse(request.query);
+    if (!parsedQuery.success) {
+      response.status(400).json({ error: 'invalid_query_params' });
+      return;
+    }
+    if (request.body !== undefined) {
+      response.status(400).json({ error: 'unsupported_body' });
+      return;
+    }
+
+    const featureSnapshotId = parsedQuery.data.featureSnapshotId ?? null;
+    const startedAt = Date.now();
+    try {
+      const result = await deps.getDashboardOverview({ featureSnapshotId });
+      logDashboardOverviewLookup(featureSnapshotId, result, Date.now() - startedAt);
+      response.status(statusForDashboardOverviewResult(result)).json(result);
+    } catch (error) {
+      console.error({
+        event: 'dashboard_overview_request_failed',
+        endpoint: 'dashboard-overview',
+        featureSnapshotId,
+        contractVersion: CUSTOMER_INTELLIGENCE_DASHBOARD_OVERVIEW_VERSION,
+        durationMs: Date.now() - startedAt,
+        errorType: classifyErrorForLog(error),
+      });
+      response.status(500).json({ error: 'internal_error' });
+    }
+  });
+
+  router.get('/v1/customer-intelligence/dashboard/rfm', async (request: Request, response: Response) => {
+    const parsedQuery = dashboardQuery.safeParse(request.query);
+    if (!parsedQuery.success) {
+      response.status(400).json({ error: 'invalid_query_params' });
+      return;
+    }
+    if (request.body !== undefined) {
+      response.status(400).json({ error: 'unsupported_body' });
+      return;
+    }
+
+    const featureSnapshotId = parsedQuery.data.featureSnapshotId ?? null;
+    const startedAt = Date.now();
+    try {
+      const result = await deps.getDashboardRfm({ featureSnapshotId });
+      logDashboardRfmLookup(featureSnapshotId, result, Date.now() - startedAt);
+      response.status(statusForDashboardRfmResult(result)).json(result);
+    } catch (error) {
+      console.error({
+        event: 'dashboard_rfm_request_failed',
+        endpoint: 'dashboard-rfm',
+        featureSnapshotId,
+        contractVersion: CUSTOMER_INTELLIGENCE_DASHBOARD_RFM_VERSION,
+        durationMs: Date.now() - startedAt,
+        errorType: classifyErrorForLog(error),
+      });
+      response.status(500).json({ error: 'internal_error' });
+    }
+  });
+
+  router.get('/v1/customer-intelligence/dashboard/clusters', async (request: Request, response: Response) => {
+    const parsedQuery = dashboardQuery.safeParse(request.query);
+    if (!parsedQuery.success) {
+      response.status(400).json({ error: 'invalid_query_params' });
+      return;
+    }
+    if (request.body !== undefined) {
+      response.status(400).json({ error: 'unsupported_body' });
+      return;
+    }
+
+    const featureSnapshotId = parsedQuery.data.featureSnapshotId ?? null;
+    const startedAt = Date.now();
+    try {
+      const result = await deps.getDashboardClusters({ featureSnapshotId });
+      logDashboardClustersLookup(featureSnapshotId, result, Date.now() - startedAt);
+      response.status(statusForDashboardClustersResult(result)).json(result);
+    } catch (error) {
+      console.error({
+        event: 'dashboard_clusters_request_failed',
+        endpoint: 'dashboard-clusters',
+        featureSnapshotId,
+        contractVersion: CUSTOMER_INTELLIGENCE_DASHBOARD_CLUSTERS_VERSION,
+        durationMs: Date.now() - startedAt,
+        errorType: classifyErrorForLog(error),
+      });
+      response.status(500).json({ error: 'internal_error' });
+    }
+  });
+
   router.get('/v1/customers/:customerId/orders/:reference/status', async (request: Request, response: Response) => {
     const parsedParams = orderStatusParams.safeParse(request.params);
     if (!parsedParams.success) {
@@ -967,6 +1117,59 @@ function statusForRfmClusterCrossTabResult(result: GetRfmClusterCrossTabResult):
   }
 }
 
+function statusForDashboardContextResult(result: DashboardContextResult): number {
+  switch (result.status) {
+    case 'available':
+      return 200;
+    case 'no_published_feature_snapshot':
+    case 'feature_snapshot_not_found':
+      return 404;
+    case 'degraded':
+      return 503;
+  }
+}
+
+function statusForDashboardOverviewResult(result: DashboardOverviewResult): number {
+  switch (result.status) {
+    case 'available':
+      return 200;
+    case 'no_published_feature_snapshot':
+    case 'feature_snapshot_not_found':
+      return 404;
+    case 'degraded':
+      return 503;
+  }
+}
+
+function statusForDashboardRfmResult(result: DashboardRfmResult): number {
+  switch (result.status) {
+    case 'available':
+      return 200;
+    case 'no_published_feature_snapshot':
+    case 'feature_snapshot_not_found':
+    // Feature snapshot resolved fine, but no compatible RFM snapshot exists (task Section 16:
+    // this must never collapse into a generic 500/degraded - it is a distinct, expected
+    // "resource absent" case, same shape as clustering's own no_compatible_rfm_snapshot).
+    case 'no_compatible_rfm_snapshot':
+      return 404;
+    case 'degraded':
+      return 503;
+  }
+}
+
+function statusForDashboardClustersResult(result: DashboardClustersResult): number {
+  switch (result.status) {
+    case 'available':
+      return 200;
+    case 'no_published_feature_snapshot':
+    case 'feature_snapshot_not_found':
+    case 'no_compatible_cluster_snapshot':
+      return 404;
+    case 'degraded':
+      return 503;
+  }
+}
+
 function statusForCopilotResult(result: CustomerIntelligenceCopilotResponse): number {
   switch (result.status) {
     case 'answered':
@@ -1069,6 +1272,72 @@ function logRfmClusterCrossTabLookup(snapshotIdParam: string, result: GetRfmClus
       durationMs,
     },
     'rfm cluster cross-tab lookup',
+  );
+}
+
+function logDashboardContextLookup(featureSnapshotIdParam: string | null, result: DashboardContextResult, durationMs: number): void {
+  console.info(
+    {
+      endpoint: 'dashboard-context',
+      contractVersion: CUSTOMER_INTELLIGENCE_DASHBOARD_CONTEXT_VERSION,
+      featureSnapshotIdParam,
+      status: result.status,
+      featureSnapshotId: result.status === 'available' ? result.context.featureSnapshotId : null,
+      rfmCoveragePct: result.status === 'available' ? result.population.rfmCoveragePct : null,
+      clusterCoveragePct: result.status === 'available' ? result.population.clusterCoveragePct : null,
+      degradedReason: result.status === 'degraded' ? result.reason : null,
+      durationMs,
+    },
+    'dashboard context lookup',
+  );
+}
+
+function logDashboardOverviewLookup(featureSnapshotIdParam: string | null, result: DashboardOverviewResult, durationMs: number): void {
+  console.info(
+    {
+      endpoint: 'dashboard-overview',
+      contractVersion: CUSTOMER_INTELLIGENCE_DASHBOARD_OVERVIEW_VERSION,
+      featureSnapshotIdParam,
+      status: result.status,
+      featureSnapshotId: result.status === 'available' ? result.context.featureSnapshotId : null,
+      totalCustomers: result.status === 'available' ? result.population.featurePopulation : null,
+      degradedReason: result.status === 'degraded' ? result.reason : null,
+      durationMs,
+    },
+    'dashboard overview lookup',
+  );
+}
+
+function logDashboardRfmLookup(featureSnapshotIdParam: string | null, result: DashboardRfmResult, durationMs: number): void {
+  console.info(
+    {
+      endpoint: 'dashboard-rfm',
+      contractVersion: CUSTOMER_INTELLIGENCE_DASHBOARD_RFM_VERSION,
+      featureSnapshotIdParam,
+      status: result.status,
+      analyzedPopulation: result.status === 'available' ? result.analyzedPopulation : null,
+      segmentCount: result.status === 'available' ? result.segments.length : null,
+      degradedReason: result.status === 'degraded' ? result.reason : null,
+      durationMs,
+    },
+    'dashboard rfm lookup',
+  );
+}
+
+function logDashboardClustersLookup(featureSnapshotIdParam: string | null, result: DashboardClustersResult, durationMs: number): void {
+  console.info(
+    {
+      endpoint: 'dashboard-clusters',
+      contractVersion: CUSTOMER_INTELLIGENCE_DASHBOARD_CLUSTERS_VERSION,
+      featureSnapshotIdParam,
+      status: result.status,
+      analyzedPopulation: result.status === 'available' ? result.analyzedPopulation : null,
+      clusterCount: result.status === 'available' ? result.clusters.length : null,
+      rfmCrossSectionAvailable: result.status === 'available' ? result.rfmCrossSectionAvailable : null,
+      degradedReason: result.status === 'degraded' ? result.reason : null,
+      durationMs,
+    },
+    'dashboard clusters lookup',
   );
 }
 

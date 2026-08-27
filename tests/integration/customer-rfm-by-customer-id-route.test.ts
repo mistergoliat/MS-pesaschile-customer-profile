@@ -8,6 +8,10 @@ import type { GetCustomerRfmByCustomerId } from '../../src/application/customer-
 import type { GetCustomerCluster } from '../../src/application/customer-clustering/get-customer-cluster.js';
 import type { GetClusterSnapshotSummary } from '../../src/application/customer-clustering/get-cluster-snapshot-summary.js';
 import type { GetRfmClusterCrossTab } from '../../src/application/customer-clustering/get-rfm-cluster-cross-tab.js';
+import type { GetDashboardContext } from '../../src/application/customer-intelligence-dashboard/get-dashboard-context.js';
+import type { GetDashboardOverview } from '../../src/application/customer-intelligence-dashboard/get-dashboard-overview.js';
+import type { GetDashboardRfm } from '../../src/application/customer-intelligence-dashboard/get-dashboard-rfm.js';
+import type { GetDashboardClusters } from '../../src/application/customer-intelligence-dashboard/get-dashboard-clusters.js';
 import type { GetCustomerOrderStatus } from '../../src/application/customer-order-status/get-customer-order-status.js';
 import type { GetCustomerProfile } from '../../src/application/customer-profile/get-customer-profile.js';
 import { buildApp } from '../../src/app.js';
@@ -46,6 +50,19 @@ const unreachableGetRfmClusterCrossTab: GetRfmClusterCrossTab = async () => {
   throw new Error('getRfmClusterCrossTab must not be called from the customer RFM-by-customerId route tests');
 };
 
+const unreachableGetDashboardContext: GetDashboardContext = async () => {
+  throw new Error('getDashboardContext must not be called from the customer RFM-by-customerId route tests');
+};
+const unreachableGetDashboardOverview: GetDashboardOverview = async () => {
+  throw new Error('getDashboardOverview must not be called from the customer RFM-by-customerId route tests');
+};
+const unreachableGetDashboardRfm: GetDashboardRfm = async () => {
+  throw new Error('getDashboardRfm must not be called from the customer RFM-by-customerId route tests');
+};
+const unreachableGetDashboardClusters: GetDashboardClusters = async () => {
+  throw new Error('getDashboardClusters must not be called from the customer RFM-by-customerId route tests');
+};
+
 async function startApp(
   getCustomerRfmByCustomerId: GetCustomerRfmByCustomerId,
   checkReadiness: ReadinessCheck = async () => ({ crm: false, prestashop: { status: 'ready' } }),
@@ -61,6 +78,10 @@ async function startApp(
     getCustomerCluster: unreachableGetCustomerCluster,
     getClusterSnapshotSummary: unreachableGetClusterSnapshotSummary,
     getRfmClusterCrossTab: unreachableGetRfmClusterCrossTab,
+    getDashboardContext: unreachableGetDashboardContext,
+    getDashboardOverview: unreachableGetDashboardOverview,
+    getDashboardRfm: unreachableGetDashboardRfm,
+    getDashboardClusters: unreachableGetDashboardClusters,
     checkReadiness,
   });
   server = createServer(app);

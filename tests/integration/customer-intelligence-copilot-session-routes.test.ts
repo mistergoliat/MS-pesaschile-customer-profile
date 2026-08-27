@@ -17,6 +17,10 @@ const baseDeps: RouteDependencies = {
   getCustomerCluster: async () => { throw new Error('unreachable'); },
   getClusterSnapshotSummary: async () => { throw new Error('unreachable'); },
   getRfmClusterCrossTab: async () => { throw new Error('unreachable'); },
+  getDashboardContext: async () => { throw new Error('unreachable'); },
+  getDashboardOverview: async () => { throw new Error('unreachable'); },
+  getDashboardRfm: async () => { throw new Error('unreachable'); },
+  getDashboardClusters: async () => { throw new Error('unreachable'); },
   checkReadiness: async () => ({ crm: false, prestashop: { status: 'ready' } }),
   marketingCopilot: { enabled: true, internalToken: 'secret-token-1234' },
 };

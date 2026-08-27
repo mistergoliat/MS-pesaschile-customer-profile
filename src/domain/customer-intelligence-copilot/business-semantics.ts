@@ -27,6 +27,21 @@ const CLUSTER_CODE_LABELS: Readonly<Record<string, string>> = {
   HIGH_VALUE_DIVERSIFIED_REPEAT_BUYERS: 'Clientes recurrentes de alto valor y compra diversificada',
 };
 
+// task MARKETING-R1-T06.1 P1-4 / T06.2 Section 6: the 8 codes come from
+// src/domain/customer-rfm/segmentation.ts's RfmCommercialSegmentCode enum - never invent a
+// new segmentation here, only label the existing one. Mirrors CLUSTER_BUSINESS_LABELS's
+// pattern exactly (one canonical resolver, no per-frontend dictionary).
+const RFM_SEGMENT_BUSINESS_LABELS: Readonly<Record<string, string>> = {
+  CHAMPION: 'Clientes campeones: compra reciente, frecuente y de alto valor',
+  LOYAL: 'Clientes leales: compra frecuente y reciente',
+  POTENTIAL_LOYAL: 'Clientes con potencial de fidelizacion',
+  RECENT_HIGH_VALUE: 'Clientes nuevos de alto valor',
+  RECENT_ONE_TIME: 'Clientes recientes de una sola compra',
+  NEEDS_ATTENTION: 'Clientes que requieren atencion',
+  AT_RISK_HIGH_VALUE: 'Clientes de alto valor en riesgo de fuga',
+  HIBERNATING: 'Clientes inactivos',
+};
+
 type MetricLike = {
   readonly aggregation: AnalyticalAggregation;
   readonly field?: string;
@@ -117,6 +132,14 @@ function humanizeUnknownAlias(alias: string): string {
   return words.length > 0 ? words.charAt(0).toUpperCase() + words.slice(1) : alias;
 }
 
+// Plain label only (never the "CODE - Label" prose form businessEntityLabel below produces) -
+// for structured JSON fields (e.g. the T06.2 dashboard's segments[].businessLabel) where the
+// segment code is already a separate field and concatenating it again would be redundant.
+export function resolveRfmSegmentBusinessLabel(segmentCode: string | null): string {
+  if (segmentCode === null) return 'Clientes sin segmento RFM';
+  return RFM_SEGMENT_BUSINESS_LABELS[segmentCode] ?? `Segmento RFM ${segmentCode}`;
+}
+
 export function businessEntityLabel(entityType: string | null, entityId: string | number | null): string {
   if (entityType === 'cluster') {
     if (entityId === null) return 'Clientes sin cluster asignado';
@@ -127,7 +150,11 @@ export function businessEntityLabel(entityType: string | null, entityId: string 
     const businessLabel = CLUSTER_CODE_LABELS[entityId];
     return businessLabel ?? humanizeUnknownAlias(entityId);
   }
-  if (entityType === 'rfm_segment') return entityId !== null ? `Segmento RFM ${String(entityId)}` : 'Clientes sin segmento RFM';
+  if (entityType === 'rfm_segment') {
+    if (entityId === null) return 'Clientes sin segmento RFM';
+    const businessLabel = RFM_SEGMENT_BUSINESS_LABELS[entityId];
+    return businessLabel ? `${String(entityId)} - ${businessLabel}` : `Segmento RFM ${String(entityId)}`;
+  }
   return 'la poblacion analizada';
 }
 
