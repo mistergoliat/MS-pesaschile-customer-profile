@@ -183,8 +183,10 @@ type CopilotLatencyStage =
 type CopilotExecutionMode = 'fast_path' | 'direct_response' | 'simple_analysis' | 'deep_analysis';
 // task MARKETING-R1-T05.8.6 Section 1/2: live evidence showed synthesis repeatedly saturating the
 // old 500-token ceiling and the evidence bundle repeatedly saturating 12 facts while still far
-// below the old 4000-char cap - both artificial ceilings, not genuine reasoning limits.
-const DEFAULT_SYNTHESIS_MAX_TOKENS = 1500;
+// below the old 4000-char cap - both artificial ceilings, not genuine reasoning limits. Raised
+// 1500 -> 2000 (task MARKETING-R1-T05.8.9 Section 12) to match the raised
+// CUSTOMER_INTELLIGENCE_COPILOT_SYNTHESIS_MAX_TOKENS default, the existing code-level ceiling.
+const DEFAULT_SYNTHESIS_MAX_TOKENS = 2000;
 const ANALYTICAL_EVIDENCE_BUNDLE_MAX_CHARS = 8000;
 const ANALYTICAL_EVIDENCE_MAX_FACTS = 32;
 const ANALYTICAL_EVIDENCE_MAX_COMPARISONS = 8;
@@ -1703,7 +1705,11 @@ function analyticalToolDefinitions(): readonly CopilotToolDefinition[] {
       type: 'function',
       function: {
         name: CUSTOMER_INTELLIGENCE_COPILOT_RUN_ANALYTICAL_QUERIES_TOOL,
-        description: 'Run compact Customer Intelligence queries.',
+        // task MARKETING-R1-T05.8.9 Section 5: framed as a capability the assistant reaches for
+        // when it needs evidence, not as "your only available tool" - the model should default to
+        // ordinary conversation and use this only when the answer depends on fresh or specific
+        // PesasChile Customer Intelligence facts.
+        description: "Use this when you need validated Customer Intelligence evidence to answer the user's question.",
         parameters: {
           type: 'object',
           required: ['queries'],

@@ -795,3 +795,62 @@ describe('Customer Intelligence Copilot invalid-response taxonomy (task MARKETIN
     expect(JSON.stringify((error as { metadata: unknown }).metadata)).not.toMatch(/secretApiKey|sk-super-secret|rawPromptEcho/);
   });
 });
+
+describe('Customer Intelligence Copilot stable thinking runtime (task MARKETING-R1-T05.8.9 Section 10/11/14, S/T/W/X/Y)', () => {
+  it('never adds a reasoning-effort/thinking field to the request body, and the body shape does not branch by stage or question (S/T)', async () => {
+    const fetchMock = mockFetchJson(chatResponse('Respuesta.'));
+    const model = createOpenAiCompatibleCopilotModel(config);
+
+    await model.generateConversationalTurn!(conversationalTurnInput('tool_selection'));
+    await model.generateConversationalTurn!(conversationalTurnInput('tool_synthesis'));
+    await model.generateAnswer(answerInput());
+
+    const calls = fetchMock.mock.calls as unknown as [string, RequestInit][];
+    expect(calls.length).toBeGreaterThan(0);
+    for (const [, init] of calls) {
+      const payload = JSON.parse(String(init.body)) as Record<string, unknown>;
+      expect(payload).not.toHaveProperty('reasoning_effort');
+      expect(payload).not.toHaveProperty('thinking');
+      expect(payload).not.toHaveProperty('enable_thinking');
+      expect(payload).not.toHaveProperty('reasoning_mode');
+      // no per-question/per-intent branching: every request carries the same fixed key shape
+      // (model/messages/stream, plus response_format/tools/tool_choice/max_tokens only when the
+      // caller actually supplied them) - nothing derived from question content.
+      expect(Object.keys(payload).every((key) => ['model', 'messages', 'stream', 'response_format', 'tools', 'tool_choice', 'max_tokens'].includes(key))).toBe(true);
+    }
+  });
+
+  it('never reads reasoning_content into visible content, tool calls, or metadata (W/X/Y)', async () => {
+    mockFetchJson({
+      choices: [
+        {
+          message: { content: 'Cluster 3 presenta el mayor ticket promedio.', reasoning_content: 'internal chain of thought that must never be surfaced' },
+          finish_reason: 'stop',
+        },
+      ],
+    });
+    const model = createOpenAiCompatibleCopilotModel(config);
+
+    const output = await model.generateConversationalTurn!(conversationalTurnInput('tool_synthesis'));
+
+    expect(output.content).toBe('Cluster 3 presenta el mayor ticket promedio.');
+    expect(JSON.stringify(output)).not.toContain('chain of thought');
+  });
+
+  it('classifies a finish_reason=length truncation as diagnosable even when reasoning_content consumed the budget (V)', async () => {
+    mockFetchJson({
+      choices: [
+        {
+          message: { content: '', reasoning_content: 'a very long internal reasoning trace that used up the token budget' },
+          finish_reason: 'length',
+        },
+      ],
+    });
+    const model = createOpenAiCompatibleCopilotModel(config);
+
+    await expect(model.generateConversationalTurn!(conversationalTurnInput('tool_synthesis'))).rejects.toMatchObject({
+      category: 'provider_invalid_response',
+      metadata: { invalidResponseSubtype: 'provider_invalid_finish_reason' },
+    });
+  });
+});

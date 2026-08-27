@@ -531,6 +531,187 @@ and the Section 19 log-gate fields (`configuredTimeoutMs`, `invalidResponseSubty
 `semanticAnchorEntityId`, `primaryFindingEntityId`) remain the required next step before closing
 T05 per Section 20.
 
+## T05.8.9 Conversational Freedom + Stable Thinking Runtime
+
+Motivation: T05.8.8 fixed timeout/taxonomy/clarification reliability, but the native tool runtime
+still read, in substance, as an analytical-query wrapper that happened to allow assistant content
+- an accidental paste of a PM2 server command produced a long explanation of the Copilot's "only
+available tool" instead of a short capability answer, and the system prompt never stated the
+absolute data-grounding rule (never invent a PesasChile-specific fact) or a clarification-last
+policy explicitly. This slice is a product-model and prompt-quality slice: no memory redesign, no
+retrieval, no T03/validator/query-registry relaxation, no analytical query count increase, no
+dashboard/UI, no model switch, and no per-intent reasoning routing.
+
+### 1-3. Assistant-first product model and respond_directly as first-class
+
+The decision model is now explicit in the tool-runtime system prompt: does the answer require a
+PesasChile-specific fact? If yes, `run_analytical_queries`; if no, answer from general knowledge,
+established business semantics, conversation context, or already-validated analytical findings;
+if materially ambiguous, ask one concise clarification. The native tool-calling architecture
+already gave the model full freedom to return plain assistant content instead of a tool call
+(there was never a hard code gate forcing every turn through analytics for the tool-runtime path -
+that only exists in the legacy orchestrator/unified-planner paths behind their own feature flags,
+not in production); the defect was the prompt wording pushing the model toward the tool anyway.
+Direct responses are now explicitly named as normal for definitions, explanations, conceptual
+questions, known units/currency semantics, explanations of prior validated results, capability
+boundaries, accidental/unrelated input, side questions, and terminology clarification.
+
+### 4-5. System identity and tool framing
+
+`CUSTOMER_INTELLIGENCE_COPILOT_TOOL_RUNTIME_INSTRUCTIONS` rewritten (prompt version
+`customer-intelligence-copilot-tool-runtime-v1` -> `-v2`, `session-service.ts` unchanged
+otherwise): opens with "You are the internal Customer Intelligence Copilot for PesasChile: a
+conversational business assistant with access to one bounded analytical tool," states the
+absolute grounding rule (never invent or infer a PesasChile-specific fact - customer counts,
+population, RFM, spend, AOV, rankings, coverage, trends, comparisons - from general reasoning),
+states the clarification-last resolution order, states the accidental/out-of-scope handling rule,
+and states that tool/contract/planner names and implementation architecture must never be exposed
+to the user. The query-contract, semantic-resolution-source list, explanatory/recommendation/
+profitability/exploratory rules, and epistemic boundaries are preserved verbatim in substance.
+The `run_analytical_queries` tool description (`session-service.ts`'s `analyticalToolDefinitions`)
+changed from "Run compact Customer Intelligence queries" to "Use this when you need validated
+Customer Intelligence evidence to answer the user's question" - framing only; the tool remains the
+only executable analytical capability and no permission changed.
+
+### 6-7. Accidental input and the direct-knowledge/analytical-fact split
+
+No new `isPm2Command`-style detector was added (Section 16 explicitly warns against accumulating
+such special cases) - the fix is the rewritten system prompt instructing the model to give a short
+product-level capability answer with no tool call for out-of-scope input, and to never expose
+`run_analytical_queries`, tool/stage names, or internal contract names. The existing post-hoc
+classifiers on the model's own direct text (`isClarificationContent`, `isUnsupportedContent`) are
+unchanged; they only label an already-direct response's status (`unsupported_data`,
+`unsupported_operation`, `clarification_required`, or `responded_directly`) and never force a tool
+call, so they do not need to special-case this input either. The direct-knowledge-vs-analytical-
+fact distinction (Section 7) is stated directly in the rewritten prompt rather than encoded as a
+new deterministic classifier - the same reasoning as Section 16.
+
+### 8-9. Clarification-last policy and semantic anchor through direct conversation
+
+The prompt now states the resolution order explicitly: semantic anchor, then recent validated
+context, then established business semantics, then run analytics if data can resolve it, and only
+then clarify. This is unchanged in code from T05.8.8: `unresolvedClarification`'s precise open/
+resolved lifecycle and the currency/unit deterministic direct-answer path are untouched, and both
+already guarantee that a direct-response turn never mutates `analyticalState` - so
+`activeFinding`/`activeEntity`/`activeMetric` (and therefore the semantic anchor available to the
+next turn) survive a direct-response turn by construction, with no anchor-preservation logic
+needed beyond not touching that state. Verified end-to-end for the exact Section 9 flow: analytics
+(Cluster 3) -> direct currency answer -> explanatory "why" follow-up (still Cluster 3) -> a fresh
+comparison ("compare its RFM with cluster 2") still anchored on Cluster 3.
+
+### 10-13. Stable thinking runtime and token budgets
+
+No per-intent thinking routing exists or was added - there is no `reasoning_effort`/`thinking`
+field in the OpenAI-compatible request body at all (`openai-compatible-copilot-model.ts`'s
+`postChatCompletion` body is `model`, `messages`, `stream`, plus `response_format`/`tools`/
+`tool_choice`/`max_tokens` only when the caller supplies them - identical shape regardless of
+stage or question content), so "thinking enabled by default" is a configuration/model-selection
+decision, not a runtime toggle this codebase implements; no low/high/max routing or heuristic
+mode-selection was added, matching the task's explicit prohibition.
+
+`CUSTOMER_INTELLIGENCE_COPILOT_SYNTHESIS_MAX_TOKENS` default raised `1500` -> `2000`
+(`src/config.ts`), matching the existing `.max(2000)` code-level ceiling unchanged - live evidence
+(`synthesisMaxTokens: 1500`, `invalidResponseSubtype: provider_invalid_finish_reason`) is
+consistent with the provider's `max_tokens` budget covering reasoning plus visible output for a
+thinking-enabled request, so a synthesis call can be cut off by `finish_reason: length` before
+producing visible content even though analytics succeeded. `session-service.ts`'s internal
+`DEFAULT_SYNTHESIS_MAX_TOKENS` fallback constant was raised to match. Existing diagnostics
+(`synthesisMaxTokens`, `synthesisCompletionTokens`, `synthesisFinishReason`,
+`invalidResponseSubtype` from T05.8.8) are unchanged and remain the way to observe this.
+
+Tool-selection output was audited and already carries no artificial `max_tokens` ceiling - the
+native tool-selection call (`processToolRuntimeTurn`'s `timeCopilotStage` for stage
+`tool_selection`) has never passed a `maxTokens` value, so the live reactivation selection's
+`completionTokens ~2885` was already unconstrained by anything in this codebase; nothing changed
+here because there was nothing to fix.
+
+### 14. No chain-of-thought handling
+
+Audited and confirmed unchanged from T05.8.8: `extractMessage` (the shared tool_selection/
+tool_synthesis parsing path) never reads `message.reasoning_content` - only `message.content` and
+`message.tool_calls` are used, for both the success path and the `provider_invalid_finish_reason`/
+`provider_missing_content`/`provider_empty_response` classification. A response carrying
+`reasoning_content` alongside a normal `content` string is unaffected (the extra field is simply
+ignored); a response carrying only `reasoning_content` and no usable `content`/`tool_calls` is
+correctly treated as an empty/invalid response, never unwrapped as if `reasoning_content` were a
+valid substitute. Reasoning content is never logged, persisted to session state, or returned in
+any API response - the runtime only ever sees and stores the final visible `content` and validated
+tool calls.
+
+### 15-16. Over-constraint audit and no new heuristics
+
+Audited the tool-runtime path for hard gates that force analytics: there are none - the native
+tool-calling architecture (T05.8) never had a decision validator between the model and its choice
+of plain content vs. tool call, unlike the legacy orchestrator/unified-planner paths (both behind
+disabled-by-default flags, not production). `requiresCustomerIntelligenceAnalytics`/
+`asksForFreshBusinessFact`/`asksForAnalyticalRecommendation` (`conversation-decision-validator.ts`)
+are used only by the legacy `respond_directly` rejection check and by the deterministic fallback's
+reactivation-wording choice (`renderDeterministicEvidenceFallback`) - neither is a tool-runtime
+routing gate, and both already correctly leave conceptual questions ungated (`asksForFreshBusinessFact`
+requires both a population-subject term and a quantitative-intent term, so "Que es ticket
+promedio?" or "Por que puede ser util segmentar clientes?" do not match). No changes were needed
+there, and none were made to T03's validator, the query field registry, SELECT-only execution,
+provenance, or the max-3-queries bound. No new special-case classifiers (`isPm2Command`,
+`isMarketingConcept`, etc.) were added; the only pre-existing deterministic shortcut in the
+tool-runtime path, `isCurrencyUnitQuestion` (T05.8.8), stays - it represents a stable, deterministic
+system fact (every monetary value here is CLP) rather than a judgment call the model should make,
+which is exactly the bar Section 16 sets for keeping a shortcut.
+
+### 17. Public response style
+
+Unchanged in code - the existing `answer`/`message` fields already carry only the model's (now
+better-instructed) prose or the deterministic fallback's business-language rendering; internal
+identifiers such as `contractVersion`/`decisionVersion`/`analysisPlanVersion` remain in the
+structured `analysis` metadata block (an API contract for the calling CRM system), not in the
+user-visible conversational text, which is the existing, correct separation.
+
+### Tests added
+
+- Tool framing: the `run_analytical_queries` description sent to the model matches the new
+  "validated Customer Intelligence evidence" wording and no longer implies exclusivity.
+- Direct conversation: RFM/ticket-promedio/marketing-concept questions answered directly with zero
+  analytical execution; an accidental PM2 command answered directly with zero analytical execution
+  and no internal tool/contract names in the user-visible text.
+- Semantic anchor: a 4-turn flow (ranking -> direct currency answer -> explanatory "why" -> fresh
+  RFM comparison) keeps the Cluster 3 semantic anchor through both non-analytical turns.
+- Thinking/token budget: the provider request body never carries a `reasoning_effort`/`thinking`/
+  `enable_thinking` field and has an identical key shape across stages and questions; a response
+  with `reasoning_content` alongside `content` surfaces only `content`; a response with only
+  `reasoning_content` and `finish_reason: length` still classifies as the diagnosable
+  `provider_invalid_finish_reason` subtype (T05.8.8); default synthesis max tokens raised to 2000
+  everywhere it is asserted.
+- Full pre-existing T05.8-T05.8.8 regression suite (stage timeouts, invalid-response taxonomy,
+  clarification lifecycle, context hygiene, distribution semantics, primary-finding selection,
+  synthesis fallback/degraded_success, population semantics, business-semantic rendering,
+  reactivation recommendation boundary, T03 provenance, max-3-queries enforcement, session
+  persistence) re-run unchanged except for the two tests asserting the old synthesis
+  `maxTokens`/config default of `1500`, updated to `2000`.
+
+Local validation:
+
+- `npx vitest run --config vitest.config.ts tests/unit/customer-intelligence-copilot-session.test.ts tests/unit/openai-compatible-copilot-model.test.ts tests/unit/customer-intelligence-copilot-semantic-benchmark.test.ts tests/unit/customer-intelligence-copilot-business-semantics.test.ts tests/unit/customer-intelligence-copilot-contracts.test.ts tests/unit/customer-intelligence-copilot-benchmark.test.ts tests/unit/config.test.ts tests/unit/http-json-copilot-model.test.ts tests/unit/customer-intelligence-compact-query-adapter.test.ts tests/unit/customer-intelligence-query-planner-contract.test.ts tests/unit/customer-intelligence-query-validator.test.ts tests/integration/customer-intelligence-copilot-route.test.ts tests/integration/customer-intelligence-copilot-session-routes.test.ts`
+- Result: PASS, 13 files, 265 tests.
+- `npm run typecheck`: PASS.
+- `npm run build`: PASS.
+- `npm run lint`: PASS.
+- `npm test`: PASS, 179 files, 1568 tests.
+
+Live validation: NOT_RUN - no configured provider credentials or analytics DB access in this
+environment. The Section 27 seven-question fresh-session flow (RFM definition, ticket ranking,
+currency side-question, RFM comparison, reactivation recommendation, accidental PM2 command,
+ticket-promedio definition) remains the required next step before closing T05 per Section 28.
+
+### T07/T06 boundary
+
+Explicitly deferred to `MARKETING-R1-T07 Conversational Memory & Context Scalability`: hierarchical
+long-term memory, embedding/vector retrieval, semantic memory search, dynamic context-budget
+architecture, long-session strategy beyond the existing bounded recent-turns/summary checkpoint,
+and advanced summarization. No backend contract was added for a future T06 "Thinking: ON/OFF" UI
+control - the task allowed adding one only if a trivial, backwards-compatible field already fit
+cleanly, and none of the current session-service/config wiring has a natural per-request thinking
+toggle to expose (thinking is a model/config-level property, not a per-turn parameter in this
+adapter) - deferred to T06 rather than forced in.
+
 ## Known Limitations
 
 - Summary checkpointing is deterministic/extractive in this slice; it does not call a separate

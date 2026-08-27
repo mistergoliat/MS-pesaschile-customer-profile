@@ -1049,7 +1049,7 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
     expect(response.status).toBe('ok');
     if (response.status === 'ok') expect(response.response.status).toBe('answered');
     expect(h.generateConversationalTurn).toHaveBeenCalledTimes(2);
-    expect(h.generateConversationalTurn.mock.calls[1]?.[0]).toMatchObject({ stage: 'tool_synthesis', toolChoice: 'none', maxTokens: 1500 });
+    expect(h.generateConversationalTurn.mock.calls[1]?.[0]).toMatchObject({ stage: 'tool_synthesis', toolChoice: 'none', maxTokens: 2000 });
     // Both tied clusters are preserved - a tie means no anchored winner, so the bundle must not
     // collapse to just the first row. With exactly two rows and no anchor this is now an explicit
     // pairwise comparison (task MARKETING-R1-T05.8.6 Section 6) rather than two loose facts.
@@ -2275,6 +2275,125 @@ describe('Customer Intelligence Copilot T05.8.8 runtime reliability hardening', 
 
     expect(response.status).toBe('ok');
     if (response.status === 'ok') expect(response.response.status).toBe('responded_directly');
+  });
+});
+
+describe('Customer Intelligence Copilot T05.8.9 conversational freedom + data grounding', () => {
+  it('frames run_analytical_queries as an evidence capability, not the only available tool (Section 5)', async () => {
+    const h = harness({ toolRuntimeEnabled: true });
+    const sessionId = await createSession(h);
+
+    await h.service.processSessionTurn({ sessionId, question: 'Cual cluster tiene mayor ticket promedio?' });
+
+    const call = h.generateConversationalTurn.mock.calls[0]?.[0] as GenerateConversationalTurnInput;
+    expect(call.tools[0]?.function.description).toMatch(/validated customer intelligence evidence/i);
+    expect(call.tools[0]?.function.description.toLowerCase()).not.toContain('only');
+  });
+
+  it('answers conceptual/definitional questions directly with zero analytics and zero tool calls (A/B/C)', async () => {
+    const cases = [
+      { question: 'Que significa RFM?', content: 'RFM clasifica clientes por recencia, frecuencia y valor monetario.' },
+      { question: 'Que es ticket promedio?', content: 'El ticket promedio es el valor promedio de las ordenes de un cliente.' },
+      { question: 'Por que puede ser util segmentar clientes?', content: 'Segmentar ayuda a priorizar acciones comerciales para grupos con comportamientos distintos.' },
+    ];
+    for (const entry of cases) {
+      const h = harness({ toolRuntimeEnabled: true, conversationalTurns: [toolRuntimeContent(entry.content)] });
+      const sessionId = await createSession(h);
+
+      const response = await h.service.processSessionTurn({ sessionId, question: entry.question });
+
+      expect(response.status).toBe('ok');
+      if (response.status === 'ok') {
+        expect(response.response.status).toBe('responded_directly');
+        expect(response.response.finalResponseState).toBe('success');
+      }
+      expect(h.executeAnalyticalQuery).not.toHaveBeenCalled();
+    }
+  });
+
+  it('gives a short capability answer for an accidental out-of-scope command, with no tool call and no internal jargon (D/E/F)', async () => {
+    const h = harness({
+      toolRuntimeEnabled: true,
+      conversationalTurns: [toolRuntimeContent('No puedo ejecutar comandos de servidor desde este Copilot. Ese comando debe ejecutarse en el host donde corre PM2.')],
+    });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'pm2 logs customer-profile --lines 450' });
+
+    expect(response.status).toBe('ok');
+    if (response.status !== 'ok') throw new Error('expected ok');
+    expect(response.response.finalResponseState).toBe('success');
+    expect(h.executeAnalyticalQuery).not.toHaveBeenCalled();
+    const userVisibleText = 'answer' in response.response ? response.response.answer : 'message' in response.response ? response.response.message : '';
+    expect(userVisibleText).not.toMatch(/run_analytical_queries|tool_selection|tool_synthesis|AnalyticalQueryPlan|semanticAnchor/i);
+  });
+
+  it('preserves the Cluster 3 anchor through a direct currency side-question and an explanatory follow-up before a fresh comparison (Section 9)', async () => {
+    const h = harness({
+      toolRuntimeEnabled: true,
+      conversationalTurns: [
+        toolRuntimeCall([{ id: 'avg_ticket_by_cluster', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'avg', field: 'commercial.averageOrderValueTaxIncl', alias: 'avg_ticket' }], orderBy: [{ field: 'avg_ticket', direction: 'desc' }], limit: 1 } }]),
+        toolRuntimeCall([{ id: 'why_cluster_3', plan: { dimensions: ['cluster.clusterId'], filters: [{ field: 'cluster.clusterId', operator: 'eq', value: 3 }], metrics: [{ aggregation: 'avg', field: 'commercial.totalSpentTaxIncl', alias: 'avg_spend' }] } }]),
+        toolRuntimeContent('Cluster 3 destaca por mayor gasto promedio observado; esto no prueba causalidad.'),
+        toolRuntimeCall([{ id: 'rfm_by_cluster', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'avg', field: 'rfm.rScore', alias: 'avg_r' }] } }]),
+        toolRuntimeContent('Cluster 3 mantiene mejor recencia promedio que el cluster 2.'),
+      ],
+      executionResults: [
+        result([{ clusterId: 3, avg_ticket: '381304.040000' }], '9'.repeat(64), ['clusterId', 'avg_ticket']),
+        result([{ clusterId: 3, avg_spend: '900000.000000' }], 'w'.repeat(64), ['clusterId', 'avg_spend']),
+        result([{ clusterId: 3, avg_r: '1.800000' }, { clusterId: 2, avg_r: '2.400000' }], 'r'.repeat(64), ['clusterId', 'avg_r']),
+      ],
+    });
+    const sessionId = await createSession(h);
+
+    const first = await h.service.processSessionTurn({ sessionId, question: 'Cual tiene mayor ticket promedio?' });
+    expect(first.status).toBe('ok');
+
+    const second = await h.service.processSessionTurn({ sessionId, question: 'Eso esta en pesos o euros?' });
+    expect(second.status).toBe('ok');
+    if (second.status === 'ok') expect(second.response.status).toBe('responded_directly');
+
+    const third = await h.service.processSessionTurn({ sessionId, question: 'Por que destaca ese grupo?' });
+    expect(third.status).toBe('ok');
+    if (third.status === 'ok') expect(third.response.status).toBe('answered');
+
+    const fourth = await h.service.processSessionTurn({ sessionId, question: 'Ahora compara su RFM con el cluster 2' });
+    expect(fourth.status).toBe('ok');
+    if (fourth.status === 'ok') expect(fourth.response.status).toBe('answered');
+
+    const selectionDiagnostics = h.stageLatencyDiagnostics.filter((diagnostic) => diagnostic.stage === 'tool_selection');
+    // 3 tool_selection calls: turn 1, turn 3, turn 4 - the currency side-question never reaches it
+    expect(selectionDiagnostics).toHaveLength(3);
+    expect(selectionDiagnostics[1]).toMatchObject({ semanticAnchorEntityType: 'cluster', semanticAnchorEntityId: 3 });
+    expect(selectionDiagnostics[2]).toMatchObject({ semanticAnchorEntityType: 'cluster', semanticAnchorEntityId: 3 });
+  });
+
+  it('never merges reasoning_content into visible content or tool-call output (W/X/Y)', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [
+          {
+            message: { content: 'Cluster 3 presenta el mayor ticket promedio.', reasoning_content: 'internal chain of thought that must never be surfaced' },
+            finish_reason: 'stop',
+          },
+        ],
+      }),
+    })) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', fetchMock);
+    const { createOpenAiCompatibleCopilotModel } = await import('../../src/infrastructure/customer-intelligence-copilot/index.js');
+    const model = createOpenAiCompatibleCopilotModel({ endpoint: 'https://api.vendor.example/chat/completions', apiKey: null, model: 'vendor-model', timeoutMs: 5000 });
+
+    const output = await model.generateConversationalTurn!({
+      messages: [{ role: 'user', content: 'Cual cluster tiene mayor ticket promedio?' }],
+      tools: [],
+      toolChoice: 'none',
+      stage: 'tool_synthesis',
+    });
+
+    expect(output.content).toBe('Cluster 3 presenta el mayor ticket promedio.');
+    expect(JSON.stringify(output)).not.toContain('chain of thought');
   });
 });
 

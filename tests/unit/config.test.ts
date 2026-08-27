@@ -29,7 +29,7 @@ describe('config - Customer Intelligence Copilot runtime flags', () => {
 
     expect(config.marketingCopilot.unifiedPlannerEnabled).toBe(false);
     expect(config.marketingCopilot.toolRuntimeEnabled).toBe(false);
-    expect(config.marketingCopilot.synthesisMaxTokens).toBe(1500);
+    expect(config.marketingCopilot.synthesisMaxTokens).toBe(2000);
   });
 
   it('parses unified planner and native tool runtime flags independently, and still allows an env override of synthesis max tokens', async () => {

@@ -86,7 +86,11 @@ const envSchema = z.object({
     .enum(['true', 'false', '1', '0'])
     .default('false')
     .transform((value) => value === 'true' || value === '1'),
-  CUSTOMER_INTELLIGENCE_COPILOT_SYNTHESIS_MAX_TOKENS: z.coerce.number().int().positive().max(2000).default(1500),
+  // task MARKETING-R1-T05.8.9 Section 12: default raised 1500 -> 2000, the existing code-level
+  // ceiling (unchanged) - live evidence showed tool_synthesis reaching provider_invalid_finish_reason
+  // (finish_reason=length with no visible content), consistent with the provider's max_tokens
+  // budget covering reasoning plus visible output for a thinking-enabled request.
+  CUSTOMER_INTELLIGENCE_COPILOT_SYNTHESIS_MAX_TOKENS: z.coerce.number().int().positive().max(2000).default(2000),
 
   PRESTASHOP_DB_HOST: z.string().min(1),
   PRESTASHOP_DB_PORT: z.coerce.number().int().positive().default(3306),
