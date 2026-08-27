@@ -313,6 +313,224 @@ Residual documented debt:
 - XLSX/export remains deferred to `MARKETING-R2-A01 Audience Engine`.
 - Predictive campaign propensity/conversion modeling is still unavailable.
 
+## T05.8.8 Final Runtime Reliability
+
+Motivation: fresh live evidence after T05.8.7 showed the remaining defects were not about
+semantics but about runtime reliability. An RFM comparison turn completed analytics successfully
+(~88ms) but `tool_synthesis` returned `provider_invalid_response` after ~12.7s and had to fall
+back deterministically; a separate reactivation-recommendation turn timed tool_selection out at
+exactly the shared 30s provider timeout with zero analytics executed, failing the turn terminally.
+The unresolvedClarification flag was also observed active after a currency/unit side-question
+("Eso esta en pesos o euros?") that the system should have been able to answer deterministically
+and mark resolved. This slice is narrow: no memory redesign, no retrieval, no T03/clustering/RFM
+changes, no analytical query count increase, no dashboard/UI, no XLSX, no model switch.
+
+### 1. Live timeout evidence
+
+- RFM comparison turn: tool selection success (3 queries), analytics success (~88ms,
+  `evidenceBundleChars` ~4136, `evidenceComparisonCount`/`evidenceDistributionCount` 5),
+  `synthesisMaxTokens` 1500, `tool_synthesis` failed with `provider_invalid_response` after
+  ~12.7s, deterministic fallback executed, turn remained `answered_degraded_synthesis`.
+- Reactivation-recommendation turn: `tool_selection` reached exactly the shared ~30s timeout
+  (`failureStatus = tool_selection_provider_timeout`), no analytics executed, turn failed
+  terminally (`contextProjectionChars` ~23098, `toolSelectionPromptChars` ~23602).
+- Model context capacity is not treated as intrinsically excessive here; this is a reliability
+  fix, not a context-compression redesign.
+
+### 2-3. Stage-specific provider timeouts and diagnostics
+
+- New env vars, parsed and bounds-validated in `configured-copilot-model.ts`:
+  `CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SELECTION_TIMEOUT_MS` and
+  `CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SYNTHESIS_TIMEOUT_MS`, each defaulting to `45000` and
+  bounded at `60000` (`CUSTOMER_INTELLIGENCE_COPILOT_STAGE_TIMEOUT_MAX_MS`). A value that is
+  non-integer, non-positive, or over the bound fails closed (`not_configured`) at startup, the
+  same fail-fast pattern the existing `CUSTOMER_INTELLIGENCE_COPILOT_TIMEOUT_MS` check uses - no
+  provider call is ever left unbounded.
+- `CUSTOMER_INTELLIGENCE_COPILOT_TIMEOUT_MS` (default `30000`) is unchanged and remains the
+  fallback/default for `orchestrator`/`orchestrator_repair`/`planner`/`planner_repair`/
+  `unified_planner`/`unified_planner_repair`/`answerer` - only `tool_selection` and
+  `tool_synthesis` get their own configured timeout, resolved per-call in
+  `openai-compatible-copilot-model.ts`'s `resolveTimeoutMsForStage` from the request's own
+  `stage`, independent of which named stage-routed model instance handles the call.
+  `createConfiguredCustomerIntelligenceCopilotModel` now also returns the resolved
+  `toolSelectionTimeoutMs`/`toolSynthesisTimeoutMs`, threaded through `bootstrap.ts` into the
+  session service so diagnostics can report the value actually in effect.
+- No blind retry was added for either stage (task requirement): a `tool_selection` timeout with
+  no analytical result remains a terminal failure (`provider_timeout`, `finalResponseState:
+  'failure'`); `tool_synthesis` continues to prefer the existing deterministic fallback over
+  retrying the model.
+- `CopilotStageLatencyDiagnostic` gained `configuredTimeoutMs` (both stages, success and failure)
+  and `invalidResponseSubtype` (failure only, `provider_invalid_response` only) plus cheap
+  structural context-size fields: `recentTurnCount`, `analyticalReferenceCount`,
+  `recentFindingCount`, `clarificationState` (`'none' | 'open'`). No prompt contents are logged.
+
+### 4-5. Invalid-response taxonomy and tool_synthesis audit
+
+Audited the exact `choices[0].message.content` parsing path
+(`openai-compatible-copilot-model.ts`'s `extractMessage`/`extractToolCalls`/
+`conversationalTurnOutput`), the same path both `tool_selection` and `tool_synthesis` use:
+
+- Malformed transport JSON (`response.json()` throws) -> `provider_invalid_json`.
+- Non-object envelope / non-object choice -> `provider_unexpected_envelope`.
+- Missing/empty `choices` -> `provider_missing_choices`.
+- Missing `message` -> `provider_missing_message`.
+- `content` absent (`null`/`undefined`) with no tool calls -> `provider_missing_content`.
+- `content` present but blank/whitespace-only with no tool calls -> `provider_empty_response`
+  (this also covers the empty-content-and-empty-tool_calls-array case caught in
+  `conversationalTurnOutput`, which is a separate, non-overlapping gate from the one in
+  `extractMessage` for a `tool_calls: []` payload).
+- `content` absent/blank **and** `finish_reason: 'length'` -> `provider_invalid_finish_reason`
+  (checked before the generic missing/empty classification, because a `max_tokens` truncation has
+  a different, more actionable root cause than a genuinely empty completion - this is the most
+  likely explanation for the live ~12.7s `tool_synthesis` failure with `synthesisMaxTokens: 1500`).
+- Malformed `tool_calls` (not an array, or a malformed entry/id/name/arguments) ->
+  `provider_invalid_tool_calls`.
+- The adapter deliberately never reads `message.reasoning_content`: some OpenAI-compatible
+  reasoning variants put chain-of-thought there, and this codebase never surfaces reasoning
+  content to users or logs, so a response carrying only `reasoning_content` and no usable
+  `content`/`tool_calls` is correctly treated the same as an empty response rather than unwrapped
+  as if it were valid - no invented compatibility behavior was added for it.
+- The public `category` (`provider_invalid_response`, etc.) is unchanged for backward
+  compatibility; the subtype lives only in `CopilotProviderError.metadata.invalidResponseSubtype`
+  and the `invalidResponseSubtype` stage-latency diagnostic field. Neither ever carries a raw
+  provider payload, prompt, or credential - only which structural expectation failed.
+
+### 6. Fallback remains a successful public response
+
+Unchanged and re-verified: `canUseDeterministicSynthesisFallback` still gates on the public
+`category` (`provider_timeout`/`provider_network_error`/`provider_invalid_response`), so the new
+subtypes do not change which failures are eligible for the deterministic fallback. Analytics
+success + `tool_synthesis` failure + valid evidence still produces `finalResponseState:
+'degraded_success'` on an `answered` HTTP path, never a public failure, and internal diagnostics
+retain the failure subtype for operators without exposing it to the response body.
+
+### 7. Clarification lifecycle
+
+Root cause found in `deriveSemanticFocus` (`session-context.ts`): `unresolvedClarification` was
+derived by scanning **every** turn backward for the most recent one with status
+`clarification_required`, with no check for whether a later turn had already resolved it. Once
+any clarification_required turn occurred, it stayed "unresolved" in every subsequent turn's
+context forever, unless another clarification_required turn happened to replace it.
+
+Fix: `unresolvedClarification` is now open only when the conversation's **latest** turn is itself
+`clarification_required`. The instant any further turn completes - answered, responded directly,
+answered from context, unsupported, or a new clarification - the prior one is resolved, matching
+the three resolution paths the task specifies (user supplied the missing criterion and the turn
+proceeded; the system resolved it deterministically; the assistant answered completely and the
+conversation moved on). This is not a time/turn-count expiry heuristic - a clarification that is
+genuinely still the last thing that happened stays open indefinitely, exactly as required by the
+live currency-question evidence ("must NOT be treated automatically as stale state").
+
+### 8-9. Side-question handling and semantic anchor preservation
+
+- New deterministic check in `processSessionTurn` (`session-service.ts`), evaluated before any
+  routing branch or model call: `isCurrencyUnitQuestion` detects a question about the currency/
+  unit of previously shown values (e.g. "Eso esta en pesos o euros?") and
+  `currencyUnitDirectResponse` answers directly - every monetary value this runtime surfaces is
+  Chilean pesos (CLP) - as a `responded_directly` / `finalResponseState: 'success'` turn. It never
+  calls the model, never runs analytics, and never touches `analyticalState`, so
+  `activeFinding`/`activeEntity`/`activeMetric` (derived only from `analyticalState.results`) are
+  preserved by construction for the next turn - no special-case anchor-preservation logic was
+  needed beyond not mutating that state.
+- `isClarificationContent`'s free-text heuristic previously flagged **any** assistant message
+  containing a "?" anywhere as a fresh `clarification_required` turn - a declarative answer with a
+  mid-sentence rhetorical "?" (or one that simply referenced the question mark from the user's own
+  currency question) could misclassify itself and re-open `unresolvedClarification`. It now
+  requires the whole trimmed message to *end* in "?" (or match the existing explicit
+  clarification-phrase patterns), so a complete direct answer is never mistaken for a new
+  clarifying question. Definitional side-questions ("Que significa RFM?", "Que significa ticket
+  promedio?") already went through this same `responded_directly` path and are preserved
+  identically now that the heuristic is tighter, not looser.
+
+### 10. Context hygiene (no aggressive truncation)
+
+Audited `toolRuntimeMessages` (the tool_selection context projection) for accidental duplication,
+matching the live ~23KB evidence:
+
+- `unresolvedClarification` was sent as its own top-level key **and** again inside
+  `semanticFocus.unresolvedClarification` - the same value, twice. Removed the top-level
+  duplicate; the model still has the value through `semanticFocus`.
+- `recentFindings: [activeFinding]` duplicated `semanticFocus.activeFinding` under a second name.
+  Removed; `recentFindingsFromContext` is retained as a helper for the new
+  `recentFindingCount` diagnostic.
+- `recentTurns` was truncated a second time to the last 3 turns on top of the
+  `contextRecentTurns`-bounded window `buildCopilotSessionContext` already computes.
+  `summarizeConversation` (`session-service.ts`) previously summarized the last
+  `summaryAfterTurns` turns as rendered text - once a session crossed that threshold, the last
+  `contextRecentTurns` of those were sent **twice**: once as rendered "question -> answer" text in
+  the checkpoint, once as structured `recentTurns`. `summarizeConversation` now excludes exactly
+  the `contextRecentTurns` window from the checkpoint, and `toolRuntimeMessages` sends the full
+  (already-bounded) `recentTurns` array instead of re-truncating it to 3 - net effect: no
+  duplicate representation of the same turns, and no turns silently dropped from either
+  representation.
+- Preserved, unchanged: recent turns, semantic anchor, active finding, current question, the
+  schema/query-contract capability contract, and analytical references. No aggressive truncation
+  was introduced solely because one request timed out, and no T07 memory/retrieval architecture
+  was pulled forward.
+
+### 11. Context size observability
+
+Added to `CopilotStageLatencyDiagnostic`, alongside the existing `contextProjectionChars`/
+`toolSelectionPromptChars`/`toolSelectionPromptTokens`: `recentTurnCount`,
+`analyticalReferenceCount`, `recentFindingCount`, `clarificationState`. No prompt contents.
+
+### 12. Retry policy
+
+Unchanged by design: no blind multi-retry loop was added for `tool_selection` timeouts, and
+`tool_synthesis` continues to prefer the deterministic fallback over retrying the model - avoiding
+doubled latency/cost and non-deterministic retry storms, per the task's explicit constraint.
+
+### 13. Model
+
+`deepseek-v4-flash` remains the default; no model routing was introduced.
+
+### Tests added
+
+- Stage timeouts (adapter level, `openai-compatible-copilot-model.test.ts`): tool_selection uses
+  its own configured timeout instead of the legacy one; tool_synthesis likewise; the legacy
+  timeout remains the fallback/default for orchestrator/planner/answerer/unified_planner and for
+  an adapter config with no stage overrides; `createConfiguredCustomerIntelligenceCopilotModel`
+  bounds-enforces both stage timeouts (over-max and non-positive fail closed) and reports the
+  resolved values when configured.
+- Invalid-response taxonomy (adapter level): malformed transport JSON, missing choices, missing
+  message, missing vs. empty/whitespace content (distinct subtypes), a `finish_reason: 'length'`
+  truncation with no usable content, malformed `tool_calls`, a valid plain-text synthesis response
+  classified as no subtype, and a raw-payload-never-exposed check on both the error message and
+  metadata.
+- Session-level (`customer-intelligence-copilot-session.test.ts`, new "T05.8.8" describe block):
+  `configuredTimeoutMs` surfaced on both tool_selection (success) and tool_synthesis (success)
+  diagnostics; `configuredTimeoutMs` surfaced on a terminal tool_selection timeout with zero
+  analytics executed; `invalidResponseSubtype` surfaced on a tool_synthesis failure diagnostic
+  while the public response stays `degraded_success` and never echoes the subtype/internal
+  message; cheap context-size diagnostics present on every tool_selection call; clarification
+  marked `open` going into the resolving turn and `none` immediately after; a currency/unit
+  question answered deterministically with zero model calls and zero analytics; the Cluster 3
+  semantic anchor preserved through a currency side-question so a later "su RFM" comparison
+  resolves to Cluster 3; a resolved clarification not contaminating a later reactivation-
+  recommendation question; a mid-sentence rhetorical "?" in a direct answer not misclassified as a
+  fresh clarification.
+- Full pre-existing T05.8-T05.8.7 regression suite (distribution semantics, primary-finding
+  selection, semantic anchor, top-rank fast path, synthesis fallback/degraded_success, population
+  semantics, business-semantic rendering, reactivation recommendation boundary, T03 provenance,
+  max-3-queries enforcement, session persistence) re-run unchanged.
+
+Local validation:
+
+- `npx vitest run --config vitest.config.ts tests/unit/customer-intelligence-copilot-session.test.ts tests/unit/openai-compatible-copilot-model.test.ts tests/unit/customer-intelligence-copilot-semantic-benchmark.test.ts tests/unit/customer-intelligence-copilot-business-semantics.test.ts tests/unit/customer-intelligence-copilot-contracts.test.ts tests/unit/customer-intelligence-copilot-benchmark.test.ts tests/unit/config.test.ts tests/unit/http-json-copilot-model.test.ts tests/unit/customer-intelligence-compact-query-adapter.test.ts tests/unit/customer-intelligence-query-planner-contract.test.ts tests/unit/customer-intelligence-query-validator.test.ts tests/integration/customer-intelligence-copilot-route.test.ts tests/integration/customer-intelligence-copilot-session-routes.test.ts`
+- Result: PASS, 13 files, 257 tests.
+- `npm run typecheck`: PASS.
+- `npm run build`: PASS.
+- `npm run lint`: PASS.
+- `npm test`: PASS, 179 files, 1560 tests.
+
+Live validation: NOT_RUN - no configured provider credentials or analytics DB access in this
+environment. The Section 18 four-question fresh-session flow (highest-ticket cluster -> currency
+side-question -> RFM comparison -> reactivation recommendation, repeated 3x for the last question)
+and the Section 19 log-gate fields (`configuredTimeoutMs`, `invalidResponseSubtype`,
+`clarificationState`, `unresolvedClarificationPresent`, `synthesisFallbackUsed`,
+`semanticAnchorEntityId`, `primaryFindingEntityId`) remain the required next step before closing
+T05 per Section 20.
+
 ## Known Limitations
 
 - Summary checkpointing is deterministic/extractive in this slice; it does not call a separate

@@ -54,7 +54,17 @@ export function deriveSemanticFocus(session: CopilotSession): CopilotSemanticFoc
   // follow-up (e.g. a top-1 ranking) resolves one.
   const activeEntity = lastResult && finding?.findingType !== 'distribution' ? entityFromRow(lastResult.result.rows[0], activeComparison, lastResult.queryId) : null;
   const activeMetric = lastResult ? metricFromPlan(lastResult.plan, lastResult.queryId) : null;
-  const unresolvedClarificationTurn = [...session.turns].reverse().find((turn) => turn.assistantStatus === 'clarification_required');
+  // Precise clarification lifecycle (task MARKETING-R1-T05.8.8 Section 7): a clarification is
+  // OPEN only while it is genuinely the latest thing that happened in the conversation - i.e.
+  // the most recent turn's own status is `clarification_required`. The instant any further turn
+  // completes (answered, responded directly, answered from context, unsupported, or a new
+  // clarification), the prior clarification is RESOLVED - either the user supplied the missing
+  // criterion and the turn proceeded, the system resolved it deterministically, or the
+  // conversation simply moved on. This intentionally does not scan backward past the latest turn
+  // (the previous behavior), which kept a resolved clarification "unresolved" forever once any
+  // clarification_required turn had ever occurred.
+  const latestTurn = session.turns[session.turns.length - 1];
+  const unresolvedClarificationTurn = latestTurn?.assistantStatus === 'clarification_required' ? latestTurn : null;
 
   return {
     activeEntity,

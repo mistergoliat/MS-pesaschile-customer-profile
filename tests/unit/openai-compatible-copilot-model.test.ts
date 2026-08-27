@@ -605,4 +605,193 @@ describe('configured Customer Intelligence Copilot model provider selection', ()
 
     expect(result).toEqual({ status: 'not_configured', reason: 'CUSTOMER_INTELLIGENCE_COPILOT_MODEL is required for openai_compatible provider' });
   });
+
+  it('defaults tool_selection/tool_synthesis stage timeouts to 45000ms when unset', () => {
+    const result = createConfiguredCustomerIntelligenceCopilotModel({
+      CUSTOMER_INTELLIGENCE_COPILOT_PROVIDER: 'openai_compatible',
+      CUSTOMER_INTELLIGENCE_COPILOT_ENDPOINT: config.endpoint,
+      CUSTOMER_INTELLIGENCE_COPILOT_MODEL: config.model,
+    });
+
+    expect(result).toMatchObject({ status: 'configured', toolSelectionTimeoutMs: 45000, toolSynthesisTimeoutMs: 45000 });
+  });
+
+  it('applies stage-specific timeout env overrides independently of each other and of the legacy timeout', () => {
+    const result = createConfiguredCustomerIntelligenceCopilotModel({
+      CUSTOMER_INTELLIGENCE_COPILOT_PROVIDER: 'openai_compatible',
+      CUSTOMER_INTELLIGENCE_COPILOT_ENDPOINT: config.endpoint,
+      CUSTOMER_INTELLIGENCE_COPILOT_MODEL: config.model,
+      CUSTOMER_INTELLIGENCE_COPILOT_TIMEOUT_MS: '30000',
+      CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SELECTION_TIMEOUT_MS: '40000',
+      CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SYNTHESIS_TIMEOUT_MS: '55000',
+    });
+
+    expect(result).toMatchObject({ status: 'configured', toolSelectionTimeoutMs: 40000, toolSynthesisTimeoutMs: 55000 });
+  });
+
+  it('fails closed when a stage timeout exceeds the 60000ms bound (D)', () => {
+    const overMax = createConfiguredCustomerIntelligenceCopilotModel({
+      CUSTOMER_INTELLIGENCE_COPILOT_PROVIDER: 'openai_compatible',
+      CUSTOMER_INTELLIGENCE_COPILOT_ENDPOINT: config.endpoint,
+      CUSTOMER_INTELLIGENCE_COPILOT_MODEL: config.model,
+      CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SELECTION_TIMEOUT_MS: '60001',
+    });
+    expect(overMax).toEqual({ status: 'not_configured', reason: 'CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SELECTION_TIMEOUT_MS must not exceed 60000' });
+
+    const invalid = createConfiguredCustomerIntelligenceCopilotModel({
+      CUSTOMER_INTELLIGENCE_COPILOT_PROVIDER: 'openai_compatible',
+      CUSTOMER_INTELLIGENCE_COPILOT_ENDPOINT: config.endpoint,
+      CUSTOMER_INTELLIGENCE_COPILOT_MODEL: config.model,
+      CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SYNTHESIS_TIMEOUT_MS: '0',
+    });
+    expect(invalid).toEqual({ status: 'not_configured', reason: 'CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SYNTHESIS_TIMEOUT_MS must be a positive integer' });
+  });
+});
+
+describe('Customer Intelligence Copilot stage-specific provider timeouts at the adapter (task MARKETING-R1-T05.8.8 Section 1/2/3)', () => {
+  function abortingFetchMock() {
+    return vi.fn((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+    })) as unknown as typeof fetch;
+  }
+
+  it('uses the configured tool_selection timeout instead of the legacy timeout (A)', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', abortingFetchMock());
+    const model = createOpenAiCompatibleCopilotModel({ ...config, toolSelectionTimeoutMs: 45000, toolSynthesisTimeoutMs: 45000 });
+
+    const promise = model.generateConversationalTurn!(conversationalTurnInput('tool_selection'));
+    const expectation = expect(promise).rejects.toMatchObject({ category: 'provider_timeout', metadata: { configuredTimeoutMs: 45000 } });
+    await vi.advanceTimersByTimeAsync(45000);
+
+    await expectation;
+  });
+
+  it('uses the configured tool_synthesis timeout instead of the legacy timeout (B)', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', abortingFetchMock());
+    const model = createOpenAiCompatibleCopilotModel({ ...config, toolSelectionTimeoutMs: 45000, toolSynthesisTimeoutMs: 50000 });
+
+    const promise = model.generateConversationalTurn!(conversationalTurnInput('tool_synthesis'));
+    const expectation = expect(promise).rejects.toMatchObject({ category: 'provider_timeout', metadata: { configuredTimeoutMs: 50000 } });
+    await vi.advanceTimersByTimeAsync(50000);
+
+    await expectation;
+  });
+
+  it('keeps the legacy timeout as fallback/default for orchestrator/planner/answerer/unified_planner (C)', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', abortingFetchMock());
+    const model = createOpenAiCompatibleCopilotModel({ ...config, toolSelectionTimeoutMs: 45000, toolSynthesisTimeoutMs: 45000 });
+
+    const promise = model.generateAnswer(answerInput());
+    const expectation = expect(promise).rejects.toMatchObject({ category: 'provider_timeout', metadata: { stage: 'answerer', configuredTimeoutMs: config.timeoutMs } });
+    await vi.advanceTimersByTimeAsync(config.timeoutMs);
+
+    await expectation;
+  });
+
+  it('falls back to the legacy timeout when no stage-specific override is configured on the adapter config', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', abortingFetchMock());
+    const model = createOpenAiCompatibleCopilotModel(config);
+
+    const promise = model.generateConversationalTurn!(conversationalTurnInput('tool_selection'));
+    const expectation = expect(promise).rejects.toMatchObject({ category: 'provider_timeout', metadata: { configuredTimeoutMs: config.timeoutMs } });
+    await vi.advanceTimersByTimeAsync(config.timeoutMs);
+
+    await expectation;
+  });
+});
+
+describe('Customer Intelligence Copilot invalid-response taxonomy (task MARKETING-R1-T05.8.8 Section 4/5)', () => {
+  it('classifies malformed transport JSON as provider_invalid_json (H)', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new SyntaxError('Unexpected token');
+      },
+    })) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', fetchMock);
+    const model = createOpenAiCompatibleCopilotModel(config);
+
+    await expect(model.generateConversationalTurn!(conversationalTurnInput('tool_synthesis'))).rejects.toMatchObject({
+      category: 'provider_invalid_response',
+      metadata: { invalidResponseSubtype: 'provider_invalid_json' },
+    });
+  });
+
+  it('classifies missing choices as provider_missing_choices (I)', async () => {
+    mockFetchJson({});
+    const model = createOpenAiCompatibleCopilotModel(config);
+
+    await expect(model.generateConversationalTurn!(conversationalTurnInput('tool_synthesis'))).rejects.toMatchObject({
+      category: 'provider_invalid_response',
+      metadata: { invalidResponseSubtype: 'provider_missing_choices' },
+    });
+  });
+
+  it('classifies a missing message as provider_missing_message (J)', async () => {
+    mockFetchJson({ choices: [{}] });
+    const model = createOpenAiCompatibleCopilotModel(config);
+
+    await expect(model.generateConversationalTurn!(conversationalTurnInput('tool_synthesis'))).rejects.toMatchObject({
+      category: 'provider_invalid_response',
+      metadata: { invalidResponseSubtype: 'provider_missing_message' },
+    });
+  });
+
+  it('distinguishes missing content (no key) from empty/whitespace content (K)', async () => {
+    mockFetchJson({ choices: [{ message: { content: null } }] });
+    const missing = createOpenAiCompatibleCopilotModel(config);
+    await expect(missing.generateConversationalTurn!(conversationalTurnInput('tool_synthesis'))).rejects.toMatchObject({
+      category: 'provider_invalid_response',
+      metadata: { invalidResponseSubtype: 'provider_missing_content' },
+    });
+
+    mockFetchJson({ choices: [{ message: { content: '   ' } }] });
+    const blank = createOpenAiCompatibleCopilotModel(config);
+    await expect(blank.generateConversationalTurn!(conversationalTurnInput('tool_synthesis'))).rejects.toMatchObject({
+      category: 'provider_invalid_response',
+      metadata: { invalidResponseSubtype: 'provider_empty_response' },
+    });
+  });
+
+  it('classifies a finish_reason=length truncation with no usable content as provider_invalid_finish_reason', async () => {
+    mockFetchJson({ choices: [{ message: { content: '' }, finish_reason: 'length' }] });
+    const model = createOpenAiCompatibleCopilotModel(config);
+
+    await expect(model.generateConversationalTurn!(conversationalTurnInput('tool_synthesis'))).rejects.toMatchObject({
+      category: 'provider_invalid_response',
+      metadata: { invalidResponseSubtype: 'provider_invalid_finish_reason' },
+    });
+  });
+
+  it('classifies malformed tool_calls as provider_invalid_tool_calls (L)', async () => {
+    mockFetchJson({ choices: [{ message: { content: 'algo de texto', tool_calls: 'not-an-array' } }] });
+    const model = createOpenAiCompatibleCopilotModel(config);
+
+    await expect(model.generateConversationalTurn!(conversationalTurnInput('tool_selection'))).rejects.toMatchObject({
+      category: 'provider_invalid_response',
+      metadata: { invalidResponseSubtype: 'provider_invalid_tool_calls' },
+    });
+  });
+
+  it('does not classify a valid plain-text synthesis response as any invalid-response subtype (M)', async () => {
+    mockFetchJson(chatResponse('Cluster 3 presenta el mayor ticket promedio observado.'));
+    const model = createOpenAiCompatibleCopilotModel(config);
+
+    const output = await model.generateConversationalTurn!(conversationalTurnInput('tool_synthesis'));
+    expect(output.content).toBe('Cluster 3 presenta el mayor ticket promedio observado.');
+  });
+
+  it('never exposes the raw provider payload in the error message or metadata (O)', async () => {
+    mockFetchJson({ choices: [{ message: { content: null }, secretApiKey: 'sk-super-secret', rawPromptEcho: 'the full system prompt text' }] });
+    const model = createOpenAiCompatibleCopilotModel(config);
+
+    const error = await model.generateConversationalTurn!(conversationalTurnInput('tool_synthesis')).catch((caught: unknown) => caught);
+    expect(String((error as Error).message)).not.toMatch(/secretApiKey|sk-super-secret|rawPromptEcho|the full system prompt text/);
+    expect(JSON.stringify((error as { metadata: unknown }).metadata)).not.toMatch(/secretApiKey|sk-super-secret|rawPromptEcho/);
+  });
 });

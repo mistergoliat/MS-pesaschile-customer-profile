@@ -281,6 +281,8 @@ export function bootstrap(): Bootstrap {
       toolRuntimeEnabled: config.marketingCopilot.toolRuntimeEnabled,
       unifiedPlannerEnabled: config.marketingCopilot.unifiedPlannerEnabled,
       synthesisMaxTokens: config.marketingCopilot.synthesisMaxTokens,
+      toolSelectionTimeoutMs: copilotModel.toolSelectionTimeoutMs,
+      toolSynthesisTimeoutMs: copilotModel.toolSynthesisTimeoutMs,
       onOrchestratorDiagnostic: (diagnostic) => {
         console.info(diagnostic, 'customer intelligence copilot orchestrator decision');
       },

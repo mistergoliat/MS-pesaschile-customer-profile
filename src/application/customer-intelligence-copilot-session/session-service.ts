@@ -276,6 +276,16 @@ export type CopilotStageLatencyDiagnostic = {
   readonly primaryFindingType?: string | null;
   readonly primaryFindingSourceQueryId?: string | null;
   readonly distributionRowCount?: number;
+  // task MARKETING-R1-T05.8.8 Section 3/4: the stage-resolved provider timeout actually applied
+  // to this call, and (on `provider_invalid_response` failures) the safe internal subtype - never
+  // a raw payload, prompt, or credential.
+  readonly configuredTimeoutMs?: number | null;
+  readonly invalidResponseSubtype?: string | null;
+  // Section 11: cheap structural context-size observability, no prompt contents.
+  readonly recentTurnCount?: number;
+  readonly analyticalReferenceCount?: number;
+  readonly recentFindingCount?: number;
+  readonly clarificationState?: 'none' | 'open';
 };
 
 export function createCustomerIntelligenceCopilotSessionService(deps: {
@@ -291,6 +301,8 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
   readonly toolRuntimeEnabled?: boolean;
   readonly unifiedPlannerEnabled?: boolean;
   readonly synthesisMaxTokens?: number;
+  readonly toolSelectionTimeoutMs?: number;
+  readonly toolSynthesisTimeoutMs?: number;
   readonly onOrchestratorDiagnostic?: (diagnostic: CopilotOrchestratorDiagnostic) => void;
   readonly onPlannerDiagnostic?: (diagnostic: CopilotPlannerDiagnostic) => void;
   readonly onStageLatencyDiagnostic?: (diagnostic: CopilotStageLatencyDiagnostic) => void;
@@ -357,6 +369,18 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
         return { status: 'ok', response, sessionContext };
       }
 
+      // task MARKETING-R1-T05.8.8 Section 8/9: resolved deterministically, before any model call
+      // or routing branch, so it never runs analytics, never risks the model asking a redundant
+      // clarifying question back, and never touches `analyticalState` - the prior semantic
+      // anchor/active finding are therefore preserved for the next turn by construction.
+      if (isCurrencyUnitQuestion(question)) {
+        const response = withSession({ sessionId: session.sessionId, turnId }, currencyUnitDirectResponse(session.pinnedContext));
+        const updated = appendTurn(session, response, question, [], [], deps.clock.now(), deps.limits);
+        await deps.store.save(updated, deps.clock.now());
+        emitTurnLatency(deps.onStageLatencyDiagnostic, { turnStartedAt, queryCount: 0, analyticsExecutionDurationMs, success: true, failureStatus: null, executionMode: 'direct_response' });
+        return { status: 'ok', response, sessionContext };
+      }
+
       if (deps.toolRuntimeEnabled ?? false) {
         if (!deps.model.generateConversationalTurn) {
           const response = withSession({ sessionId: session.sessionId, turnId }, terminal('unsupported_operation', 'El proveedor configurado no soporta native tool calling para Customer Intelligence.'));
@@ -384,6 +408,8 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
           clock: deps.clock,
           limits: deps.limits,
           synthesisMaxTokens: deps.synthesisMaxTokens,
+          toolSelectionTimeoutMs: deps.toolSelectionTimeoutMs,
+          toolSynthesisTimeoutMs: deps.toolSynthesisTimeoutMs,
           onStageLatencyDiagnostic: deps.onStageLatencyDiagnostic,
           turnStartedAt,
         });
@@ -1314,6 +1340,8 @@ async function processToolRuntimeTurn(args: {
   readonly clock: Clock;
   readonly limits: CopilotSessionLimits;
   readonly synthesisMaxTokens?: number;
+  readonly toolSelectionTimeoutMs?: number;
+  readonly toolSynthesisTimeoutMs?: number;
   readonly onStageLatencyDiagnostic?: (diagnostic: CopilotStageLatencyDiagnostic) => void;
   readonly turnStartedAt: number;
 }): Promise<ProcessCopilotSessionTurnResult> {
@@ -1340,6 +1368,7 @@ async function processToolRuntimeTurn(args: {
         compactToolContract: true,
         toolSchemaChars,
         toolSelectionPromptChars: selectionProjectionChars + toolSchemaChars,
+        configuredTimeoutMs: args.toolSelectionTimeoutMs ?? null,
       },
       outputDiagnosticContext: (output) => ({
         toolArgumentChars: toolArgumentChars(output.toolCalls),
@@ -1516,6 +1545,7 @@ async function processToolRuntimeTurn(args: {
         resultSummaryChars: evidenceBundleChars,
         synthesisPromptChars,
         synthesisInputResultCount: executions.length,
+        configuredTimeoutMs: args.toolSynthesisTimeoutMs ?? null,
       },
       outputDiagnosticContext: (output) => ({
         ...(typeof output.metadata?.promptTokens === 'number' ? { synthesisPromptTokens: output.metadata.promptTokens } : {}),
@@ -1646,15 +1676,21 @@ function toolRuntimeMessages(args: {
     },
     {
       role: 'user',
+      // task MARKETING-R1-T05.8.8 Section 10 hygiene pass: `semanticFocus` already carries
+      // `unresolvedClarification` and `activeFinding` - a separate top-level
+      // `unresolvedClarification` key and a `recentFindings: [activeFinding]` key duplicated
+      // exactly the same values under a second name, contributing bytes with no new information.
+      // `recentTurns` is sent in full (already bounded by `contextRecentTurns` one level up in
+      // `buildCopilotSessionContext`) instead of being truncated again to the last 3 here, since
+      // `summarizeConversation` (session-service.ts) now excludes that same window from the older-
+      // turn checkpoint rather than re-rendering it as text.
       content: JSON.stringify({
         pinnedSnapshotContext: compactPinnedSnapshotContext(args.sessionContext.pinnedContext),
         conversationSummary: args.sessionContext.conversationSummary ?? null,
         semanticFocus: args.sessionContext.semanticFocus,
-        unresolvedClarification: args.sessionContext.semanticFocus.unresolvedClarification,
         analyticalReferences: args.sessionContext.analyticalReferences.slice(0, CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES),
-        recentFindings: recentFindingsFromContext(args.sessionContext),
         recentResults: compactRecentResults(args.sessionContext),
-        recentTurns: args.sessionContext.recentTurns.slice(-3),
+        recentTurns: args.sessionContext.recentTurns,
         currentQuestion: args.question,
       }),
     },
@@ -2435,6 +2471,12 @@ function toolRuntimeSemanticDiagnostic(sessionContext: ReturnType<typeof buildCo
     activeFindingType: sessionContext.semanticFocus.activeFinding?.findingType ?? null,
     activeFindingSourceQueryId: sessionContext.semanticFocus.activeFinding?.sourceQueryId ?? null,
     unresolvedClarificationPresent: sessionContext.semanticFocus.unresolvedClarification !== null,
+    // task MARKETING-R1-T05.8.8 Section 11: cheap structural context-size observability
+    // alongside the existing char/token counts - no prompt contents.
+    recentTurnCount: sessionContext.recentTurns.length,
+    analyticalReferenceCount: sessionContext.analyticalReferences.length,
+    recentFindingCount: recentFindingsFromContext(sessionContext).length,
+    clarificationState: (sessionContext.semanticFocus.unresolvedClarification !== null ? 'open' : 'none') as 'open' | 'none',
   };
 }
 
@@ -2497,11 +2539,49 @@ function directToolRuntimeResponse(
 }
 
 function isClarificationContent(content: string): boolean {
-  return /\?/.test(content) || /^(necesito|podrias|puedes|aclara|aclarar|define|indica|dime)\b/i.test(normalizeText(content)) || /\bcriterio concreto\b/i.test(normalizeText(content));
+  const normalized = normalizeText(content);
+  if (/\bcriterio concreto\b/.test(normalized)) return true;
+  if (/^(necesito|podrias|puedes|aclara|aclarar|define|indica|dime)\b/.test(normalized)) return true;
+  // task MARKETING-R1-T05.8.8 Section 7: a genuine clarifying question is one where the
+  // assistant's whole message ends in "?" - not merely one that happens to contain a "?"
+  // somewhere (e.g. a rhetorical aside inside an otherwise complete direct answer). The old
+  // "contains ?" check misclassified such answers as fresh clarification_required turns, which
+  // kept unresolvedClarification wrongly active after the assistant had actually answered.
+  return /\?\s*$/.test(content.trim());
 }
 
 function isUnsupportedContent(content: string): boolean {
   return /(no puedo|no hay|no existe|no cuento|no esta soportad|no esta disponible|fuera del runtime|rentabilidad|margen|costo|profit)/i.test(normalizeText(content));
+}
+
+// task MARKETING-R1-T05.8.8 Section 8: a question about the currency/unit of previously shown
+// values (e.g. "Eso esta en pesos o euros?") is answerable deterministically from fixed business
+// semantics - every monetary value this runtime surfaces is Chilean pesos (CLP; see
+// business-semantics.ts's `currency_clp` format). Detected and answered here, before any model
+// call, so the turn: never runs analytics, never asks the model to guess, and never risks the
+// free-text clarification heuristic (`isClarificationContent`) misclassifying the assistant's own
+// answer. Deliberately narrow - only the currency/unit question this task's live evidence and
+// acceptance flow name, not a general FAQ layer.
+function isCurrencyUnitQuestion(question: string): boolean {
+  const normalized = normalizeText(question);
+  if (!/\b(peso|euro|dolar|moneda|divisa)\w*\b/.test(normalized)) return false;
+  return /\b(esta|estan|son|es)\s+en\b/.test(normalized) || /\bque moneda\b/.test(normalized) || /\bo\s+(euros?|dolares?|pesos?)\b/.test(normalized);
+}
+
+function currencyUnitDirectResponse(provenance: CustomerIntelligenceSnapshotContext): CustomerIntelligenceCopilotResponse {
+  return {
+    status: 'responded_directly',
+    finalResponseState: 'success',
+    answer: 'Los valores monetarios de Customer Intelligence estan expresados en pesos chilenos (CLP).',
+    analysis: {
+      contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION,
+      decisionVersion: CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION,
+      decisionAction: 'respond_directly',
+      orchestratorModel: null,
+      finalResponseState: 'success',
+    },
+    provenance,
+  };
 }
 
 function normalizeText(value: string): string {
@@ -3199,10 +3279,24 @@ async function timeCopilotStage<T extends { readonly metadata: CopilotModelMetad
       analyticsExecutionDurationMs: args.analyticsExecutionDurationMs,
       totalTurnDurationMs: durationSince(args.turnStartedAt),
       executionMode: args.executionMode ?? null,
+      invalidResponseSubtype: invalidResponseSubtypeFromError(error),
       ...args.diagnosticContext,
     });
     throw error;
   }
+}
+
+// task MARKETING-R1-T05.8.8 Section 4: surfaces the safe internal subtype of a
+// `provider_invalid_response` failure for diagnostics only - never a raw provider payload,
+// prompt, or credential (the subtype itself is one of a fixed, safe enum - see
+// CopilotProviderInvalidResponseSubtype).
+function invalidResponseSubtypeFromError(error: unknown): string | null {
+  if (!error || typeof error !== 'object') return null;
+  if ((error as { readonly category?: unknown }).category !== 'provider_invalid_response') return null;
+  const metadata = (error as { readonly metadata?: unknown }).metadata;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
+  const subtype = (metadata as { readonly invalidResponseSubtype?: unknown }).invalidResponseSubtype;
+  return typeof subtype === 'string' ? subtype : null;
 }
 
 function emitTurnLatency(
@@ -3558,8 +3652,14 @@ function appendSystemEvent(turns: readonly CopilotSessionTurn[], now: Date, even
 
 function summarizeConversation(turns: readonly CopilotSessionTurn[], limits: CopilotSessionLimits): string | null {
   if (turns.length < limits.summaryAfterTurns) return null;
-  return turns
-    .slice(-limits.summaryAfterTurns)
+  // task MARKETING-R1-T05.8.8 Section 10: the checkpoint covers turns older than the
+  // `contextRecentTurns` window, which `buildCopilotSessionContext` already carries as
+  // structured `recentTurns`. Summarizing that same tail again as rendered text duplicated
+  // "rendered history + equivalent structured state" once a session crossed
+  // `summaryAfterTurns` (the checkpoint and the structured recent turns overlapped by up to
+  // `contextRecentTurns` turns, sent twice in two different shapes for no new information).
+  const olderTurns = turns.slice(0, Math.max(0, turns.length - limits.contextRecentTurns));
+  return olderTurns
     .map((turn) => {
       const answer = turn.assistantAnswer ? ` -> ${turn.assistantAnswer}` : ` -> ${turn.assistantStatus}`;
       return `${turn.userQuestion}${answer}`.trim();

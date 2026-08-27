@@ -199,6 +199,8 @@ function harness(opts: {
   toolRuntimeEnabled?: boolean;
   unifiedPlannerEnabled?: boolean;
   synthesisMaxTokens?: number;
+  toolSelectionTimeoutMs?: number;
+  toolSynthesisTimeoutMs?: number;
 } = {}) {
   const clock = new FakeClock();
   const limits = { ...LIMITS, ...opts.limits };
@@ -253,6 +255,8 @@ function harness(opts: {
     toolRuntimeEnabled: opts.toolRuntimeEnabled ?? false,
     unifiedPlannerEnabled: opts.unifiedPlannerEnabled ?? false,
     synthesisMaxTokens: opts.synthesisMaxTokens,
+    toolSelectionTimeoutMs: opts.toolSelectionTimeoutMs,
+    toolSynthesisTimeoutMs: opts.toolSynthesisTimeoutMs,
     onOrchestratorDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
     onPlannerDiagnostic: (diagnostic) => plannerDiagnostics.push(diagnostic),
     onStageLatencyDiagnostic: (diagnostic) => stageLatencyDiagnostics.push(diagnostic),
@@ -267,13 +271,13 @@ async function createSession(h: ReturnType<typeof harness>) {
   return created.session.sessionId;
 }
 
-function providerInvalidResponse(stage: string) {
+function providerInvalidResponse(stage: string, invalidResponseSubtype?: string) {
   const error = new Error('Copilot model provider returned malformed JSON') as Error & {
     category: string;
-    metadata: { provider: string; model: string; stage: string };
+    metadata: { provider: string; model: string; stage: string; invalidResponseSubtype?: string };
   };
   error.category = 'provider_invalid_response';
-  error.metadata = { provider: 'fake', model: stage, stage };
+  error.metadata = { provider: 'fake', model: stage, stage, ...(invalidResponseSubtype ? { invalidResponseSubtype } : {}) };
   return error;
 }
 
@@ -2052,6 +2056,225 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
     expect(second.status).toBe('ok');
     if (second.status === 'ok') expect(second.response.status).toBe('planner_invalid');
     expect(h.executeAnalyticalQuery).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Customer Intelligence Copilot T05.8.8 runtime reliability hardening', () => {
+  it('reports the configured stage timeout in both tool_selection and tool_synthesis diagnostics (Section 3, E)', async () => {
+    const h = harness({
+      toolRuntimeEnabled: true,
+      toolSelectionTimeoutMs: 45000,
+      toolSynthesisTimeoutMs: 50000,
+      conversationalTurns: [
+        toolRuntimeCall([
+          { id: 'cluster_count', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'count', alias: 'customers' }] } },
+          { id: 'ticket_by_cluster', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'avg', field: 'commercial.averageOrderValueTaxIncl', alias: 'avg_ticket' }] } },
+        ]),
+        toolRuntimeContent('Cluster 3 concentra el mayor ticket promedio observado.'),
+      ],
+      executionResults: [
+        result([{ clusterId: 3, customers: 4 }], 'c'.repeat(64), ['clusterId', 'customers']),
+        result([{ clusterId: 3, avg_ticket: '150000.000000' }], 'd'.repeat(64), ['clusterId', 'avg_ticket']),
+      ],
+    });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Que ves interesante en mis clientes?' });
+
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') expect(response.response.status).toBe('answered');
+    expect(h.stageLatencyDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: 'tool_selection', configuredTimeoutMs: 45000 }),
+      expect.objectContaining({ stage: 'tool_synthesis', success: true, configuredTimeoutMs: 50000 }),
+    ]));
+  });
+
+  it('reports the configured tool_selection timeout even when the call times out terminally with no analytics (Section 1/3, F)', async () => {
+    const h = harness({ toolRuntimeEnabled: true, toolSelectionTimeoutMs: 45000, conversationalTurnError: providerTimeout('tool_selection') });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Que grupo priorizarias para reactivacion?' });
+
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') {
+      expect(response.response.status).toBe('provider_timeout');
+      expect(response.response.finalResponseState).toBe('failure');
+    }
+    expect(h.executeAnalyticalQuery).not.toHaveBeenCalled();
+    expect(h.stageLatencyDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: 'tool_selection', success: false, failureStatus: 'tool_selection_provider_timeout', configuredTimeoutMs: 45000 }),
+    ]));
+  });
+
+  it('surfaces the safe invalidResponseSubtype in tool_synthesis diagnostics without leaking it publicly (Section 4/5, N/O)', async () => {
+    const h = harness({
+      toolRuntimeEnabled: true,
+      conversationalTurns: [toolRuntimeCall([
+        { id: 'cluster_count', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'count', alias: 'customers' }] } },
+        { id: 'ticket_by_cluster', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'avg', field: 'commercial.averageOrderValueTaxIncl', alias: 'avg_ticket' }] } },
+      ])],
+      conversationalTurnErrors: [null, providerInvalidResponse('tool_synthesis', 'provider_invalid_finish_reason')],
+      executionResults: [
+        result([{ clusterId: 3, customers: 4 }], 'c'.repeat(64), ['clusterId', 'customers']),
+        result([{ clusterId: 3, avg_ticket: '150000.000000' }], 'd'.repeat(64), ['clusterId', 'avg_ticket']),
+      ],
+    });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Que ves interesante en mis clientes?' });
+
+    expect(response.status).toBe('ok');
+    if (response.status !== 'ok') throw new Error('expected ok');
+    expect(response.response.status).toBe('answered');
+    if (response.response.status !== 'answered') throw new Error('expected answered');
+    expect(response.response.finalResponseState).toBe('degraded_success');
+    expect(JSON.stringify(response.response)).not.toMatch(/provider_invalid_finish_reason|malformed JSON|invalidResponseSubtype/i);
+    expect(h.stageLatencyDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: 'tool_synthesis', success: false, failureStatus: 'tool_synthesis_provider_invalid_response', invalidResponseSubtype: 'provider_invalid_finish_reason' }),
+    ]));
+  });
+
+  it('exposes cheap context-size diagnostics on tool_selection without prompt contents (Section 11)', async () => {
+    const h = harness({ toolRuntimeEnabled: true });
+    const sessionId = await createSession(h);
+
+    await h.service.processSessionTurn({ sessionId, question: 'Cual cluster tiene mayor ticket promedio?' });
+
+    const selection = h.stageLatencyDiagnostics.find((diagnostic) => diagnostic.stage === 'tool_selection');
+    expect(selection).toMatchObject({
+      recentTurnCount: expect.any(Number),
+      analyticalReferenceCount: expect.any(Number),
+      recentFindingCount: expect.any(Number),
+      clarificationState: 'none',
+    });
+  });
+
+  it('keeps clarification open going into the resolving turn, then clears it afterward (Section 7, P/Q)', async () => {
+    const h = harness({
+      toolRuntimeEnabled: true,
+      conversationalTurns: [
+        toolRuntimeContent('Necesito un criterio concreto para comparar los grupos.'),
+        toolRuntimeCall([{ id: 'cluster_total_spend', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'sum', field: 'commercial.totalSpentTaxIncl', alias: 'total_spent' }], orderBy: [{ field: 'total_spent', direction: 'desc' }], limit: 1 } }]),
+        toolRuntimeContent('Cluster 2 se mantiene como referencia.'),
+      ],
+      executionResults: [result([{ clusterId: 2, total_spent: '900000.000000' }], '6'.repeat(64), ['clusterId', 'total_spent'])],
+    });
+    const sessionId = await createSession(h);
+
+    const first = await h.service.processSessionTurn({ sessionId, question: 'Cual es el mejor grupo?' });
+    expect(first.status).toBe('ok');
+    if (first.status === 'ok') expect(first.response.status).toBe('clarification_required');
+
+    const second = await h.service.processSessionTurn({ sessionId, question: 'Por gasto total' });
+    expect(second.status).toBe('ok');
+
+    const third = await h.service.processSessionTurn({ sessionId, question: 'Cuantos clientes hay en total?' });
+    expect(third.status).toBe('ok');
+
+    const selectionDiagnostics = h.stageLatencyDiagnostics.filter((diagnostic) => diagnostic.stage === 'tool_selection');
+    // going into "Por gasto total", the prior clarification_required turn is still open
+    expect(selectionDiagnostics[1]).toMatchObject({ clarificationState: 'open', unresolvedClarificationPresent: true });
+    // the resolving turn completed as `answered`, so the next turn sees it resolved
+    expect(selectionDiagnostics[2]).toMatchObject({ clarificationState: 'none', unresolvedClarificationPresent: false });
+  });
+
+  it('answers a currency/unit question deterministically without analytics or a model call, and marks it resolved (Section 8, R/S)', async () => {
+    const h = harness({
+      toolRuntimeEnabled: true,
+      conversationalTurns: [toolRuntimeCall([{ id: 'avg_ticket_by_cluster', plan: bestClusterPlan }])],
+      executionResults: [result([{ clusterId: 3, label: 'VIP', avgAov: '381304.040000' }, { clusterId: 1, label: 'NEW', avgAov: '80000.000000' }], '9'.repeat(64), ['clusterId', 'label', 'avgAov'])],
+    });
+    const sessionId = await createSession(h);
+
+    const first = await h.service.processSessionTurn({ sessionId, question: 'Cual tiene mayor ticket promedio?' });
+    expect(first.status).toBe('ok');
+    if (first.status === 'ok') expect(first.response.status).toBe('answered');
+
+    const second = await h.service.processSessionTurn({ sessionId, question: 'Eso esta en pesos o euros?' });
+    expect(second.status).toBe('ok');
+    if (second.status === 'ok') {
+      expect(second.response.status).toBe('responded_directly');
+      expect(second.response.finalResponseState).toBe('success');
+      if ('answer' in second.response) expect(second.response.answer).toMatch(/pesos chilenos|CLP/i);
+    }
+    expect(h.generateConversationalTurn).toHaveBeenCalledTimes(1);
+    expect(h.executeAnalyticalQuery).toHaveBeenCalledTimes(1);
+    expect(h.stageLatencyDiagnostics.filter((diagnostic) => diagnostic.stage === 'tool_selection')).toHaveLength(1);
+  });
+
+  it('preserves the Cluster 3 semantic anchor through a currency side-question so a later "su RFM" resolves correctly (Section 8/9, T/U)', async () => {
+    const h = harness({
+      toolRuntimeEnabled: true,
+      conversationalTurns: [
+        toolRuntimeCall([{ id: 'avg_ticket_by_cluster', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'avg', field: 'commercial.averageOrderValueTaxIncl', alias: 'avg_ticket' }], orderBy: [{ field: 'avg_ticket', direction: 'desc' }], limit: 1 } }]),
+        toolRuntimeCall([{ id: 'rfm_by_cluster', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'avg', field: 'rfm.rScore', alias: 'avg_r' }] } }]),
+        toolRuntimeContent('Cluster 3 mantiene mejor recencia promedio que el cluster 2.'),
+      ],
+      executionResults: [
+        result([{ clusterId: 3, avg_ticket: '381304.040000' }], '9'.repeat(64), ['clusterId', 'avg_ticket']),
+        result([{ clusterId: 3, avg_r: '1.800000' }, { clusterId: 2, avg_r: '2.400000' }], 'r'.repeat(64), ['clusterId', 'avg_r']),
+      ],
+    });
+    const sessionId = await createSession(h);
+
+    const first = await h.service.processSessionTurn({ sessionId, question: 'Cual tiene mayor ticket promedio?' });
+    expect(first.status).toBe('ok');
+
+    const second = await h.service.processSessionTurn({ sessionId, question: 'Eso esta en pesos o euros?' });
+    expect(second.status).toBe('ok');
+    if (second.status === 'ok') expect(second.response.status).toBe('responded_directly');
+
+    const third = await h.service.processSessionTurn({ sessionId, question: 'Ahora compara su RFM con el cluster 2' });
+    expect(third.status).toBe('ok');
+    if (third.status === 'ok') expect(third.response.status).toBe('answered');
+
+    const selectionDiagnostics = h.stageLatencyDiagnostics.filter((diagnostic) => diagnostic.stage === 'tool_selection');
+    // only 2 tool_selection calls: turn 1 and turn 3 - the currency side-question never reaches it
+    expect(selectionDiagnostics).toHaveLength(2);
+    expect(selectionDiagnostics[1]).toMatchObject({ semanticAnchorEntityType: 'cluster', semanticAnchorEntityId: 3 });
+  });
+
+  it('does not let a resolved clarification interfere with a later reactivation-recommendation question (Section 7, V)', async () => {
+    const h = harness({
+      toolRuntimeEnabled: true,
+      conversationalTurns: [
+        toolRuntimeContent('Necesito un criterio concreto para comparar los grupos.'),
+        toolRuntimeCall([{ id: 'cluster_total_spend', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'sum', field: 'commercial.totalSpentTaxIncl', alias: 'total_spent' }], orderBy: [{ field: 'total_spent', direction: 'desc' }], limit: 1 } }]),
+        toolRuntimeCall([{ id: 'reactivation_candidates', plan: { dimensions: ['cluster.clusterId'], metrics: [{ aggregation: 'avg', field: 'commercial.averageOrderValueTaxIncl', alias: 'avg_ticket' }], orderBy: [{ field: 'avg_ticket', direction: 'desc' }], limit: 1 } }]),
+      ],
+      executionResults: [
+        result([{ clusterId: 2, total_spent: '900000.000000' }], '6'.repeat(64), ['clusterId', 'total_spent']),
+        result([{ clusterId: 2, avg_ticket: '150000.000000' }], '7'.repeat(64), ['clusterId', 'avg_ticket']),
+      ],
+    });
+    const sessionId = await createSession(h);
+
+    const first = await h.service.processSessionTurn({ sessionId, question: 'Cual es el mejor grupo?' });
+    expect(first.status).toBe('ok');
+    if (first.status === 'ok') expect(first.response.status).toBe('clarification_required');
+
+    const second = await h.service.processSessionTurn({ sessionId, question: 'Por gasto total' });
+    expect(second.status).toBe('ok');
+
+    const third = await h.service.processSessionTurn({ sessionId, question: 'Que grupo priorizarias para una campana de reactivacion y por que?' });
+    expect(third.status).toBe('ok');
+    if (third.status === 'ok') expect(third.response.status).toBe('answered');
+
+    const selectionDiagnostics = h.stageLatencyDiagnostics.filter((diagnostic) => diagnostic.stage === 'tool_selection');
+    expect(selectionDiagnostics[2]).toMatchObject({ clarificationState: 'none', unresolvedClarificationPresent: false });
+  });
+
+  it('does not misclassify a direct answer with a mid-sentence rhetorical question mark as a fresh clarification', async () => {
+    const h = harness({
+      toolRuntimeEnabled: true,
+      conversationalTurns: [toolRuntimeContent('Cluster 3 tiene el mayor ticket promedio, ¿no es interesante? De cualquier forma, es el grupo con mejor desempeño.')],
+    });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Que cluster deberia priorizar?' });
+
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') expect(response.response.status).toBe('responded_directly');
   });
 });
 

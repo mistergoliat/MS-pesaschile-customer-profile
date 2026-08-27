@@ -20,6 +20,13 @@ export type OpenAiCompatibleCopilotModelConfig = {
   readonly apiKey: string | null;
   readonly model: string;
   readonly timeoutMs: number;
+  // Stage-specific overrides (task MARKETING-R1-T05.8.8 Section 2): tool_selection and
+  // tool_synthesis are native-tool-calling calls that can legitimately take longer than the
+  // shared legacy `timeoutMs` used by orchestrator/planner/answerer/unified_planner. When
+  // absent, both fall back to `timeoutMs` so existing callers/tests that only set `timeoutMs`
+  // keep working unchanged.
+  readonly toolSelectionTimeoutMs?: number;
+  readonly toolSynthesisTimeoutMs?: number;
 };
 
 type ChatMessage = {
@@ -46,6 +53,7 @@ type ChatCompletionOutput = {
     readonly promptCacheHitTokens?: number;
     readonly promptCacheMissTokens?: number;
     readonly finishReason: string | null;
+    readonly configuredTimeoutMs: number;
   };
 };
 
@@ -56,6 +64,21 @@ export type CopilotProviderErrorCategory =
   | 'provider_timeout'
   | 'provider_network_error'
   | 'provider_invalid_response';
+
+// Internal safe subtypes of `provider_invalid_response` (task MARKETING-R1-T05.8.8 Section 4).
+// The public `category` stays `provider_invalid_response` for compatibility; this subtype is
+// carried only in `CopilotProviderError.metadata` for internal diagnostics, never surfaced as a
+// new public status. It never contains raw provider payload, prompt, or credential content -
+// only which structural expectation failed.
+export type CopilotProviderInvalidResponseSubtype =
+  | 'provider_invalid_json'
+  | 'provider_unexpected_envelope'
+  | 'provider_missing_choices'
+  | 'provider_missing_message'
+  | 'provider_missing_content'
+  | 'provider_empty_response'
+  | 'provider_invalid_finish_reason'
+  | 'provider_invalid_tool_calls';
 
 export type CopilotProviderCallStage =
   | 'tool_selection'
@@ -72,7 +95,14 @@ export class CopilotProviderError extends Error {
   constructor(
     readonly category: CopilotProviderErrorCategory,
     message: string,
-    readonly metadata: { readonly provider: string; readonly model: string; readonly stage: CopilotProviderCallStage; readonly httpStatus?: number | null },
+    readonly metadata: {
+      readonly provider: string;
+      readonly model: string;
+      readonly stage: CopilotProviderCallStage;
+      readonly httpStatus?: number | null;
+      readonly invalidResponseSubtype?: CopilotProviderInvalidResponseSubtype | null;
+      readonly configuredTimeoutMs?: number | null;
+    },
   ) {
     super(message);
     this.name = 'CopilotProviderError';
@@ -188,8 +218,9 @@ async function postChatCompletion(
     readonly maxTokens?: number;
   },
 ): Promise<ChatCompletionOutput> {
+  const timeoutMs = resolveTimeoutMsForStage(config, request.stage);
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   const promptCharCount = request.messages.reduce((sum, message) => sum + messageCharCount(message), 0);
   try {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -212,33 +243,34 @@ async function postChatCompletion(
       signal: controller.signal,
     }).catch((error: unknown) => {
       if (isAbortError(error)) {
-        throw providerError(config, request.stage, 'provider_timeout', 'Copilot model provider timed out', null);
+        throw providerError(config, request.stage, 'provider_timeout', 'Copilot model provider timed out', null, null, timeoutMs);
       }
-      throw providerError(config, request.stage, 'provider_network_error', 'Copilot model provider network error', null);
+      throw providerError(config, request.stage, 'provider_network_error', 'Copilot model provider network error', null, null, timeoutMs);
     });
     if (!response.ok) {
-      throw providerError(config, request.stage, categoryForHttpStatus(response.status), `Copilot model provider returned HTTP ${response.status}`, response.status);
+      throw providerError(config, request.stage, categoryForHttpStatus(response.status), `Copilot model provider returned HTTP ${response.status}`, response.status, null, timeoutMs);
     }
     let raw: unknown;
     try {
       raw = await response.json();
     } catch (error) {
       if (isAbortError(error)) {
-        throw providerError(config, request.stage, 'provider_timeout', 'Copilot model provider timed out', response.status);
+        throw providerError(config, request.stage, 'provider_timeout', 'Copilot model provider timed out', response.status, null, timeoutMs);
       }
-      throw providerError(config, request.stage, 'provider_invalid_response', 'Copilot model provider returned malformed JSON', response.status);
+      throw providerError(config, request.stage, 'provider_invalid_response', 'Copilot model provider returned malformed JSON', response.status, 'provider_invalid_json', timeoutMs);
     }
-    const { message, finishReason } = extractMessage(raw, config, request.stage);
+    const { message, finishReason } = extractMessage(raw, config, request.stage, timeoutMs);
     const content = typeof message.content === 'string' ? message.content : '';
     return {
       content,
-      toolCalls: extractToolCalls(message, config, request.stage),
+      toolCalls: extractToolCalls(message, config, request.stage, timeoutMs),
       metadata: {
         provider: 'openai_compatible',
         model: config.model,
         promptCharCount,
         responseCharCount: content.length,
         finishReason,
+        configuredTimeoutMs: timeoutMs,
         ...usageMetadata(raw),
       },
     };
@@ -247,9 +279,19 @@ async function postChatCompletion(
   }
 }
 
+function resolveTimeoutMsForStage(config: OpenAiCompatibleCopilotModelConfig, stage: CopilotProviderCallStage): number {
+  if (stage === 'tool_selection' && typeof config.toolSelectionTimeoutMs === 'number') return config.toolSelectionTimeoutMs;
+  if (stage === 'tool_synthesis' && typeof config.toolSynthesisTimeoutMs === 'number') return config.toolSynthesisTimeoutMs;
+  return config.timeoutMs;
+}
+
 function conversationalTurnOutput(output: ChatCompletionOutput, stage: Extract<CopilotProviderCallStage, 'tool_selection' | 'tool_synthesis'>): GenerateConversationalTurnOutput {
   if (output.content.trim().length === 0 && output.toolCalls.length === 0) {
-    throw providerError({ model: output.metadata.model }, stage, 'provider_invalid_response', 'Copilot model provider returned neither content nor tool calls', null);
+    // A `finish_reason: 'length'` here means the provider was cut off by max_tokens before it
+    // produced usable content or a tool call (task MARKETING-R1-T05.8.8 Section 5) - a distinct,
+    // actionable cause (raise/bound max_tokens) from a genuinely empty completion.
+    const subtype = output.metadata.finishReason === 'length' ? 'provider_invalid_finish_reason' : 'provider_empty_response';
+    throw providerError({ model: output.metadata.model }, stage, 'provider_invalid_response', 'Copilot model provider returned neither content nor tool calls', null, subtype, output.metadata.configuredTimeoutMs);
   }
   return {
     content: output.content.trim().length > 0 ? output.content : null,
@@ -272,7 +314,7 @@ function conversationPlanOutput(output: ChatCompletionOutput, stage: Extract<Cop
       metadata: output.metadata,
     };
   } catch (error) {
-    throw providerError({ model: output.metadata.model }, stage, 'provider_invalid_response', `Copilot model provider returned invalid unified planner JSON: ${errorMessage(error)}`, null);
+    throw providerError({ model: output.metadata.model }, stage, 'provider_invalid_response', `Copilot model provider returned invalid unified planner JSON: ${errorMessage(error)}`, null, 'provider_invalid_json', output.metadata.configuredTimeoutMs);
   }
 }
 
@@ -283,7 +325,7 @@ function decisionOutput(output: ChatCompletionOutput, stage: Extract<CopilotProv
       metadata: output.metadata,
     };
   } catch {
-    throw providerError({ model: output.metadata.model }, stage, 'provider_invalid_response', 'Copilot model provider returned invalid orchestrator JSON', null);
+    throw providerError({ model: output.metadata.model }, stage, 'provider_invalid_response', 'Copilot model provider returned invalid orchestrator JSON', null, 'provider_invalid_json', output.metadata.configuredTimeoutMs);
   }
 }
 
@@ -294,7 +336,7 @@ function planOutput(output: ChatCompletionOutput, stage: Extract<CopilotProvider
       metadata: output.metadata,
     };
   } catch (error) {
-    throw providerError({ model: output.metadata.model }, stage, 'provider_invalid_response', `Copilot model provider returned invalid planner JSON: ${errorMessage(error)}`, null);
+    throw providerError({ model: output.metadata.model }, stage, 'provider_invalid_response', `Copilot model provider returned invalid planner JSON: ${errorMessage(error)}`, null, 'provider_invalid_json', output.metadata.configuredTimeoutMs);
   }
 }
 
@@ -305,41 +347,62 @@ function answerOutput(output: ChatCompletionOutput): GenerateAnswerOutput {
   };
 }
 
+// task MARKETING-R1-T05.8.8 Section 5 audit: this is the exact tool_selection/tool_synthesis
+// parsing path. It expects `choices[0].message.content` (a string) or, for tool_selection,
+// native `message.tool_calls`. Deliberately does not read `message.reasoning_content` - some
+// OpenAI-compatible reasoning variants emit chain-of-thought there, and this codebase never
+// surfaces reasoning content to users or logs (Section 4 requirements), so a response carrying
+// only `reasoning_content` and no usable `content`/`tool_calls` is correctly treated the same as
+// an empty response, not specially unwrapped.
 function extractMessage(
   raw: unknown,
   config: OpenAiCompatibleCopilotModelConfig,
   stage: CopilotProviderCallStage,
+  configuredTimeoutMs: number,
 ): { readonly message: Record<string, unknown>; readonly finishReason: string | null } {
-  const obj = expectObject(raw, 'Copilot model provider returned a non-object response', config, stage);
+  const obj = expectObject(raw, 'Copilot model provider returned a non-object response', config, stage, configuredTimeoutMs, 'provider_unexpected_envelope');
   if (!Array.isArray(obj.choices) || obj.choices.length === 0) {
-    throw providerError(config, stage, 'provider_invalid_response', 'Copilot model provider returned no choices', null);
+    throw providerError(config, stage, 'provider_invalid_response', 'Copilot model provider returned no choices', null, 'provider_missing_choices', configuredTimeoutMs);
   }
   const [firstChoice] = obj.choices;
-  const choice = expectObject(firstChoice, 'Copilot model provider returned a malformed choice', config, stage);
-  const message = expectObject(choice.message, 'Copilot model provider returned a malformed message', config, stage);
+  const choice = expectObject(firstChoice, 'Copilot model provider returned a malformed choice', config, stage, configuredTimeoutMs, 'provider_unexpected_envelope');
+  const message = expectObject(choice.message, 'Copilot model provider returned a malformed message', config, stage, configuredTimeoutMs, 'provider_missing_message');
   if (message.content !== null && message.content !== undefined && typeof message.content !== 'string') {
-    throw providerError(config, stage, 'provider_invalid_response', 'Copilot model provider returned non-string message content', null);
-  }
-  if ((message.content === null || message.content === undefined || message.content.trim().length === 0) && !Array.isArray(message.tool_calls)) {
-    throw providerError(config, stage, 'provider_invalid_response', 'Copilot model provider returned empty message content', null);
+    throw providerError(config, stage, 'provider_invalid_response', 'Copilot model provider returned non-string message content', null, 'provider_unexpected_envelope', configuredTimeoutMs);
   }
   const finishReason = typeof choice.finish_reason === 'string' ? choice.finish_reason : null;
+  const contentMissing = message.content === null || message.content === undefined;
+  const contentBlank = typeof message.content === 'string' && message.content.trim().length === 0;
+  if ((contentMissing || contentBlank) && !Array.isArray(message.tool_calls)) {
+    if (finishReason === 'length') {
+      throw providerError(config, stage, 'provider_invalid_response', 'Copilot model provider truncated the response before producing content', null, 'provider_invalid_finish_reason', configuredTimeoutMs);
+    }
+    throw providerError(
+      config,
+      stage,
+      'provider_invalid_response',
+      contentMissing ? 'Copilot model provider returned missing message content' : 'Copilot model provider returned empty message content',
+      null,
+      contentMissing ? 'provider_missing_content' : 'provider_empty_response',
+      configuredTimeoutMs,
+    );
+  }
   return { message, finishReason };
 }
 
-function extractToolCalls(message: Record<string, unknown>, config: OpenAiCompatibleCopilotModelConfig, stage: CopilotProviderCallStage): GenerateConversationalTurnOutput['toolCalls'] {
+function extractToolCalls(message: Record<string, unknown>, config: OpenAiCompatibleCopilotModelConfig, stage: CopilotProviderCallStage, configuredTimeoutMs: number): GenerateConversationalTurnOutput['toolCalls'] {
   if (message.tool_calls === undefined) return [];
   if (!Array.isArray(message.tool_calls)) {
-    throw providerError(config, stage, 'provider_invalid_response', 'Copilot model provider returned malformed tool_calls', null);
+    throw providerError(config, stage, 'provider_invalid_response', 'Copilot model provider returned malformed tool_calls', null, 'provider_invalid_tool_calls', configuredTimeoutMs);
   }
   return message.tool_calls.map((rawCall) => {
-    const call = expectObject(rawCall, 'Copilot model provider returned malformed tool call', config, stage);
-    const fn = expectObject(call.function, 'Copilot model provider returned malformed tool function', config, stage);
+    const call = expectObject(rawCall, 'Copilot model provider returned malformed tool call', config, stage, configuredTimeoutMs, 'provider_invalid_tool_calls');
+    const fn = expectObject(call.function, 'Copilot model provider returned malformed tool function', config, stage, configuredTimeoutMs, 'provider_invalid_tool_calls');
     const id = typeof call.id === 'string' && call.id.trim().length > 0 ? call.id : null;
     const name = typeof fn.name === 'string' && fn.name.trim().length > 0 ? fn.name : null;
     const rawArguments = typeof fn.arguments === 'string' ? fn.arguments : null;
     if (!id || !name || rawArguments === null) {
-      throw providerError(config, stage, 'provider_invalid_response', 'Copilot model provider returned incomplete tool call', null);
+      throw providerError(config, stage, 'provider_invalid_response', 'Copilot model provider returned incomplete tool call', null, 'provider_invalid_tool_calls', configuredTimeoutMs);
     }
     try {
       return { id, name, arguments: JSON.parse(rawArguments) };
@@ -371,9 +434,16 @@ function openAiMessage(message: ChatMessage | CopilotConversationalMessage): Rec
   return { role: message.role, content: message.content };
 }
 
-function expectObject(value: unknown, message: string, config: Pick<OpenAiCompatibleCopilotModelConfig, 'model'>, stage: CopilotProviderCallStage): Record<string, unknown> {
+function expectObject(
+  value: unknown,
+  message: string,
+  config: Pick<OpenAiCompatibleCopilotModelConfig, 'model'>,
+  stage: CopilotProviderCallStage,
+  configuredTimeoutMs: number,
+  invalidResponseSubtype: CopilotProviderInvalidResponseSubtype = 'provider_unexpected_envelope',
+): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    throw providerError(config, stage, 'provider_invalid_response', message, null);
+    throw providerError(config, stage, 'provider_invalid_response', message, null, invalidResponseSubtype, configuredTimeoutMs);
   }
   return value as Record<string, unknown>;
 }
@@ -455,12 +525,16 @@ function providerError(
   category: CopilotProviderErrorCategory,
   message: string,
   httpStatus: number | null,
+  invalidResponseSubtype?: CopilotProviderInvalidResponseSubtype | null,
+  configuredTimeoutMs?: number | null,
 ): CopilotProviderError {
   return new CopilotProviderError(category, message, {
     provider: 'openai_compatible',
     model: config.model,
     stage,
     httpStatus,
+    invalidResponseSubtype: category === 'provider_invalid_response' ? (invalidResponseSubtype ?? 'provider_unexpected_envelope') : null,
+    configuredTimeoutMs: configuredTimeoutMs ?? null,
   });
 }
 

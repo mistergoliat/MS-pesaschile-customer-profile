@@ -23,6 +23,9 @@ export type CopilotModelMetadata = {
   // exposes one - lets diagnostics distinguish natural completion from output truncation (task
   // MARKETING-R1-T05.8.6 Section 3) without logging any provider payload.
   readonly finishReason?: string | null;
+  // The stage-resolved provider timeout actually applied to this call (task
+  // MARKETING-R1-T05.8.8 Section 3) - safe observability, never a raw payload/prompt.
+  readonly configuredTimeoutMs?: number;
 };
 
 export type CopilotConversationalMessage =

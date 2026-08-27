@@ -3,8 +3,22 @@ import { createHttpJsonCopilotModel } from './http-json-copilot-model.js';
 import { createOpenAiCompatibleCopilotModel } from './openai-compatible-copilot-model.js';
 
 export type ConfiguredCopilotModelResult =
-  | { readonly status: 'configured'; readonly model: CustomerIntelligenceCopilotModel; readonly provider: string; readonly modelName: string }
+  | {
+      readonly status: 'configured';
+      readonly model: CustomerIntelligenceCopilotModel;
+      readonly provider: string;
+      readonly modelName: string;
+      readonly toolSelectionTimeoutMs: number;
+      readonly toolSynthesisTimeoutMs: number;
+    }
   | { readonly status: 'not_configured'; readonly reason: string };
+
+// task MARKETING-R1-T05.8.8 Section 2: tool_selection and tool_synthesis get their own
+// configurable provider timeout, independent from the legacy `CUSTOMER_INTELLIGENCE_COPILOT_
+// TIMEOUT_MS` still used by orchestrator/planner/answerer/unified_planner. Bounded so a
+// misconfigured deployment cannot silently make every provider call wait unboundedly.
+export const CUSTOMER_INTELLIGENCE_COPILOT_STAGE_TIMEOUT_DEFAULT_MS = 45000;
+export const CUSTOMER_INTELLIGENCE_COPILOT_STAGE_TIMEOUT_MAX_MS = 60000;
 
 export function createConfiguredCustomerIntelligenceCopilotModel(env: NodeJS.ProcessEnv = process.env): ConfiguredCopilotModelResult {
   const provider = env.CUSTOMER_INTELLIGENCE_COPILOT_PROVIDER;
@@ -28,6 +42,11 @@ export function createConfiguredCustomerIntelligenceCopilotModel(env: NodeJS.Pro
     return { status: 'not_configured', reason: 'CUSTOMER_INTELLIGENCE_COPILOT_TIMEOUT_MS must be a positive integer' };
   }
 
+  const toolSelectionTimeout = resolveStageTimeoutMs(env.CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SELECTION_TIMEOUT_MS, 'CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SELECTION_TIMEOUT_MS');
+  if (!toolSelectionTimeout.ok) return { status: 'not_configured', reason: toolSelectionTimeout.reason };
+  const toolSynthesisTimeout = resolveStageTimeoutMs(env.CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SYNTHESIS_TIMEOUT_MS, 'CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SYNTHESIS_TIMEOUT_MS');
+  if (!toolSynthesisTimeout.ok) return { status: 'not_configured', reason: toolSynthesisTimeout.reason };
+
   const orchestratorModelName = env.CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_MODEL ?? modelName;
   const plannerModelName = env.CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_MODEL ?? modelName;
   const answererModelName = env.CUSTOMER_INTELLIGENCE_COPILOT_ANSWERER_MODEL ?? modelName;
@@ -38,6 +57,8 @@ export function createConfiguredCustomerIntelligenceCopilotModel(env: NodeJS.Pro
           apiKey: env.CUSTOMER_INTELLIGENCE_COPILOT_API_KEY ?? null,
           model: stageModelName,
           timeoutMs,
+          toolSelectionTimeoutMs: toolSelectionTimeout.value,
+          toolSynthesisTimeoutMs: toolSynthesisTimeout.value,
         })
       : createHttpJsonCopilotModel({
           endpoint,
@@ -60,7 +81,20 @@ export function createConfiguredCustomerIntelligenceCopilotModel(env: NodeJS.Pro
     provider,
     modelName,
     model,
+    toolSelectionTimeoutMs: toolSelectionTimeout.value,
+    toolSynthesisTimeoutMs: toolSynthesisTimeout.value,
   };
+}
+
+function resolveStageTimeoutMs(rawValue: string | undefined, envVarName: string): { readonly ok: true; readonly value: number } | { readonly ok: false; readonly reason: string } {
+  const value = Number(rawValue ?? CUSTOMER_INTELLIGENCE_COPILOT_STAGE_TIMEOUT_DEFAULT_MS);
+  if (!Number.isInteger(value) || value <= 0) {
+    return { ok: false, reason: `${envVarName} must be a positive integer` };
+  }
+  if (value > CUSTOMER_INTELLIGENCE_COPILOT_STAGE_TIMEOUT_MAX_MS) {
+    return { ok: false, reason: `${envVarName} must not exceed ${CUSTOMER_INTELLIGENCE_COPILOT_STAGE_TIMEOUT_MAX_MS}` };
+  }
+  return { ok: true, value };
 }
 
 function createStageRoutedModel(models: {
