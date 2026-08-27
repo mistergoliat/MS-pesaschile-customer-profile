@@ -1,4 +1,4 @@
-import type { AnalyticalAggregation } from '../customer-intelligence-query/index.js';
+import type { AnalyticalAggregation, AnalyticalFilterValue } from '../customer-intelligence-query/index.js';
 
 // The one source of truth mapping internal analytical field names/aliases to business-facing
 // Spanish labels and formatting semantics (task MARKETING-R1-T05.8.6 Section 8). Every renderer
@@ -194,4 +194,25 @@ export function formatBusinessRank(rank: number, total?: number): string {
 export function formatRatio(numerator: number, denominator: number): string | null {
   if (denominator === 0 || !Number.isFinite(numerator) || !Number.isFinite(denominator)) return null;
   return formatBusinessValue(numerator / denominator, 'ratio');
+}
+
+// task MARKETING-R1-T06.4 Section 14: the one place a uiContext filter leaf gets a business
+// label/value - never a second dictionary in the copilot session layer or in CRM. rfm.segmentCode
+// and cluster.clusterId reuse the exact same label sources as businessEntityLabel above; every
+// other registered field falls back to a humanized field name (never the raw dotted logical name)
+// with no invented business value.
+export function resolveFilterFieldLabel(field: string): string {
+  if (field === 'rfm.segmentCode') return 'Segmento RFM';
+  if (field === 'cluster.clusterId') return 'Cluster';
+  const leaf = field.slice(field.lastIndexOf('.') + 1);
+  return humanizeUnknownAlias(leaf);
+}
+
+// ponytail: only rfm.segmentCode/cluster.clusterId get a resolved business value (the two
+// enum-like fields with a real label dictionary) - every other field renders with its label only,
+// no invented formatting. Add a per-field formatter here if a specific field needs one.
+export function resolveFilterFieldBusinessValue(field: string, value: AnalyticalFilterValue | undefined): string | null {
+  if (field === 'rfm.segmentCode' && typeof value === 'string') return resolveRfmSegmentBusinessLabel(value);
+  if (field === 'cluster.clusterId' && typeof value === 'number') return businessEntityLabel('cluster', value);
+  return null;
 }

@@ -2,8 +2,11 @@ export const CUSTOMER_INTELLIGENCE_COPILOT_PLANNER_PROMPT_VERSION = 'customer-in
 export const CUSTOMER_INTELLIGENCE_COPILOT_ANSWER_PROMPT_VERSION = 'customer-intelligence-copilot-answer-v2';
 export const CUSTOMER_INTELLIGENCE_COPILOT_ORCHESTRATOR_PROMPT_VERSION = 'customer-intelligence-copilot-orchestrator-v3';
 export const CUSTOMER_INTELLIGENCE_COPILOT_UNIFIED_PLANNER_PROMPT_VERSION = 'customer-intelligence-copilot-unified-planner-v1';
-export const CUSTOMER_INTELLIGENCE_COPILOT_TOOL_RUNTIME_PROMPT_VERSION = 'customer-intelligence-copilot-tool-runtime-v2';
-export const CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SYNTHESIS_PROMPT_VERSION = 'customer-intelligence-tool-synthesis-v5';
+// v3 (task MARKETING-R1-T06.4 Section 6/9/10): adds selectedPopulation guidance - the dashboard's
+// currently selected audience, distinct from the conversational semanticFocus/activeFinding.
+export const CUSTOMER_INTELLIGENCE_COPILOT_TOOL_RUNTIME_PROMPT_VERSION = 'customer-intelligence-copilot-tool-runtime-v3';
+// v6 (task MARKETING-R1-T06.4 Section 6): same selectedPopulation addition, for the synthesis stage.
+export const CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SYNTHESIS_PROMPT_VERSION = 'customer-intelligence-tool-synthesis-v6';
 
 // v2 (task MARKETING-R1-T05.8.9): rewritten around an "assistant first, analytics as a trusted
 // capability" identity - the previous wording read as an analytical-query wrapper that happened
@@ -25,6 +28,9 @@ export const CUSTOMER_INTELLIGENCE_COPILOT_TOOL_RUNTIME_INSTRUCTIONS = [
   'Metrics use {op, field?, alias}; filters use {field, op, value?}. Do not include customer-intelligence-query-plan-v1, planVersion, aggregation, or operator in compact tool arguments.',
   'For explanatory why questions, request 2 to 3 comparison queries using observed available commercial and behavioral fields. Do not claim causality.',
   'Recommendation questions grounded in historical evidence, such as reactivation prioritization, require analytics; treat the result as a recommendation, never a prediction, and never reject the question as unsupported.',
+  'When selectedPopulation is present, it is the dashboard-selected audience currently in scope (e.g. RFM=CHAMPION, cluster=3) - treat it as the default population for this conversation, distinct from any prior conversational finding. "este grupo"/"esta poblacion"/"los seleccionados" and unqualified questions like Que ves interesante? refer to selectedPopulation.',
+  'You do not need to repeat selectedPopulation filters in your own query filters - the runtime automatically scopes every executed query to selectedPopulation. Add your own filters only to narrow further (e.g. an extra recency threshold) or to name a different value on the same field when the user explicitly asks to compare or broaden beyond the current selection (e.g. "comparalo con el cluster 2"): a filter you write on a field selectedPopulation already restricts replaces that one condition for that query, it does not stack into an impossible AND.',
+  'A direct answer may reference selectedPopulation\'s filters and their business labels/values (e.g. explaining what CHAMPION means) but must never state its matchingPopulation or any other count/metric without calling run_analytical_queries first.',
   'For cluster or segment comparisons/rankings, exclude nullable dimension values with is_not_null unless the user asks for the whole base including unassigned or unsegmented customers.',
   'When RFM or other analytical subpopulations can differ from the full entity population, use at most 3 total queries and include a bounded count query only when needed to establish the analyzed denominator.',
   'For broad exploratory requests, request up to 3 useful aggregate analyses instead of unnecessary clarification.',
@@ -40,6 +46,7 @@ export const CUSTOMER_INTELLIGENCE_COPILOT_TOOL_SYNTHESIS_INSTRUCTIONS = [
   'Answer in the same language as the user question.',
   'Begin with the main conclusion, then the strongest supporting evidence; do not narrate every fact.',
   'The semanticAnchor is the current turn referent; do not replace it with later top rows.',
+  'When selectedPopulation is present, the evidence was gathered scoped to it (or explicitly compares it against another value per the user request) - describe findings as being about that selected audience, not the full customer base, unless the user explicitly asked to compare beyond it.',
   'Quantify relevant differences and, when useful, compare segments directly using the supplied comparisons and distributions.',
   'Separate observed facts from interpretation, hypothesis, and recommendation, even in a short answer.',
   'Correlation is not causality; never claim a cause from these comparisons.',

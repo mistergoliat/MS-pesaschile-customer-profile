@@ -29,6 +29,7 @@ export function buildCopilotSessionContext(session: CopilotSession, limits: Copi
       rowCount: entry.result.rowCount,
       truncated: entry.result.execution.truncated,
     })),
+    uiContext: session.uiContext?.selectedPopulation ?? null,
   };
 }
 

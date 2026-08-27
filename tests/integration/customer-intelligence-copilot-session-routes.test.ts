@@ -2,7 +2,7 @@ import { createServer, type Server } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildApp } from '../../src/app.js';
 import type { RouteDependencies } from '../../src/http/routes/index.js';
-import type { CustomerIntelligenceCopilotSessionService } from '../../src/application/customer-intelligence-copilot-session/index.js';
+import type { CustomerIntelligenceCopilotSessionService, ProcessCopilotSessionTurnResult } from '../../src/application/customer-intelligence-copilot-session/index.js';
 
 let server: Server | undefined;
 
@@ -259,5 +259,81 @@ describe('Customer Intelligence Copilot session HTTP routes', () => {
     });
     expect(response.status).toBe(410);
     expect(await response.json()).toEqual({ error: 'session_expired' });
+  });
+
+  // task MARKETING-R1-T06.4 Section 23: uiContext is optional and backward compatible - an
+  // omitted field (covered by the 'sends session messages' test above) behaves exactly as before
+  // this task; a supplied one reuses T06.3's own AnalyticalFilterInput shape for `filters`.
+  it('passes an optional uiContext through to processSessionTurn unchanged', async () => {
+    const service = fakeService();
+    const baseUrl = await startApp({ customerIntelligenceCopilotSessionService: service });
+    const uiContext = { intersection: { filters: { field: 'rfm.segmentCode', operator: 'eq', value: 'CHAMPION' } } };
+    const response = await fetch(`${baseUrl}/v1/customer-intelligence/copilot/sessions/00000000-0000-4000-8000-000000000001/messages`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ question: 'Que ves interesante?', uiContext }),
+    });
+    expect(response.status).toBe(200);
+    expect(service.processSessionTurn).toHaveBeenCalledWith({
+      sessionId: '00000000-0000-4000-8000-000000000001',
+      question: 'Que ves interesante?',
+      uiContext,
+    });
+  });
+
+  it('rejects a uiContext with an unknown field before ever calling the session service (task Section 4/18)', async () => {
+    const service = fakeService();
+    const baseUrl = await startApp({ customerIntelligenceCopilotSessionService: service });
+    const response = await fetch(`${baseUrl}/v1/customer-intelligence/copilot/sessions/00000000-0000-4000-8000-000000000001/messages`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ question: 'Que ves interesante?', uiContext: { intersection: { filters: {} }, extraField: true } }),
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: 'invalid_copilot_session_message' });
+    expect(service.processSessionTurn).not.toHaveBeenCalled();
+  });
+
+  it('maps an invalid_ui_context response to HTTP 400', async () => {
+    const service = fakeService({
+      processSessionTurn: vi.fn(async (): Promise<ProcessCopilotSessionTurnResult> => ({
+        status: 'ok',
+        sessionContext: {
+          contextVersion: 'customer-intelligence-copilot-session-context-v1',
+          pinnedContext: {
+            featureSnapshot: { snapshotId: '17', referenceTime: '2026-08-19T00:00:00.000Z', featureVersion: 'customer-analytics-features-v1', populationPolicyVersion: 'customer-analytics-population-b-v1' },
+            rfmSnapshot: null,
+            clusterSnapshot: null,
+            population: { featurePopulation: 10, rfmMatched: 0, clusterMatched: 0, bothMatched: 0, neitherMatched: 10, rfmCoveragePct: 0, clusterCoveragePct: 0 },
+            contractVersion: 'customer-intelligence-read-model-v1',
+          },
+          recentTurns: [],
+          semanticFocus: { activeEntity: null, activeMetric: null, activeComparison: null, unresolvedClarification: null, activeFinding: null, lastAnalyticalResult: null },
+          analyticalReferences: [],
+          recentResults: [],
+          uiContext: null,
+        },
+        response: {
+          sessionId: '00000000-0000-4000-8000-000000000001',
+          turnId: '00000000-0000-4000-8000-000000000003',
+          queryIds: [],
+          sourceQueryIds: [],
+          status: 'invalid_ui_context',
+          finalResponseState: 'failure',
+          errors: ['unknown field: bogus.field'],
+          contractVersion: 'customer-intelligence-copilot-v1',
+        },
+      })),
+    });
+    const baseUrl = await startApp({ customerIntelligenceCopilotSessionService: service });
+    const response = await fetch(`${baseUrl}/v1/customer-intelligence/copilot/sessions/00000000-0000-4000-8000-000000000001/messages`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ question: 'Cuantos son?', uiContext: { intersection: { filters: { field: 'bogus.field', operator: 'eq', value: 1 } } } }),
+    });
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.status).toBe('invalid_ui_context');
+    expect(body.errors).toEqual(['unknown field: bogus.field']);
   });
 });

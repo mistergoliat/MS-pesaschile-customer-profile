@@ -6,6 +6,7 @@ import {
 } from '../../src/application/customer-intelligence-copilot-session/index.js';
 import type { CustomerIntelligenceCopilotModel, GenerateAnswerInput, GenerateConversationDecisionInput } from '../../src/application/customer-intelligence-copilot/index.js';
 import type { ExecuteAnalyticalQueryForExport, ExecuteAnalyticalQueryWithResolvedContext } from '../../src/application/customer-intelligence-query/index.js';
+import type { ExecuteIntersection } from '../../src/application/customer-intelligence-intersection/index.js';
 import type { ResolveCustomerIntelligenceContextResult } from '../../src/application/customer-intelligence/resolve-customer-intelligence-context.js';
 import type { Clock } from '../../src/application/customer-profile/ports.js';
 import type { AnalyticalQueryResult, AnalyticalSchema } from '../../src/domain/customer-intelligence-query/index.js';
@@ -156,6 +157,9 @@ function harness(opts: {
     resolveForFeatureSnapshot: vi.fn(async () => CONTEXT),
     executeAnalyticalQuery,
     executeAnalyticalQueryForExport,
+    executeIntersection: (async () => {
+      throw new Error('unreachable');
+    }) as unknown as ExecuteIntersection,
     model: { generateConversationDecision, repairConversationDecision, generateAnalysisPlan, repairAnalysisPlan, generateAnswer } satisfies CustomerIntelligenceCopilotModel,
     store: createInMemoryCopilotSessionStore(LIMITS),
     clock,

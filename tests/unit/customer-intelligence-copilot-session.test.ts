@@ -17,6 +17,7 @@ import type {
   RepairConversationDecisionInput,
 } from '../../src/application/customer-intelligence-copilot/index.js';
 import type { ExecuteAnalyticalQueryForExport, ExecuteAnalyticalQueryWithResolvedContext } from '../../src/application/customer-intelligence-query/index.js';
+import type { ExecuteIntersection } from '../../src/application/customer-intelligence-intersection/index.js';
 import type { ResolveCustomerIntelligenceContextResult } from '../../src/application/customer-intelligence/resolve-customer-intelligence-context.js';
 import type { Clock } from '../../src/application/customer-profile/ports.js';
 import type { AnalyticalQueryResult, AnalyticalSchema } from '../../src/domain/customer-intelligence-query/index.js';
@@ -192,6 +193,7 @@ function harness(opts: {
   plannerError?: unknown;
   answerError?: unknown;
   executeAnalyticalQuery?: ExecuteAnalyticalQueryWithResolvedContext;
+  executeIntersection?: ExecuteIntersection;
   executionResults?: AnalyticalQueryResult[];
   exportResult?: AnalyticalQueryResult;
   limits?: Partial<CopilotSessionLimits>;
@@ -238,6 +240,9 @@ function harness(opts: {
   const executionResults = [...(opts.executionResults ?? [result([{ clusterId: 0, label: 'HIGH_VALUE', avgAov: '100.000000' }, { clusterId: 1, label: 'NEW', avgAov: '80.000000' }])])];
   const executeAnalyticalQuery = opts.executeAnalyticalQuery ?? vi.fn(async () => ({ status: 'ok', result: executionResults.shift() ?? result([{ customers: 1 }]) })) as unknown as ExecuteAnalyticalQueryWithResolvedContext;
   const executeAnalyticalQueryForExport = vi.fn(async () => ({ status: 'ok', result: opts.exportResult ?? result([{ clusterId: 0, label: 'HIGH_VALUE', avgAov: '100.000000' }]) })) as unknown as ExecuteAnalyticalQueryForExport;
+  const executeIntersection = opts.executeIntersection ?? ((async () => {
+    throw new Error('unreachable');
+  }) as unknown as ExecuteIntersection);
   const store = createInMemoryCopilotSessionStore(limits);
   const diagnostics: CopilotOrchestratorDiagnostic[] = [];
   const plannerDiagnostics: CopilotPlannerDiagnostic[] = [];
@@ -248,6 +253,7 @@ function harness(opts: {
     resolveForFeatureSnapshot,
     executeAnalyticalQuery,
     executeAnalyticalQueryForExport,
+    executeIntersection,
     model,
     store,
     clock,
@@ -261,7 +267,7 @@ function harness(opts: {
     onPlannerDiagnostic: (diagnostic) => plannerDiagnostics.push(diagnostic),
     onStageLatencyDiagnostic: (diagnostic) => stageLatencyDiagnostics.push(diagnostic),
   });
-  return { service, clock, generateConversationalTurn, generateConversationPlan, repairConversationPlan, generateConversationDecision, repairConversationDecision, generateAnalysisPlan, repairAnalysisPlan, generateAnswer, resolveCurrent, executeAnalyticalQuery, executeAnalyticalQueryForExport, store, diagnostics, plannerDiagnostics, stageLatencyDiagnostics };
+  return { service, clock, generateConversationalTurn, generateConversationPlan, repairConversationPlan, generateConversationDecision, repairConversationDecision, generateAnalysisPlan, repairAnalysisPlan, generateAnswer, resolveCurrent, executeAnalyticalQuery, executeAnalyticalQueryForExport, executeIntersection, store, diagnostics, plannerDiagnostics, stageLatencyDiagnostics };
 }
 
 async function createSession(h: ReturnType<typeof harness>) {
@@ -888,7 +894,7 @@ describe('Customer Intelligence Copilot ephemeral sessions', () => {
     const synthesisContent = String(h.generateConversationalTurn.mock.calls[1]?.[0].messages[1]?.content);
     const synthesisPayload = JSON.parse(synthesisContent);
     expect(synthesisPayload).toMatchObject({
-      synthesisPromptVersion: 'customer-intelligence-tool-synthesis-v5',
+      synthesisPromptVersion: 'customer-intelligence-tool-synthesis-v6',
       question: 'Por que el cluster 3 tiene mayor ticket promedio?',
       evidence: { facts: expect.any(Array), comparisons: expect.any(Array), populationContexts: expect.any(Array), limitations: expect.any(Array) },
     });
@@ -2442,6 +2448,168 @@ describe('Customer Intelligence Copilot XLSX export', () => {
     const exported = await h.service.exportSessionQuery({ sessionId, queryId: 'missing_query', format: 'xlsx' });
     expect(exported.status).toBe('query_not_found');
     expect(h.executeAnalyticalQueryForExport).not.toHaveBeenCalled();
+  });
+});
+
+// task MARKETING-R1-T06.4: uiContext adapter + filter composition, exercised through the native
+// tool runtime (the path task Section 11 explicitly audits).
+function intersectionAvailable(filters: unknown, hash: string, matchingPopulation = 412, requiredDimensions: readonly ('rfm' | 'cluster')[] = []) {
+  return {
+    status: 'available' as const,
+    definition: { contractVersion: 'customer-intelligence-intersection-v1' as const, filters, resolvedContext: BASE_CONTEXT.context, queryPlanHash: hash },
+    population: {
+      matchingPopulation,
+      featurePopulation: 10,
+      rfmMatchedPopulation: 7,
+      clusterMatchedPopulation: 4,
+      bothMatchedPopulation: 3,
+      rfmCoveragePct: 70,
+      clusterCoveragePct: 40,
+      requiredDimensions,
+    },
+    metrics: {
+      totalSpentTaxIncl: '900000.000000',
+      averageOrderValueTaxIncl: '10000.000000',
+      averageTotalSpentTaxIncl: '30000.000000',
+      averageValidOrders: '3.000000',
+      averageOrders365d: '1.500000',
+      averageDaysSinceLastOrder: '10.000000',
+      averagePurchaseFrequencyDays: '45.000000',
+      purchaseFrequencyDaysSampleSize: 30,
+      averageEffectiveDiversity: '1.800000',
+      averageRepeatProductRate: '0.400000',
+    },
+    execution: { queryCount: 2 as const, filterLeafCount: 1, filterDepth: 1 },
+  };
+}
+
+describe('Customer Intelligence Copilot uiContext (T06.4)', () => {
+  it('scopes a native tool-runtime analytical query to the resolved uiContext population (Example A: "Cuantos son?")', async () => {
+    const championScope = { field: 'rfm.segmentCode', operator: 'eq' as const, value: 'CHAMPION' };
+    const executeIntersection = vi.fn(async () => intersectionAvailable(championScope, 'a'.repeat(64)));
+    const h = harness({
+      toolRuntimeEnabled: true,
+      executeIntersection: executeIntersection as unknown as ExecuteIntersection,
+      conversationalTurns: [toolRuntimeCall([{ id: 'customer_count', metrics: [{ op: 'count', alias: 'customers' }] }])],
+      executionResults: [result([{ customers: 30 }])],
+    });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Cuantos son?', uiContext: { intersection: { filters: championScope } } });
+
+    expect(executeIntersection).toHaveBeenCalledWith({ featureSnapshotId: '17', filters: championScope });
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') expect(response.response.status).toBe('answered');
+    expect(h.executeAnalyticalQuery).toHaveBeenCalledWith(expect.objectContaining({
+      plan: expect.objectContaining({ filters: { and: [championScope] } }),
+    }));
+  });
+
+  it('does not require analytics for a purely conceptual question even while a uiContext is active (Example B)', async () => {
+    const executeIntersection = vi.fn(async () => intersectionAvailable({ field: 'rfm.segmentCode', operator: 'eq', value: 'CHAMPION' }, 'a'.repeat(64)));
+    const h = harness({
+      toolRuntimeEnabled: true,
+      executeIntersection: executeIntersection as unknown as ExecuteIntersection,
+      conversationalTurns: [toolRuntimeContent('Champion son los clientes que compran reciente, frecuente y de alto valor.')],
+    });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Que significa Champion?', uiContext: { intersection: { filters: { field: 'rfm.segmentCode', operator: 'eq', value: 'CHAMPION' } } } });
+
+    expect(executeIntersection).toHaveBeenCalledTimes(1);
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') expect(response.response.status).toBe('responded_directly');
+    expect(h.executeAnalyticalQuery).not.toHaveBeenCalled();
+  });
+
+  it('composes an additional model-supplied condition with the uiContext scope via AND (Example C)', async () => {
+    const clusterScope = { field: 'cluster.clusterId', operator: 'eq' as const, value: 3 };
+    const executeIntersection = vi.fn(async () => intersectionAvailable(clusterScope, 'b'.repeat(64)));
+    const h = harness({
+      toolRuntimeEnabled: true,
+      executeIntersection: executeIntersection as unknown as ExecuteIntersection,
+      conversationalTurns: [toolRuntimeCall([{
+        id: 'inactive_count',
+        metrics: [{ op: 'count', alias: 'customers' }],
+        filters: { field: 'commercial.daysSinceLastOrder', op: 'gte', value: 180 },
+      }])],
+      executionResults: [result([{ customers: 5 }])],
+    });
+    const sessionId = await createSession(h);
+
+    await h.service.processSessionTurn({ sessionId, question: 'Cuantos tienen mas de 180 dias sin comprar?', uiContext: { intersection: { filters: clusterScope } } });
+
+    expect(h.executeAnalyticalQuery).toHaveBeenCalledWith(expect.objectContaining({
+      plan: expect.objectContaining({
+        filters: { and: [{ field: 'commercial.daysSinceLastOrder', operator: 'gte', value: 180 }, clusterScope] },
+      }),
+    }));
+  });
+
+  it('lets an explicit model filter on the same dimension override the uiContext scope instead of producing an impossible AND (Example D: comparison)', async () => {
+    const clusterScope = { field: 'cluster.clusterId', operator: 'eq' as const, value: 3 };
+    const executeIntersection = vi.fn(async () => intersectionAvailable(clusterScope, 'c'.repeat(64)));
+    const h = harness({
+      toolRuntimeEnabled: true,
+      executeIntersection: executeIntersection as unknown as ExecuteIntersection,
+      conversationalTurns: [toolRuntimeCall([
+        { id: 'cluster_3', metrics: [{ op: 'count', alias: 'customers' }], filters: { field: 'cluster.clusterId', op: 'eq', value: 3 } },
+        { id: 'cluster_2', metrics: [{ op: 'count', alias: 'customers' }], filters: { field: 'cluster.clusterId', op: 'eq', value: 2 } },
+      ])],
+      executionResults: [result([{ customers: 12 }]), result([{ customers: 9 }], 'd'.repeat(64))],
+    });
+    const sessionId = await createSession(h);
+
+    await h.service.processSessionTurn({ sessionId, question: 'Comparalo con el cluster 2', uiContext: { intersection: { filters: clusterScope } } });
+
+    const calledPlans = vi.mocked(h.executeAnalyticalQuery).mock.calls.map((call) => (call[0] as { plan: { filters?: unknown } }).plan.filters);
+    expect(calledPlans).toEqual(expect.arrayContaining([
+      { field: 'cluster.clusterId', operator: 'eq', value: 3 },
+      { field: 'cluster.clusterId', operator: 'eq', value: 2 },
+    ]));
+  });
+
+  it('fails deterministically and never calls the model when uiContext filters are invalid (task Section 18)', async () => {
+    const executeIntersection = vi.fn(async () => ({ status: 'invalid_intersection' as const, errors: ['unknown field: bogus.field'] }));
+    const h = harness({ toolRuntimeEnabled: true, executeIntersection: executeIntersection as unknown as ExecuteIntersection });
+    const sessionId = await createSession(h);
+
+    const response = await h.service.processSessionTurn({ sessionId, question: 'Cuantos son?', uiContext: { intersection: { filters: { field: 'bogus.field', operator: 'eq', value: 1 } } } });
+
+    expect(response.status).toBe('ok');
+    if (response.status === 'ok') {
+      expect(response.response.status).toBe('invalid_ui_context');
+      if (response.response.status === 'invalid_ui_context') expect(response.response.errors).toEqual(['unknown field: bogus.field']);
+    }
+    expect(h.generateConversationalTurn).not.toHaveBeenCalled();
+  });
+
+  it('carries the resolved uiContext forward across turns that omit it, and detects a real dashboard selection change by queryPlanHash (Examples F/G)', async () => {
+    const scopeA = { field: 'cluster.clusterId', operator: 'eq' as const, value: 3 };
+    const scopeB = { field: 'cluster.clusterId', operator: 'eq' as const, value: 1 };
+    const executeIntersection = vi.fn(async (input: { filters?: unknown }) => (input.filters === scopeB ? intersectionAvailable(scopeB, 'f'.repeat(64)) : intersectionAvailable(scopeA, 'e'.repeat(64))));
+    const h = harness({
+      toolRuntimeEnabled: true,
+      executeIntersection: executeIntersection as unknown as ExecuteIntersection,
+      conversationalTurns: [
+        toolRuntimeCall([{ id: 'q1', metrics: [{ op: 'count', alias: 'customers' }] }]),
+        toolRuntimeCall([{ id: 'q2', metrics: [{ op: 'count', alias: 'customers' }] }]),
+        toolRuntimeCall([{ id: 'q3', metrics: [{ op: 'count', alias: 'customers' }] }]),
+      ],
+      executionResults: [result([{ customers: 4 }]), result([{ customers: 4 }], 'x'.repeat(64)), result([{ customers: 1 }], 'y'.repeat(64))],
+    });
+    const sessionId = await createSession(h);
+
+    await h.service.processSessionTurn({ sessionId, question: 'Cuantos son?', uiContext: { intersection: { filters: scopeA } } });
+    // Turn 2 omits uiContext entirely - the previously resolved scope (cluster 3) must still apply.
+    await h.service.processSessionTurn({ sessionId, question: 'Y ahora?' });
+    // Turn 3 sends a genuinely different dashboard selection.
+    await h.service.processSessionTurn({ sessionId, question: 'Y el cluster 1?', uiContext: { intersection: { filters: scopeB } } });
+
+    const calledPlans = vi.mocked(h.executeAnalyticalQuery).mock.calls.map((call) => (call[0] as { plan: { filters?: unknown } }).plan.filters);
+    expect(calledPlans[0]).toEqual({ and: [scopeA] });
+    expect(calledPlans[1]).toEqual({ and: [scopeA] });
+    expect(calledPlans[2]).toEqual({ and: [scopeB] });
   });
 });
 

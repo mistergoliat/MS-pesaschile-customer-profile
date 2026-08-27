@@ -1,5 +1,6 @@
-import type { AnalyticalQueryPlan, AnalyticalQueryResult, AnalyticalSchema, CompactAnalyticalQuery } from '../customer-intelligence-query/index.js';
+import type { AnalyticalFilterInput, AnalyticalFilterValue, AnalyticalQueryPlan, AnalyticalQueryResult, AnalyticalSchema, CompactAnalyticalQuery } from '../customer-intelligence-query/index.js';
 import type { CustomerIntelligenceSnapshotContext } from '../customer-intelligence/index.js';
+import type { IntersectionRequiredDimension } from '../customer-intelligence-intersection/index.js';
 
 export const CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION = 'customer-intelligence-copilot-v1';
 export const CUSTOMER_INTELLIGENCE_COPILOT_ANALYSIS_PLAN_VERSION = 'customer-intelligence-copilot-analysis-plan-v1';
@@ -8,6 +9,12 @@ export const CUSTOMER_INTELLIGENCE_COPILOT_SESSION_CONTEXT_VERSION = 'customer-i
 export const CUSTOMER_INTELLIGENCE_COPILOT_XLSX_EXPORT_VERSION = 'customer-intelligence-xlsx-export-v1';
 export const CUSTOMER_INTELLIGENCE_CONVERSATION_DECISION_VERSION = 'customer-intelligence-conversation-decision-v1';
 export const CUSTOMER_INTELLIGENCE_CONVERSATION_PLAN_VERSION = 'customer-intelligence-conversation-plan-v1';
+// task MARKETING-R1-T06.4 Section 2: the envelope around the embedded `intersection` object -
+// the `filters` shape inside it is T03's own AnalyticalFilterInput, reused verbatim (never
+// re-declared). This is its own version because it is a distinct transport (copilot session
+// messages) from T06.3's dashboard intersection HTTP endpoint, even though both carry the same
+// underlying filter contract.
+export const CUSTOMER_INTELLIGENCE_COPILOT_UI_CONTEXT_VERSION = 'customer-intelligence-copilot-ui-context-v1';
 export const CUSTOMER_INTELLIGENCE_COPILOT_RUN_ANALYTICAL_QUERIES_TOOL = 'run_analytical_queries';
 export const CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES = 3;
 export const CUSTOMER_INTELLIGENCE_COPILOT_PLAN_REPAIR_ATTEMPTS = 1;
@@ -320,6 +327,41 @@ export type AnalyticalEvidenceBundle = {
   readonly limitations: readonly string[];
 };
 
+// task MARKETING-R1-T06.4 Section 2/3: the request envelope a message can optionally carry.
+// `intersection.filters` is T03's own AnalyticalFilterInput shape, reused verbatim - no second,
+// UI-specific filter grammar. The model never sees this raw shape; only the validated, projected
+// CopilotUiContextSelectedPopulation below ever reaches a prompt (Section 5).
+export type CopilotUiContextRequest = {
+  readonly intersection: {
+    readonly contractVersion?: typeof CUSTOMER_INTELLIGENCE_COPILOT_UI_CONTEXT_VERSION;
+    readonly featureSnapshotId?: string;
+    readonly filters?: AnalyticalFilterInput;
+  };
+};
+
+// One filter leaf as projected for the model/UI (task Section 5) - label/businessValue come
+// exclusively from business-semantics.ts (Section 14), never a second dictionary here.
+export type CopilotUiContextSelectedPopulationFilter = {
+  readonly field: string;
+  readonly label: string;
+  readonly operator: string;
+  readonly value?: AnalyticalFilterValue;
+  readonly businessValue: string | null;
+};
+
+// The bounded, compact semantic projection of a validated uiContext (task Section 5) - the ONLY
+// shape that ever reaches a model prompt or gets persisted on the session (task Section 8). Never
+// SQL, physical columns, or internal plan/compiler details.
+export type CopilotUiContextSelectedPopulation = {
+  readonly filters: readonly CopilotUiContextSelectedPopulationFilter[];
+  readonly matchingPopulation: number;
+  readonly queryPlanHash: string;
+  readonly featureSnapshotId: string;
+  readonly rfmSnapshotId: string | null;
+  readonly clusterSnapshotId: string | null;
+  readonly requiredDimensions: readonly IntersectionRequiredDimension[];
+};
+
 export type CopilotSessionContext = {
   readonly contextVersion: typeof CUSTOMER_INTELLIGENCE_COPILOT_SESSION_CONTEXT_VERSION;
   readonly pinnedContext: CustomerIntelligenceSnapshotContext;
@@ -340,6 +382,12 @@ export type CopilotSessionContext = {
     readonly rowCount: number;
     readonly truncated: boolean;
   }[];
+  // The dashboard-selected population currently in scope (task Section 6: a distinct concept from
+  // the conversational semantic anchor above) - optional/null when no uiContext has been resolved
+  // this session yet, never a fabricated empty population. Optional (not required) so every
+  // pre-T06.4 construction site of this contract stays valid (task Section 2: backward
+  // compatibility is mandatory).
+  readonly uiContext?: CopilotUiContextSelectedPopulation | null;
 };
 
 export type CustomerIntelligenceCopilotResponse =
@@ -407,6 +455,16 @@ export type CustomerIntelligenceCopilotResponse =
     }
   | {
       readonly status: 'planner_invalid';
+      readonly finalResponseState: 'failure';
+      readonly errors: readonly string[];
+      readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION;
+    }
+  | {
+      // task MARKETING-R1-T06.4 Section 18: a stable, deterministic failure - unknown fields,
+      // invalid operators/filter shape, a feature snapshot that does not match the session's
+      // pinned one, or a required RFM/cluster dimension that is unavailable. Never calls the
+      // model (Section 18); never silently drops the bad filters and continues unscoped.
+      readonly status: 'invalid_ui_context';
       readonly finalResponseState: 'failure';
       readonly errors: readonly string[];
       readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION;

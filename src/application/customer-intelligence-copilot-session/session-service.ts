@@ -44,6 +44,7 @@ import {
   expandCompactAnalyticalQuery,
   isCompactAnalyticalQueryShape,
   validateAnalyticalQueryPlan,
+  type AnalyticalFilterInput,
   type AnalyticalFilterNode,
   type AnalyticalQueryPlan,
   type AnalyticalQueryResult,
@@ -56,6 +57,7 @@ import type {
   ResolveCustomerIntelligenceContextResult,
 } from '../customer-intelligence/resolve-customer-intelligence-context.js';
 import type { ExecuteAnalyticalQueryForExport, ExecuteAnalyticalQueryWithResolvedContext } from '../customer-intelligence-query/index.js';
+import type { ExecuteIntersection } from '../customer-intelligence-intersection/index.js';
 import { AnalyticsTimeoutError, AnalyticsUnavailableError, AnalyticsSchemaIncompatibleError } from '../customer-profile/errors.js';
 import type {
   AnalyticalSchemaProvider,
@@ -70,6 +72,7 @@ import {
   deriveAnalyticalReferences,
   deriveSemanticFocus,
 } from './session-context.js';
+import { composeStepFiltersWithUiContext, resolveCopilotUiContext } from './ui-context.js';
 import { buildCopilotXlsxExport, createCopilotExportFilename } from './xlsx-export.js';
 import type {
   CopilotSession,
@@ -79,6 +82,7 @@ import type {
   CopilotSessionSummary,
   CopilotSessionDetail,
   CopilotSessionTurn,
+  CopilotSessionUiContextState,
   CreateCopilotSessionRequest,
   CreateCopilotSessionResult,
   DeleteCopilotSessionResult,
@@ -178,6 +182,7 @@ type CopilotLatencyStage =
   | 'unified_planner_repair'
   | 'analytics_execution'
   | 'answerer'
+  | 'ui_context'
   | 'turn';
 
 type CopilotExecutionMode = 'fast_path' | 'direct_response' | 'simple_analysis' | 'deep_analysis';
@@ -288,6 +293,14 @@ export type CopilotStageLatencyDiagnostic = {
   readonly analyticalReferenceCount?: number;
   readonly recentFindingCount?: number;
   readonly clarificationState?: 'none' | 'open';
+  // task MARKETING-R1-T06.4 Section 20: safe uiContext metadata - counts/hashes/dimension names
+  // only, never raw filter values, customer ids, or SQL.
+  readonly uiContextPresent?: boolean;
+  readonly uiContextChanged?: boolean;
+  readonly uiContextQueryPlanHash?: string | null;
+  readonly uiContextFilterLeafCount?: number | null;
+  readonly uiContextRequiredDimensions?: readonly string[] | null;
+  readonly uiContextMatchingPopulation?: number | null;
 };
 
 export function createCustomerIntelligenceCopilotSessionService(deps: {
@@ -296,6 +309,9 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
   readonly resolveForFeatureSnapshot: ResolveCustomerIntelligenceContextForFeatureSnapshot;
   readonly executeAnalyticalQuery: ExecuteAnalyticalQueryWithResolvedContext;
   readonly executeAnalyticalQueryForExport: ExecuteAnalyticalQueryForExport;
+  // task MARKETING-R1-T06.4 Section 3: the same dashboard-agnostic T06.3 adapter
+  // (createExecuteIntersection), reused verbatim - never a second validator/resolver/executor.
+  readonly executeIntersection: ExecuteIntersection;
   readonly model: CustomerIntelligenceCopilotModel;
   readonly store: CopilotSessionStore;
   readonly clock: Clock;
@@ -338,6 +354,7 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
         resolvedIds: pinned.resolvedIds,
         turns: [],
         analyticalState: { references: [], results: [] },
+        uiContext: null,
       };
       await deps.store.create(session, now);
       return { status: 'created', session: summarize(session) };
@@ -358,11 +375,49 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
       const turnStartedAt = Date.now();
       const found = await deps.store.get(request.sessionId, deps.clock.now());
       if (found.status !== 'found') return { status: found.status };
-      const session = found.session;
+      let session = found.session;
       const question = trimBounded(request.question, deps.limits.maxQuestionChars);
-      const sessionContext = buildCopilotSessionContext(session, deps.limits);
       const turnId = randomUUID();
       let analyticsExecutionDurationMs = 0;
+
+      // task MARKETING-R1-T06.4 Section 4/18: resolved deterministically, before any model call
+      // or routing branch - an invalid uiContext never reaches the model and never silently
+      // drops the bad filters to continue unscoped (Section 18). Absent uiContext leaves the
+      // session's previously active selection untouched (Section 7/8: "same-context persistence"
+      // and "do not erase unrelated conversation knowledge").
+      const uiContextResolution = await resolveCopilotUiContext(
+        { executeIntersection: deps.executeIntersection },
+        { session, turnId, now: deps.clock.now(), uiContext: request.uiContext },
+      );
+      if (uiContextResolution.status === 'invalid_ui_context' || uiContextResolution.status === 'degraded') {
+        const response = withSession(
+          { sessionId: session.sessionId, turnId },
+          uiContextResolution.status === 'invalid_ui_context' ? invalidUiContext(uiContextResolution.errors) : mapContextFailure(uiContextResolution.reason),
+        );
+        const updated = appendTurn(session, response, question, [], [], deps.clock.now(), deps.limits);
+        await deps.store.save(updated, deps.clock.now());
+        emitTurnLatency(deps.onStageLatencyDiagnostic, { turnStartedAt, queryCount: 0, analyticsExecutionDurationMs, success: false, failureStatus: response.status, diagnosticContext: uiContextDiagnosticFields(null, true, false) });
+        return { status: 'ok', response, sessionContext: buildCopilotSessionContext(session, deps.limits) };
+      }
+      if (uiContextResolution.status === 'resolved') {
+        session = { ...session, uiContext: uiContextResolution.state };
+        emitStageLatency(deps.onStageLatencyDiagnostic, {
+          stage: 'ui_context',
+          provider: null,
+          model: null,
+          durationMs: 0,
+          success: true,
+          failureStatus: null,
+          repairAttempted: false,
+          queryCount: 0,
+          analyticsExecutionDurationMs: 0,
+          totalTurnDurationMs: durationSince(turnStartedAt),
+          executionMode: null,
+          ...uiContextDiagnosticFields(uiContextResolution.state, true, uiContextResolution.changed),
+        });
+      }
+
+      const sessionContext = buildCopilotSessionContext(session, deps.limits);
 
       if (question.trim().length === 0) {
         const response = withSession({ sessionId: session.sessionId, turnId }, terminal('clarification_required', 'Necesito una pregunta analitica concreta para consultar Customer Intelligence.'));
@@ -690,6 +745,7 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
           executeAnalyticalQuery: deps.executeAnalyticalQuery,
           context: session.pinnedContext,
           resolvedIds: session.resolvedIds,
+          uiContextFilters: session.uiContext?.rawFilters ?? null,
         });
         if (executionResult.status === 'invalid_plan') {
           analyticsExecutionDurationMs = 0;
@@ -855,6 +911,11 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
         resolvedIds: pinned.resolvedIds,
         turns: appendSystemEvent(found.session.turns, now, 'refresh', deps.limits),
         analyticalState: { references: [], results: [] },
+        // task Section 19: a refresh can move the pinned feature snapshot - a uiContext resolved
+        // against the old anchor would no longer describe the same population, so it is cleared
+        // rather than silently carried across snapshots (same staleness reasoning as
+        // analyticalState above).
+        uiContext: null,
       };
       await deps.store.save(refreshed, now);
       return { status: 'refreshed', session: summarize(refreshed) };
@@ -870,6 +931,7 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
         expiresAt: addMinutes(now, deps.limits.ttlMinutes).toISOString(),
         turns: [],
         analyticalState: { references: [], results: [] },
+        uiContext: null,
       };
       await deps.store.save(reset, now);
       return { status: 'reset', session: summarize(reset) };
@@ -1418,6 +1480,7 @@ async function processToolRuntimeTurn(args: {
       executeAnalyticalQuery: args.executeAnalyticalQuery,
       context: args.session.pinnedContext,
       resolvedIds: args.session.resolvedIds,
+      uiContextFilters: args.session.uiContext?.rawFilters ?? null,
     });
     if (executionResult.status === 'invalid_plan') {
       const response = withSession({ sessionId: args.session.sessionId, turnId: args.turnId }, plannerInvalid(executionResult.errors));
@@ -1690,6 +1753,11 @@ function toolRuntimeMessages(args: {
         pinnedSnapshotContext: compactPinnedSnapshotContext(args.sessionContext.pinnedContext),
         conversationSummary: args.sessionContext.conversationSummary ?? null,
         semanticFocus: args.sessionContext.semanticFocus,
+        // task MARKETING-R1-T06.4 Section 5/6: the currently selected dashboard population -
+        // a compact, validated, label-bearing projection (never raw filter JSON, SQL, or plan
+        // internals). Distinct from semanticFocus above (Section 6: uiContext is the externally
+        // selected audience, not a conversational finding).
+        selectedPopulation: args.sessionContext.uiContext,
         analyticalReferences: args.sessionContext.analyticalReferences.slice(0, CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES),
         recentResults: compactRecentResults(args.sessionContext),
         recentTurns: args.sessionContext.recentTurns,
@@ -1778,6 +1846,7 @@ function toolSynthesisMessages(args: {
         question: args.question,
         semanticAnchor: args.semanticAnchor,
         semanticFocus: compactSemanticFocus(args.sessionContext),
+        selectedPopulation: args.sessionContext.uiContext,
         evidence: args.evidenceBundle,
         epistemicBoundaries: [
           'Observed differences are not causal proof.',
@@ -2842,6 +2911,7 @@ async function executePlannedAnalyticsTurn(args: {
       executeAnalyticalQuery: args.executeAnalyticalQuery,
       context: args.session.pinnedContext,
       resolvedIds: args.session.resolvedIds,
+      uiContextFilters: args.session.uiContext?.rawFilters ?? null,
     });
     if (executionResult.status === 'invalid_plan') {
       emitStageLatency(args.onStageLatencyDiagnostic, {
@@ -2971,11 +3041,37 @@ async function executeAnalyticalSteps(args: {
   readonly executeAnalyticalQuery: ExecuteAnalyticalQueryWithResolvedContext;
   readonly context: CustomerIntelligenceSnapshotContext;
   readonly resolvedIds: CopilotSession['resolvedIds'];
+  // task MARKETING-R1-T06.4 Section 10/11: the active uiContext's canonical T03 filter tree
+  // (null when no uiContext is active). Every analytics execution path (native tool runtime,
+  // unified planner, legacy planner) calls this one function, so composing the model's own step
+  // filters with the uiContext scope - then re-validating - lives here once instead of being
+  // duplicated at each call site. The model may narrow within the scope or override a specific
+  // dimension (comparison/broadening, Section 12); it can never silently drop the scope, because
+  // composition happens after the model's plan is already fixed, not by prompting alone.
+  readonly uiContextFilters: AnalyticalFilterInput | null;
 }): Promise<
   | { readonly status: 'ok'; readonly executions: readonly { readonly id: string; readonly plan: AnalyticalQueryPlan; readonly result: AnalyticalQueryResult }[] }
   | { readonly status: 'invalid_plan'; readonly errors: readonly string[] }
 > {
-  const attempts = await mapConcurrent(args.steps, CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES, async (step) => ({
+  const scopedSteps: ValidatedStep[] = [];
+  const scopeErrors: string[] = [];
+  for (const step of args.steps) {
+    if (args.uiContextFilters === null) {
+      scopedSteps.push(step);
+      continue;
+    }
+    const composedFilters = composeStepFiltersWithUiContext(step.plan.filters, args.uiContextFilters);
+    const composedPlan: AnalyticalQueryPlan = { ...step.plan, ...(composedFilters !== undefined ? { filters: composedFilters } : {}) };
+    const validation = validateAnalyticalQueryPlan(composedPlan);
+    if (!validation.ok) {
+      scopeErrors.push(...validation.errors.map((error) => `${step.id}: ${error}`));
+      continue;
+    }
+    scopedSteps.push({ ...step, plan: validation.plan.canonical });
+  }
+  if (scopeErrors.length > 0) return { status: 'invalid_plan', errors: scopeErrors };
+
+  const attempts = await mapConcurrent(scopedSteps, CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES, async (step) => ({
     step,
     execution: await args.executeAnalyticalQuery({
       plan: step.plan,
@@ -3559,6 +3655,21 @@ function orchestratorInvalid(errors: readonly string[]): CustomerIntelligenceCop
 
 function plannerInvalid(errors: readonly string[]): CustomerIntelligenceCopilotResponse {
   return { status: 'planner_invalid', finalResponseState: 'failure', errors, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
+}
+
+function invalidUiContext(errors: readonly string[]): CustomerIntelligenceCopilotResponse {
+  return { status: 'invalid_ui_context', finalResponseState: 'failure', errors, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
+}
+
+function uiContextDiagnosticFields(state: CopilotSessionUiContextState | null, present: boolean, changed: boolean) {
+  return {
+    uiContextPresent: present,
+    uiContextChanged: changed,
+    uiContextQueryPlanHash: state?.selectedPopulation.queryPlanHash ?? null,
+    uiContextFilterLeafCount: state?.selectedPopulation.filters.length ?? null,
+    uiContextRequiredDimensions: state?.selectedPopulation.requiredDimensions ?? null,
+    uiContextMatchingPopulation: state?.selectedPopulation.matchingPopulation ?? null,
+  };
 }
 
 function answerGenerationFailed(error: unknown): CustomerIntelligenceCopilotResponse {

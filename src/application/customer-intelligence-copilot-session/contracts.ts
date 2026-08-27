@@ -2,9 +2,11 @@ import type {
   CopilotAnalyticalReference,
   CopilotFinalResponseState,
   CopilotSessionContext,
+  CopilotUiContextRequest,
+  CopilotUiContextSelectedPopulation,
   CustomerIntelligenceCopilotResponse,
 } from '../../domain/customer-intelligence-copilot/index.js';
-import type { AnalyticalQueryPlan, AnalyticalQueryResult } from '../../domain/customer-intelligence-query/index.js';
+import type { AnalyticalFilterInput, AnalyticalQueryPlan, AnalyticalQueryResult } from '../../domain/customer-intelligence-query/index.js';
 import type { CustomerIntelligenceSnapshotContext } from '../../domain/customer-intelligence/index.js';
 import type { ResolvedCustomerIntelligenceSnapshotIds } from '../customer-intelligence/ports.js';
 
@@ -41,6 +43,19 @@ export type CopilotSessionQueryResult = {
   readonly result: AnalyticalQueryResult;
 };
 
+// task MARKETING-R1-T06.4 Section 8: bounded, persisted state for the currently active dashboard
+// selection - the compact selectedPopulation projection itself (never redundant result rows or
+// chain-of-thought) plus the canonical T03 filter tree needed to compose it into future analytical
+// queries (Section 10/11) and the turn/time it was resolved at (Section 8's "turn association").
+// rawFilters is execution-only and must never be serialized into a model prompt - only
+// selectedPopulation (already label-projected) is model-facing (session-context.ts).
+export type CopilotSessionUiContextState = {
+  readonly selectedPopulation: CopilotUiContextSelectedPopulation;
+  readonly rawFilters: AnalyticalFilterInput | null;
+  readonly resolvedAtTurnId: string;
+  readonly resolvedAt: string;
+};
+
 export type CopilotSession = {
   readonly sessionId: string;
   readonly sessionVersion: 'customer-intelligence-copilot-session-v1';
@@ -58,6 +73,10 @@ export type CopilotSession = {
     readonly references: readonly CopilotAnalyticalReference[];
     readonly results: readonly CopilotSessionQueryResult[];
   };
+  // null until the first turn that carries a valid uiContext (task Section 7/8) - absent from a
+  // later turn's request never clears it (a turn with no dashboard selection attached does not
+  // erase the previously selected population).
+  readonly uiContext: CopilotSessionUiContextState | null;
 };
 
 export type CopilotSessionSummary = Pick<CopilotSession, 'sessionId' | 'sessionVersion' | 'createdAt' | 'lastActivityAt' | 'expiresAt' | 'pinnedContext'> & {
@@ -93,6 +112,9 @@ export type GetCopilotSessionResult =
 export type ProcessCopilotSessionTurnRequest = {
   readonly sessionId: string;
   readonly question: string;
+  // task MARKETING-R1-T06.4 Section 2: optional and backward compatible - omitted entirely,
+  // behavior is unchanged from before this task.
+  readonly uiContext?: CopilotUiContextRequest;
 };
 
 export type CopilotSessionTurnResponse = {

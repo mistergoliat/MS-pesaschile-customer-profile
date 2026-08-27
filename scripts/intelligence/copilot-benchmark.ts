@@ -12,6 +12,7 @@ import {
   type CopilotStageLatencyDiagnostic,
 } from '../../src/application/customer-intelligence-copilot-session/index.js';
 import { createCustomerIntelligenceContextResolvers } from '../../src/application/customer-intelligence/resolve-customer-intelligence-context.js';
+import { createExecuteIntersection } from '../../src/application/customer-intelligence-intersection/index.js';
 import { createMysqlCustomerFeatureSnapshotReader } from '../../src/infrastructure/customer-analytics/mysql-customer-feature-snapshot-reader.js';
 import { createMysqlSnapshotHeaderReader } from '../../src/infrastructure/customer-intelligence/mysql-snapshot-header-reader.js';
 import { createMysqlCustomerIntelligenceReader } from '../../src/infrastructure/customer-intelligence/mysql-customer-intelligence-reader.js';
@@ -175,16 +176,22 @@ async function runScenario(args: {
     intelligenceReader: createMysqlCustomerIntelligenceReader(args.pool),
   });
   const queryExecutor = createMysqlAnalyticalQueryExecutor(createQueryExecutor(args.pool, config.analyticsDb!.queryTimeoutMs));
+  const executeAnalyticalQueryWithResolvedContext = createExecuteAnalyticalQueryWithResolvedContext({ queryExecutor });
   const stageDiagnostics: CopilotStageLatencyDiagnostic[] = [];
   const plannerDiagnostics: CopilotPlannerDiagnostic[] = [];
   const service = createCustomerIntelligenceCopilotSessionService({
     getAnalyticalSchema,
     resolveCurrent: resolvers.resolveCurrent,
     resolveForFeatureSnapshot: resolvers.resolveForFeatureSnapshot,
-    executeAnalyticalQuery: createExecuteAnalyticalQueryWithResolvedContext({ queryExecutor }),
+    executeAnalyticalQuery: executeAnalyticalQueryWithResolvedContext,
     executeAnalyticalQueryForExport: async () => {
       throw new Error('benchmark export is not supported');
     },
+    executeIntersection: createExecuteIntersection({
+      resolveCurrent: resolvers.resolveCurrent,
+      resolveForFeatureSnapshot: resolvers.resolveForFeatureSnapshot,
+      executeAnalyticalQueryWithResolvedContext,
+    }),
     model: modelConfig.model,
     store: createInMemoryCopilotSessionStore(config.marketingCopilot.session),
     clock: new SystemClock(),

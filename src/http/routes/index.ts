@@ -55,7 +55,7 @@ import type {
   AnswerCustomerIntelligenceQuestion,
 } from '../../application/customer-intelligence-copilot/index.js';
 import type { CustomerIntelligenceCopilotSessionService } from '../../application/customer-intelligence-copilot-session/index.js';
-import type { CustomerIntelligenceCopilotResponse } from '../../domain/customer-intelligence-copilot/index.js';
+import type { CopilotUiContextRequest, CustomerIntelligenceCopilotResponse } from '../../domain/customer-intelligence-copilot/index.js';
 import type { PrestashopReadinessResult } from '../../infrastructure/prestashop/prestashop-pool.js';
 import { classifyErrorForLog } from '../../observability/classify-error-for-log.js';
 
@@ -110,9 +110,26 @@ const copilotCreateSessionBody = z
     featureSnapshotId: numericId.optional(),
   })
   .strict();
+// task MARKETING-R1-T06.4 Section 2/3: reuses T06.3's own AnalyticalFilterInput shape verbatim
+// for `filters` (its full structural/semantic validation is owned entirely by
+// validateAnalyticalQueryPlan inside resolveCopilotUiContext - task Section 15: never a second,
+// zod-shaped filter schema that could silently diverge from it). This body schema only bounds
+// the outer envelope, mirroring dashboardIntersectionRequestBody above.
+const copilotUiContextBody = z
+  .object({
+    intersection: z
+      .object({
+        contractVersion: z.string().optional(),
+        featureSnapshotId: numericId.optional(),
+        filters: z.unknown().optional(),
+      })
+      .strict(),
+  })
+  .strict();
 const copilotSessionMessageBody = z
   .object({
     question: z.string().trim().min(1).max(4000),
+    uiContext: copilotUiContextBody.optional(),
   })
   .strict();
 const copilotExportBody = z
@@ -332,6 +349,7 @@ export function buildRoutes(deps: RouteDependencies): Router {
     const result = await deps.customerIntelligenceCopilotSessionService.processSessionTurn({
       sessionId: parsedParams.data.sessionId,
       question: parsedBody.data.question,
+      uiContext: parsedBody.data.uiContext as CopilotUiContextRequest | undefined,
     });
     if (result.status !== 'ok') {
       response.status(result.status === 'session_expired' ? 410 : 404).json({ error: result.status });
@@ -1254,6 +1272,8 @@ function statusForCopilotResult(result: CustomerIntelligenceCopilotResponse): nu
     case 'unsupported_data':
     case 'unsupported_operation':
       return 422;
+    case 'invalid_ui_context':
+      return 400;
     case 'planner_invalid':
     case 'orchestrator_invalid':
     case 'answer_generation_failed':

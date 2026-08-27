@@ -11,6 +11,7 @@ import type {
   CopilotSessionStore,
   CopilotSessionStoreGetResult,
   CopilotSessionTurn,
+  CopilotSessionUiContextState,
   DeleteCopilotSessionResult,
 } from '../../application/customer-intelligence-copilot-session/index.js';
 
@@ -26,6 +27,7 @@ type ConversationRow = RowDataPacket & {
   expires_at: Date | string | null;
   pinned_context_json: MysqlJsonValue;
   resolved_ids_json: MysqlJsonValue;
+  ui_context_json?: MysqlJsonValue | null;
   summary_version: string | null;
   summary_text: string | null;
 };
@@ -116,8 +118,8 @@ async function upsertConversation(pool: Pool, session: CopilotSession): Promise<
     `INSERT INTO customer_intelligence_copilot_conversation (
        conversation_id, version, title, status, created_at, updated_at, last_activity_at, expires_at,
        pinned_feature_snapshot_id, pinned_rfm_snapshot_id, pinned_cluster_snapshot_id,
-       pinned_context_json, resolved_ids_json, summary_version, summary_text
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       pinned_context_json, resolved_ids_json, ui_context_json, summary_version, summary_text
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE
        title = VALUES(title),
        status = VALUES(status),
@@ -129,6 +131,7 @@ async function upsertConversation(pool: Pool, session: CopilotSession): Promise<
        pinned_cluster_snapshot_id = VALUES(pinned_cluster_snapshot_id),
        pinned_context_json = VALUES(pinned_context_json),
        resolved_ids_json = VALUES(resolved_ids_json),
+       ui_context_json = VALUES(ui_context_json),
        summary_version = VALUES(summary_version),
        summary_text = VALUES(summary_text)`,
     [
@@ -145,6 +148,7 @@ async function upsertConversation(pool: Pool, session: CopilotSession): Promise<
       session.pinnedContext.clusterSnapshot?.snapshotId ?? null,
       JSON.stringify(session.pinnedContext),
       JSON.stringify(session.resolvedIds),
+      session.uiContext ? JSON.stringify(session.uiContext) : null,
       session.summaryVersion ?? null,
       session.summary ?? null,
     ],
@@ -227,6 +231,9 @@ async function loadSession(pool: Pool, sessionId: string, knownConversation?: Co
     resolvedIds: parseJson<ResolvedCustomerIntelligenceSnapshotIds>(conversation.resolved_ids_json),
     turns,
     analyticalState: { references, results },
+    // Tolerates `undefined` (not just `null`) so a row read before migration 011 adds this
+    // column - or a test fixture predating it - still loads instead of throwing.
+    uiContext: conversation.ui_context_json === null || conversation.ui_context_json === undefined ? null : parseJson<CopilotSessionUiContextState>(conversation.ui_context_json),
   };
 }
 

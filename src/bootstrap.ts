@@ -324,12 +324,16 @@ export function bootstrap(): Bootstrap {
     const executeAnalyticalQueryWithResolvedContext = createExecuteAnalyticalQueryWithResolvedContext({
       queryExecutor: analyticalQueryExecutor,
     });
+    // task MARKETING-R1-T06.4 Section 3: the same dashboard-agnostic T06.3 adapter, built once
+    // and shared by the Dashboard Intersections endpoint above and the Copilot's uiContext
+    // adapter below - never a second executeIntersection instance.
+    const executeIntersection = createExecuteIntersection({
+      resolveCurrent: resolvers.resolveCurrent,
+      resolveForFeatureSnapshot: resolvers.resolveForFeatureSnapshot,
+      executeAnalyticalQueryWithResolvedContext,
+    });
     getDashboardIntersection = createGetDashboardIntersection({
-      executeIntersection: createExecuteIntersection({
-        resolveCurrent: resolvers.resolveCurrent,
-        resolveForFeatureSnapshot: resolvers.resolveForFeatureSnapshot,
-        executeAnalyticalQueryWithResolvedContext,
-      }),
+      executeIntersection,
       clusterAnalyticsReader,
     });
 
@@ -351,6 +355,7 @@ export function bootstrap(): Bootstrap {
         executeAnalyticalQueryForExport: createExecuteAnalyticalQueryForExport({
           queryExecutor: analyticalQueryExecutor,
         }),
+        executeIntersection,
         model: copilotModel.model,
         store: createMysqlCopilotSessionStore(analyticsPool),
         clock: systemClock,
