@@ -1,4 +1,10 @@
 import type { CustomerIntelligencePopulationCoverage } from '../customer-intelligence/contracts.js';
+import type { AnalyticalFilterInput } from '../customer-intelligence-query/contracts.js';
+import type {
+  IntersectionExecution,
+  IntersectionMetrics,
+  IntersectionRequiredDimension,
+} from '../customer-intelligence-intersection/contracts.js';
 
 // task MARKETING-R1-T06.2: dedicated, deterministic dashboard read model — composed directly
 // from customer-intelligence-read-model-v1's snapshot-resolution/population/business-semantics
@@ -9,6 +15,8 @@ export const CUSTOMER_INTELLIGENCE_DASHBOARD_CONTEXT_VERSION = 'customer-intelli
 export const CUSTOMER_INTELLIGENCE_DASHBOARD_OVERVIEW_VERSION = 'customer-intelligence-dashboard-overview-v1';
 export const CUSTOMER_INTELLIGENCE_DASHBOARD_RFM_VERSION = 'customer-intelligence-dashboard-rfm-v1';
 export const CUSTOMER_INTELLIGENCE_DASHBOARD_CLUSTERS_VERSION = 'customer-intelligence-dashboard-clusters-v1';
+export const CUSTOMER_INTELLIGENCE_DASHBOARD_INTERSECTION_REQUEST_VERSION = 'customer-intelligence-dashboard-intersection-request-v1';
+export const CUSTOMER_INTELLIGENCE_DASHBOARD_INTERSECTION_RESPONSE_VERSION = 'customer-intelligence-dashboard-intersection-response-v1';
 
 export type DashboardDegradedReason = 'dashboard_not_configured' | 'analytics_unavailable';
 
@@ -161,3 +169,68 @@ export type DashboardClustersResult =
   | { readonly status: 'feature_snapshot_not_found'; readonly featureSnapshotId: string; readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_DASHBOARD_CLUSTERS_VERSION }
   | { readonly status: 'no_compatible_cluster_snapshot'; readonly context: DashboardContext; readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_DASHBOARD_CLUSTERS_VERSION }
   | { readonly status: 'degraded'; readonly reason: DashboardDegradedReason; readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_DASHBOARD_CLUSTERS_VERSION };
+
+// task MARKETING-R1-T06.3 Section 2/3: the public request envelope. `filters` reuses T03's own
+// AnalyticalFilterInput shape verbatim (task Section 3: "do NOT invent dashboardFilter/
+// dashboardOperator/dashboardCondition") - no dashboard-specific filter type exists anywhere in
+// this codebase, by design.
+export type DashboardIntersectionRequest = {
+  readonly contractVersion?: typeof CUSTOMER_INTELLIGENCE_DASHBOARD_INTERSECTION_REQUEST_VERSION;
+  readonly featureSnapshotId?: string;
+  readonly filters?: AnalyticalFilterInput;
+};
+
+// task Section 6/7 - reshaped from IntersectionPopulation (customer-intelligence-intersection),
+// field names adapted to the task's own suggested response shape (task Section 5).
+export type DashboardIntersection = {
+  readonly matchingPopulation: number;
+  readonly featurePopulation: number;
+  readonly rfmMatchedPopulation: number;
+  readonly clusterMatchedPopulation: number;
+  readonly bothMatchedPopulation: number;
+  readonly rfmCoveragePct: number;
+  readonly clusterCoveragePct: number;
+  readonly requiredDimensions: readonly IntersectionRequiredDimension[];
+};
+
+// task Section 5/10/22: the reusable analytical definition, dashboard-response-shaped - carries
+// only what a caller needs to replay/persist this exact intersection (queryPlanHash + the
+// canonical filters), never the full resolvedContext again (already on the response's own
+// `context` field, task Section 13: no duplicated provenance structures).
+export type DashboardIntersectionAnalyticalDefinition = {
+  readonly queryPlanHash: string;
+  readonly filters: AnalyticalFilterInput | null;
+};
+
+export type DashboardIntersectionResult =
+  | {
+      readonly status: 'available';
+      readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_DASHBOARD_INTERSECTION_RESPONSE_VERSION;
+      readonly context: DashboardContext;
+      readonly intersection: DashboardIntersection;
+      readonly metrics: IntersectionMetrics;
+      readonly analyticalDefinition: DashboardIntersectionAnalyticalDefinition;
+      readonly execution: IntersectionExecution;
+    }
+  | { readonly status: 'no_published_feature_snapshot'; readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_DASHBOARD_INTERSECTION_RESPONSE_VERSION }
+  | {
+      readonly status: 'feature_snapshot_not_found';
+      readonly featureSnapshotId: string;
+      readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_DASHBOARD_INTERSECTION_RESPONSE_VERSION;
+    }
+  | {
+      readonly status: 'required_rfm_snapshot_unavailable';
+      readonly context: DashboardContext;
+      readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_DASHBOARD_INTERSECTION_RESPONSE_VERSION;
+    }
+  | {
+      readonly status: 'required_cluster_snapshot_unavailable';
+      readonly context: DashboardContext;
+      readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_DASHBOARD_INTERSECTION_RESPONSE_VERSION;
+    }
+  | {
+      readonly status: 'invalid_intersection';
+      readonly errors: readonly string[];
+      readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_DASHBOARD_INTERSECTION_RESPONSE_VERSION;
+    }
+  | { readonly status: 'degraded'; readonly reason: DashboardDegradedReason; readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_DASHBOARD_INTERSECTION_RESPONSE_VERSION };

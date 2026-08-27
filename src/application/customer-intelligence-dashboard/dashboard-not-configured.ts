@@ -3,11 +3,13 @@ import {
   CUSTOMER_INTELLIGENCE_DASHBOARD_CONTEXT_VERSION,
   CUSTOMER_INTELLIGENCE_DASHBOARD_OVERVIEW_VERSION,
   CUSTOMER_INTELLIGENCE_DASHBOARD_RFM_VERSION,
+  CUSTOMER_INTELLIGENCE_DASHBOARD_INTERSECTION_RESPONSE_VERSION,
 } from '../../domain/customer-intelligence-dashboard/index.js';
 import type { GetDashboardContext } from './get-dashboard-context.js';
 import type { GetDashboardOverview } from './get-dashboard-overview.js';
 import type { GetDashboardRfm } from './get-dashboard-rfm.js';
 import type { GetDashboardClusters } from './get-dashboard-clusters.js';
+import type { GetDashboardIntersection } from './get-dashboard-intersection.js';
 
 // Used by bootstrap.ts when ANALYTICS_DB_* is absent - mirrors cluster-analytics-not-
 // configured.ts exactly. The dashboard is gated on the same config.analyticsDb the Copilot/T02/
@@ -34,4 +36,10 @@ export const getDashboardClustersNotConfigured: GetDashboardClusters = async () 
   status: 'degraded',
   reason: 'dashboard_not_configured',
   contractVersion: CUSTOMER_INTELLIGENCE_DASHBOARD_CLUSTERS_VERSION,
+});
+
+export const getDashboardIntersectionNotConfigured: GetDashboardIntersection = async () => ({
+  status: 'degraded',
+  reason: 'dashboard_not_configured',
+  contractVersion: CUSTOMER_INTELLIGENCE_DASHBOARD_INTERSECTION_RESPONSE_VERSION,
 });

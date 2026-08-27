@@ -13,6 +13,7 @@ import type { GetDashboardContext } from '../../application/customer-intelligenc
 import type { GetDashboardOverview } from '../../application/customer-intelligence-dashboard/get-dashboard-overview.js';
 import type { GetDashboardRfm } from '../../application/customer-intelligence-dashboard/get-dashboard-rfm.js';
 import type { GetDashboardClusters } from '../../application/customer-intelligence-dashboard/get-dashboard-clusters.js';
+import type { GetDashboardIntersection } from '../../application/customer-intelligence-dashboard/get-dashboard-intersection.js';
 import type { GetCustomerOrderStatus } from '../../application/customer-order-status/get-customer-order-status.js';
 import type { GetCustomerProfile } from '../../application/customer-profile/get-customer-profile.js';
 import { CUSTOMER_PROFILE_CONTRACT_VERSION, type CustomerIdentity } from '../../domain/customer-identity/index.js';
@@ -39,11 +40,15 @@ import {
   CUSTOMER_INTELLIGENCE_DASHBOARD_OVERVIEW_VERSION,
   CUSTOMER_INTELLIGENCE_DASHBOARD_RFM_VERSION,
   CUSTOMER_INTELLIGENCE_DASHBOARD_CLUSTERS_VERSION,
+  CUSTOMER_INTELLIGENCE_DASHBOARD_INTERSECTION_REQUEST_VERSION,
+  CUSTOMER_INTELLIGENCE_DASHBOARD_INTERSECTION_RESPONSE_VERSION,
   type DashboardContextResult,
   type DashboardOverviewResult,
   type DashboardRfmResult,
   type DashboardClustersResult,
+  type DashboardIntersectionResult,
 } from '../../domain/customer-intelligence-dashboard/index.js';
+import type { AnalyticalFilterInput } from '../../domain/customer-intelligence-query/index.js';
 import type { GetCustomerOrderStatusResult } from '../../domain/customer-order-status/index.js';
 import type { CustomerProfileLookupResult } from '../../domain/customer-profile/index.js';
 import type {
@@ -67,6 +72,18 @@ const snapshotIdParams = z.object({ snapshotId: numericId });
 // featureSnapshotId convention the Copilot already exposes (copilotRequestBody below), never a
 // new pinning token/mechanism. Omitted => latest published feature snapshot.
 const dashboardQuery = z.object({ featureSnapshotId: numericId.optional() }).strict();
+// task MARKETING-R1-T06.3 Section 3: `filters` reuses T03's own AnalyticalFilterInput shape -
+// its full structural/semantic validation (unknown field, invalid operator, malformed BETWEEN,
+// too many leaves, too deep, ...) is owned entirely by validateAnalyticalQueryPlan (task Section
+// 15: reuse T03 validation, never a second, zod-shaped filter schema that could silently diverge
+// from it). This body schema only bounds the outer envelope.
+const dashboardIntersectionRequestBody = z
+  .object({
+    contractVersion: z.literal(CUSTOMER_INTELLIGENCE_DASHBOARD_INTERSECTION_REQUEST_VERSION).optional(),
+    featureSnapshotId: numericId.optional(),
+    filters: z.unknown().optional(),
+  })
+  .strict();
 
 const orderReference = z
   .string()
@@ -141,6 +158,7 @@ export type RouteDependencies = {
   readonly getDashboardOverview: GetDashboardOverview;
   readonly getDashboardRfm: GetDashboardRfm;
   readonly getDashboardClusters: GetDashboardClusters;
+  readonly getDashboardIntersection: GetDashboardIntersection;
   readonly answerCustomerIntelligenceQuestion?: AnswerCustomerIntelligenceQuestion;
   readonly customerIntelligenceCopilotSessionService?: CustomerIntelligenceCopilotSessionService;
   readonly marketingCopilot?: {
@@ -901,6 +919,40 @@ export function buildRoutes(deps: RouteDependencies): Router {
     }
   });
 
+  // Dashboard Intersections (MARKETING-R1-T06.3) - public request/response envelope only;
+  // `filters` is validated end-to-end by the existing T03 compiler/validator inside
+  // deps.getDashboardIntersection, never a second filter grammar (task Section 3/8).
+  router.post('/v1/customer-intelligence/dashboard/intersections', async (request: Request, response: Response) => {
+    if (Object.keys(request.query).length > 0) {
+      response.status(400).json({ error: 'unsupported_query_params' });
+      return;
+    }
+    const parsedBody = dashboardIntersectionRequestBody.safeParse(request.body);
+    if (!parsedBody.success) {
+      response.status(400).json({ error: 'invalid_dashboard_intersection_request' });
+      return;
+    }
+
+    const featureSnapshotId = parsedBody.data.featureSnapshotId ?? null;
+    const filters = parsedBody.data.filters as AnalyticalFilterInput | undefined;
+    const startedAt = Date.now();
+    try {
+      const result = await deps.getDashboardIntersection({ featureSnapshotId, filters });
+      logDashboardIntersectionLookup(featureSnapshotId, result, Date.now() - startedAt);
+      response.status(statusForDashboardIntersectionResult(result)).json(result);
+    } catch (error) {
+      console.error({
+        event: 'dashboard_intersection_request_failed',
+        endpoint: 'dashboard-intersections',
+        featureSnapshotId,
+        contractVersion: CUSTOMER_INTELLIGENCE_DASHBOARD_INTERSECTION_RESPONSE_VERSION,
+        durationMs: Date.now() - startedAt,
+        errorType: classifyErrorForLog(error),
+      });
+      response.status(500).json({ error: 'internal_error' });
+    }
+  });
+
   router.get('/v1/customers/:customerId/orders/:reference/status', async (request: Request, response: Response) => {
     const parsedParams = orderStatusParams.safeParse(request.params);
     if (!parsedParams.success) {
@@ -1170,6 +1222,28 @@ function statusForDashboardClustersResult(result: DashboardClustersResult): numb
   }
 }
 
+function statusForDashboardIntersectionResult(result: DashboardIntersectionResult): number {
+  switch (result.status) {
+    case 'available':
+      return 200;
+    case 'no_published_feature_snapshot':
+    case 'feature_snapshot_not_found':
+    // A referenced rfm.*/cluster.* filter dimension has no compatible snapshot for this
+    // context - a distinct, expected "resource absent" case (task Section 16/17), never a
+    // silently-wrong matchingPopulation: 0.
+    case 'required_rfm_snapshot_unavailable':
+    case 'required_cluster_snapshot_unavailable':
+      return 404;
+    // Malformed/invalid filters (unknown field, bad operator, too deep, ...) fail before any DB
+    // execution (task Section 15) - a genuine client error, unlike T06.2's GET endpoints which
+    // never had a request body to be invalid in the first place.
+    case 'invalid_intersection':
+      return 400;
+    case 'degraded':
+      return 503;
+  }
+}
+
 function statusForCopilotResult(result: CustomerIntelligenceCopilotResponse): number {
   switch (result.status) {
     case 'answered':
@@ -1338,6 +1412,28 @@ function logDashboardClustersLookup(featureSnapshotIdParam: string | null, resul
       durationMs,
     },
     'dashboard clusters lookup',
+  );
+}
+
+// task MARKETING-R1-T06.3 Section 19: structural counts only - never the filter's actual field
+// names/values, never customer ids, never SQL.
+function logDashboardIntersectionLookup(featureSnapshotIdParam: string | null, result: DashboardIntersectionResult, durationMs: number): void {
+  console.info(
+    {
+      endpoint: 'dashboard-intersections',
+      contractVersion: CUSTOMER_INTELLIGENCE_DASHBOARD_INTERSECTION_RESPONSE_VERSION,
+      featureSnapshotIdParam,
+      status: result.status,
+      matchingPopulation: result.status === 'available' ? result.intersection.matchingPopulation : null,
+      requiredDimensions: result.status === 'available' ? result.intersection.requiredDimensions : null,
+      queryCount: result.status === 'available' ? result.execution.queryCount : null,
+      filterLeafCount: result.status === 'available' ? result.execution.filterLeafCount : null,
+      filterDepth: result.status === 'available' ? result.execution.filterDepth : null,
+      degradedReason: result.status === 'degraded' ? result.reason : null,
+      invalidReasonCount: result.status === 'invalid_intersection' ? result.errors.length : null,
+      durationMs,
+    },
+    'dashboard intersections lookup',
   );
 }
 

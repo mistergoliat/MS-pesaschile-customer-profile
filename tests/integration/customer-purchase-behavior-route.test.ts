@@ -12,6 +12,7 @@ import type { GetDashboardContext } from '../../src/application/customer-intelli
 import type { GetDashboardOverview } from '../../src/application/customer-intelligence-dashboard/get-dashboard-overview.js';
 import type { GetDashboardRfm } from '../../src/application/customer-intelligence-dashboard/get-dashboard-rfm.js';
 import type { GetDashboardClusters } from '../../src/application/customer-intelligence-dashboard/get-dashboard-clusters.js';
+import type { GetDashboardIntersection } from '../../src/application/customer-intelligence-dashboard/get-dashboard-intersection.js';
 import type { GetCustomerOrderStatus } from '../../src/application/customer-order-status/get-customer-order-status.js';
 import type { GetCustomerProfile } from '../../src/application/customer-profile/get-customer-profile.js';
 import { buildApp } from '../../src/app.js';
@@ -64,6 +65,9 @@ const unreachableGetDashboardRfm: GetDashboardRfm = async () => {
 const unreachableGetDashboardClusters: GetDashboardClusters = async () => {
   throw new Error('getDashboardClusters must not be called from the purchase behavior route tests');
 };
+const unreachableGetDashboardIntersection: GetDashboardIntersection = async () => {
+  throw new Error('getDashboardIntersection must not be called from the purchase behavior route tests');
+};
 
 async function startApp(
   getCustomerPurchaseBehavior: GetCustomerPurchaseBehavior,
@@ -84,6 +88,7 @@ async function startApp(
     getDashboardOverview: unreachableGetDashboardOverview,
     getDashboardRfm: unreachableGetDashboardRfm,
     getDashboardClusters: unreachableGetDashboardClusters,
+    getDashboardIntersection: unreachableGetDashboardIntersection,
     checkReadiness,
   });
   server = createServer(app);

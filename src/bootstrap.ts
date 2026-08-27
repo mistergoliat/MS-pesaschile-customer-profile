@@ -41,16 +41,20 @@ import {
   createGetDashboardOverview,
   createGetDashboardRfm,
   createGetDashboardClusters,
+  createGetDashboardIntersection,
   getDashboardContextNotConfigured,
   getDashboardOverviewNotConfigured,
   getDashboardRfmNotConfigured,
   getDashboardClustersNotConfigured,
+  getDashboardIntersectionNotConfigured,
   type GetDashboardContext,
   type GetDashboardOverview,
   type GetDashboardRfm,
   type GetDashboardClusters,
+  type GetDashboardIntersection,
 } from './application/customer-intelligence-dashboard/index.js';
 import { createMysqlDashboardAnalyticsReader } from './infrastructure/customer-intelligence-dashboard/mysql-dashboard-analytics-reader.js';
+import { createExecuteIntersection } from './application/customer-intelligence-intersection/index.js';
 import { createGetCustomerProfile, type GetCustomerProfile } from './application/customer-profile/get-customer-profile.js';
 import {
   createAnswerCustomerIntelligenceQuestion,
@@ -125,6 +129,7 @@ export type Bootstrap = {
   readonly getDashboardOverview: GetDashboardOverview;
   readonly getDashboardRfm: GetDashboardRfm;
   readonly getDashboardClusters: GetDashboardClusters;
+  readonly getDashboardIntersection: GetDashboardIntersection;
   readonly answerCustomerIntelligenceQuestion: AnswerCustomerIntelligenceQuestion;
   readonly customerIntelligenceCopilotSessionService?: CustomerIntelligenceCopilotSessionService;
   readonly checkReadiness: ReadinessCheck;
@@ -262,6 +267,7 @@ export function bootstrap(): Bootstrap {
   let getDashboardOverview: GetDashboardOverview = getDashboardOverviewNotConfigured;
   let getDashboardRfm: GetDashboardRfm = getDashboardRfmNotConfigured;
   let getDashboardClusters: GetDashboardClusters = getDashboardClustersNotConfigured;
+  let getDashboardIntersection: GetDashboardIntersection = getDashboardIntersectionNotConfigured;
 
   let answerCustomerIntelligenceQuestion: AnswerCustomerIntelligenceQuestion = async () => ({
     status: 'analytics_unavailable',
@@ -310,25 +316,38 @@ export function bootstrap(): Bootstrap {
       dashboardAnalyticsReader,
     });
 
+    // Dashboard Intersections (MARKETING-R1-T06.3) - reuses the exact same T03 executor the
+    // Copilot uses below (createExecuteAnalyticalQueryWithResolvedContext), built once here so
+    // both consumers share one instance rather than two. Also has no LLM dependency: wired
+    // regardless of copilotModel.status, same as the other dashboard readers above.
+    const analyticalQueryExecutor = createMysqlAnalyticalQueryExecutor(getAnalyticsQueryExecutor());
+    const executeAnalyticalQueryWithResolvedContext = createExecuteAnalyticalQueryWithResolvedContext({
+      queryExecutor: analyticalQueryExecutor,
+    });
+    getDashboardIntersection = createGetDashboardIntersection({
+      executeIntersection: createExecuteIntersection({
+        resolveCurrent: resolvers.resolveCurrent,
+        resolveForFeatureSnapshot: resolvers.resolveForFeatureSnapshot,
+        executeAnalyticalQueryWithResolvedContext,
+      }),
+      clusterAnalyticsReader,
+    });
+
     // The Copilot additionally requires an LLM model to be configured - the dashboard readers
     // above have no such dependency and are already wired regardless of copilotModel.status.
     if (copilotModel.status === 'configured') {
-      const analyticalQueryExecutor = createMysqlAnalyticalQueryExecutor(getAnalyticsQueryExecutor());
-      const executeAnalyticalQuery = createExecuteAnalyticalQueryWithResolvedContext({
-        queryExecutor: analyticalQueryExecutor,
-      });
       answerCustomerIntelligenceQuestion = createAnswerCustomerIntelligenceQuestion({
         getAnalyticalSchema,
         resolveCurrent: resolvers.resolveCurrent,
         resolveForFeatureSnapshot: resolvers.resolveForFeatureSnapshot,
-        executeAnalyticalQuery,
+        executeAnalyticalQuery: executeAnalyticalQueryWithResolvedContext,
         model: copilotModel.model,
       });
       customerIntelligenceCopilotSessionService = createCustomerIntelligenceCopilotSessionService({
         getAnalyticalSchema,
         resolveCurrent: resolvers.resolveCurrent,
         resolveForFeatureSnapshot: resolvers.resolveForFeatureSnapshot,
-        executeAnalyticalQuery,
+        executeAnalyticalQuery: executeAnalyticalQueryWithResolvedContext,
         executeAnalyticalQueryForExport: createExecuteAnalyticalQueryForExport({
           queryExecutor: analyticalQueryExecutor,
         }),
@@ -378,6 +397,7 @@ export function bootstrap(): Bootstrap {
     getDashboardOverview,
     getDashboardRfm,
     getDashboardClusters,
+    getDashboardIntersection,
     answerCustomerIntelligenceQuestion,
     customerIntelligenceCopilotSessionService,
     checkReadiness,

@@ -21,6 +21,7 @@ const baseDeps: RouteDependencies = {
   getDashboardOverview: async () => { throw new Error('unreachable'); },
   getDashboardRfm: async () => { throw new Error('unreachable'); },
   getDashboardClusters: async () => { throw new Error('unreachable'); },
+  getDashboardIntersection: async () => { throw new Error('unreachable'); },
   checkReadiness: async () => ({ crm: false, prestashop: { status: 'ready' } }),
   marketingCopilot: { enabled: true, internalToken: 'secret-token-1234' },
 };
