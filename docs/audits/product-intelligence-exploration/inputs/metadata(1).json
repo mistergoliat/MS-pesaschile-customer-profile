@@ -1,0 +1,798 @@
+{
+  "generatedAt": "2026-08-27T22:12:23.600Z",
+  "status": "completed",
+  "source": "PrestaShop RDS read-only product catalog plus optional Catalog Service relationship snapshot",
+  "sourceEnvironment": {
+    "database": "pesas_productiva",
+    "tablePrefix": "ps_",
+    "productLanguageId": 1,
+    "catalogShopId": 1,
+    "catalogShopIdSource": "PRESTASHOP_CATALOG_SHOP_ID",
+    "server": {
+      "raw": "10.6.25-MariaDB-log",
+      "engine": "mariadb",
+      "majorVersion": 10,
+      "minorVersion": 6,
+      "supportsWindowFunctions": true
+    }
+  },
+  "extractionVersion": "customer-intelligence-r2-a00-product-exploration-v1",
+  "validOrderPolicyVersion": "ps_orders.valid = 1",
+  "relationshipSnapshot": {
+    "source": "PRODUCT_RELATIONSHIP_SNAPSHOT_DIR",
+    "snapshotDirectory": "C:\\Users\\Goli\\Pesas Chile\\MS\\MS-Stock\\services\\data\\relationship-snapshots",
+    "snapshotPath": null,
+    "relationshipRows": 5770,
+    "snapshotIds": [
+      "sha256:e844509c4059b8bc434fd3ecd505979e39ee8c549946f56197e57177ae5b22d7"
+    ]
+  },
+  "productCounts": {
+    "total": 2011,
+    "active": 889,
+    "inactive": 661,
+    "activeUnknownHistoricalOnly": 461,
+    "currentCatalog": 1550,
+    "historicalOrderDetailOnly": 461,
+    "withCombinations": 134,
+    "withoutSales": 274
+  },
+  "sourceRowsRead": {
+    "preflight.select-1": 1,
+    "preflight.show-grants": 1,
+    "preflight.threads-running": 1,
+    "preflight.max-connections": 1,
+    "preflight.version": 1,
+    "schema.tables": 419,
+    "preflight.catalog-shop-exists": 1,
+    "products.base": 1550,
+    "categories.all": 253,
+    "product-categories.all": 7842,
+    "features.catalog": 75,
+    "product-features.all": 14147,
+    "tags.product": 2795,
+    "sales.variant-aggregates": 370,
+    "combinations.all": 453,
+    "sales.product-aggregates": 1737,
+    "sales.historical-product-identities": 1737
+  },
+  "queryLog": [
+    {
+      "name": "preflight.select-1",
+      "purpose": "lightweight connectivity check",
+      "durationMs": 153,
+      "rowCount": 1
+    },
+    {
+      "name": "preflight.show-grants",
+      "purpose": "read-only grant verification",
+      "durationMs": 169,
+      "rowCount": 1
+    },
+    {
+      "name": "preflight.threads-running",
+      "purpose": "server load guardrail input",
+      "durationMs": 156,
+      "rowCount": 1
+    },
+    {
+      "name": "preflight.max-connections",
+      "purpose": "server load guardrail input",
+      "durationMs": 151,
+      "rowCount": 1
+    },
+    {
+      "name": "preflight.version",
+      "purpose": "server engine and version",
+      "durationMs": 170,
+      "rowCount": 1
+    },
+    {
+      "name": "schema.tables",
+      "purpose": "discover PrestaShop-prefixed tables",
+      "durationMs": 173,
+      "rowCount": 419
+    },
+    {
+      "name": "preflight.catalog-shop-exists",
+      "purpose": "verify configured product shop exists",
+      "durationMs": 170,
+      "rowCount": 1
+    },
+    {
+      "name": "products.base",
+      "purpose": "base product export rows",
+      "durationMs": 1762,
+      "rowCount": 1550
+    },
+    {
+      "name": "categories.all",
+      "purpose": "all category nodes and preferred-language names",
+      "durationMs": 164,
+      "rowCount": 253
+    },
+    {
+      "name": "product-categories.all",
+      "purpose": "all product/category assignments",
+      "durationMs": 183,
+      "rowCount": 7842
+    },
+    {
+      "name": "features.catalog",
+      "purpose": "feature definitions and assignment counts",
+      "durationMs": 179,
+      "rowCount": 75
+    },
+    {
+      "name": "product-features.all",
+      "purpose": "all product feature values",
+      "durationMs": 228,
+      "rowCount": 14147
+    },
+    {
+      "name": "tags.product",
+      "purpose": "PrestaShop product tags",
+      "durationMs": 163,
+      "rowCount": 2795
+    },
+    {
+      "name": "sales.variant-aggregates",
+      "purpose": "valid-order sales aggregates by product combination",
+      "durationMs": 298,
+      "rowCount": 370
+    },
+    {
+      "name": "combinations.all",
+      "purpose": "all product combinations and attribute values",
+      "durationMs": 187,
+      "rowCount": 453
+    },
+    {
+      "name": "sales.product-aggregates",
+      "purpose": "valid-order sales aggregates by base product",
+      "durationMs": 807,
+      "rowCount": 1737
+    },
+    {
+      "name": "sales.historical-product-identities",
+      "purpose": "latest valid-order line identity by product for products missing from current catalog",
+      "durationMs": 400,
+      "rowCount": 1737
+    }
+  ],
+  "durationsMs": {
+    "total": 23662,
+    "extraction": 4403,
+    "output": 2969
+  },
+  "outputFiles": [
+    {
+      "file": "product_catalog_exploration.csv",
+      "bytes": 9848030
+    },
+    {
+      "file": "products.xlsx",
+      "bytes": 2984714
+    },
+    {
+      "file": "product_catalog_raw.json",
+      "bytes": 22019263
+    },
+    {
+      "file": "metadata.json",
+      "bytes": 23159
+    },
+    {
+      "file": "representative_product_sample.csv",
+      "bytes": 1022525
+    }
+  ],
+  "sourceTableMap": [
+    {
+      "domain": "Product identity",
+      "databaseSchema": "PrestaShop RDS / configured database",
+      "table": "<prefix>product",
+      "columns": [
+        "id_product",
+        "reference",
+        "active",
+        "visibility",
+        "id_manufacturer",
+        "id_category_default",
+        "price",
+        "wholesale_price",
+        "condition",
+        "weight",
+        "width",
+        "height",
+        "depth",
+        "available_for_order",
+        "show_price",
+        "cache_default_attribute",
+        "date_add",
+        "date_upd"
+      ],
+      "joinKey": "id_product",
+      "rowCardinality": "one row per base product",
+      "sourceOfTruthRole": "base product identity and numeric product attributes",
+      "containsPii": false,
+      "exportStrategy": "direct"
+    },
+    {
+      "domain": "Product shop override",
+      "databaseSchema": "PrestaShop RDS / configured database",
+      "table": "<prefix>product_shop",
+      "columns": [
+        "id_product",
+        "id_shop",
+        "active",
+        "visibility",
+        "id_category_default",
+        "price",
+        "wholesale_price",
+        "date_add",
+        "date_upd"
+      ],
+      "joinKey": "id_product + configured id_shop",
+      "rowCardinality": "zero or one row per base product for the configured shop",
+      "sourceOfTruthRole": "configured-shop storefront flags/default category when present",
+      "containsPii": false,
+      "exportStrategy": "direct"
+    },
+    {
+      "domain": "Product text",
+      "databaseSchema": "PrestaShop RDS / configured database",
+      "table": "<prefix>product_lang",
+      "columns": [
+        "id_product",
+        "id_lang",
+        "id_shop",
+        "name",
+        "description_short",
+        "description",
+        "link_rewrite"
+      ],
+      "joinKey": "id_product + configured id_lang + configured id_shop",
+      "rowCardinality": "zero or one preferred-language row per base product",
+      "sourceOfTruthRole": "localized names, descriptions, and slug",
+      "containsPii": false,
+      "exportStrategy": "direct"
+    },
+    {
+      "domain": "Manufacturer",
+      "databaseSchema": "PrestaShop RDS / configured database",
+      "table": "<prefix>manufacturer",
+      "columns": [
+        "id_manufacturer",
+        "name"
+      ],
+      "joinKey": "id_manufacturer",
+      "rowCardinality": "zero or one manufacturer row per product",
+      "sourceOfTruthRole": "brand/manufacturer label",
+      "containsPii": false,
+      "exportStrategy": "direct"
+    },
+    {
+      "domain": "Category link",
+      "databaseSchema": "PrestaShop RDS / configured database",
+      "table": "<prefix>category_product",
+      "columns": [
+        "id_product",
+        "id_category",
+        "position"
+      ],
+      "joinKey": "id_product",
+      "rowCardinality": "zero to many category assignments per product",
+      "sourceOfTruthRole": "faithful raw category membership",
+      "containsPii": false,
+      "exportStrategy": "structured"
+    },
+    {
+      "domain": "Category",
+      "databaseSchema": "PrestaShop RDS / configured database",
+      "table": "<prefix>category",
+      "columns": [
+        "id_category",
+        "id_parent",
+        "active",
+        "level_depth",
+        "date_add",
+        "date_upd"
+      ],
+      "joinKey": "id_category",
+      "rowCardinality": "one row per category",
+      "sourceOfTruthRole": "category tree structure and status",
+      "containsPii": false,
+      "exportStrategy": "direct"
+    },
+    {
+      "domain": "Category text",
+      "databaseSchema": "PrestaShop RDS / configured database",
+      "table": "<prefix>category_lang",
+      "columns": [
+        "id_category",
+        "id_lang",
+        "id_shop",
+        "name",
+        "link_rewrite"
+      ],
+      "joinKey": "id_category + configured id_lang + configured id_shop",
+      "rowCardinality": "zero or one preferred-language row per category",
+      "sourceOfTruthRole": "category display name and slug",
+      "containsPii": false,
+      "exportStrategy": "direct"
+    },
+    {
+      "domain": "Product feature link",
+      "databaseSchema": "PrestaShop RDS / configured database",
+      "table": "<prefix>feature_product",
+      "columns": [
+        "id_product",
+        "id_feature",
+        "id_feature_value"
+      ],
+      "joinKey": "id_product",
+      "rowCardinality": "zero to many feature values per product",
+      "sourceOfTruthRole": "raw feature assignments",
+      "containsPii": false,
+      "exportStrategy": "structured"
+    },
+    {
+      "domain": "Feature label",
+      "databaseSchema": "PrestaShop RDS / configured database",
+      "table": "<prefix>feature_lang",
+      "columns": [
+        "id_feature",
+        "id_lang",
+        "name"
+      ],
+      "joinKey": "id_feature + configured id_lang",
+      "rowCardinality": "zero or one preferred-language row per feature",
+      "sourceOfTruthRole": "feature name",
+      "containsPii": false,
+      "exportStrategy": "direct"
+    },
+    {
+      "domain": "Feature value",
+      "databaseSchema": "PrestaShop RDS / configured database",
+      "table": "<prefix>feature_value / <prefix>feature_value_lang",
+      "columns": [
+        "id_feature_value",
+        "id_feature",
+        "custom",
+        "id_lang",
+        "value"
+      ],
+      "joinKey": "id_feature_value + configured id_lang",
+      "rowCardinality": "zero or one preferred-language row per feature value",
+      "sourceOfTruthRole": "feature value text and custom-value marker",
+      "containsPii": false,
+      "exportStrategy": "direct"
+    },
+    {
+      "domain": "Attribute combination",
+      "databaseSchema": "PrestaShop RDS / configured database",
+      "table": "<prefix>product_attribute",
+      "columns": [
+        "id_product_attribute",
+        "id_product",
+        "reference",
+        "price",
+        "weight",
+        "default_on",
+        "minimal_quantity",
+        "available_date"
+      ],
+      "joinKey": "id_product_attribute",
+      "rowCardinality": "zero to many combinations per base product",
+      "sourceOfTruthRole": "base combination identity and impacts",
+      "containsPii": false,
+      "exportStrategy": "structured"
+    },
+    {
+      "domain": "Attribute labels",
+      "databaseSchema": "PrestaShop RDS / configured database",
+      "table": "<prefix>product_attribute_combination / <prefix>attribute / <prefix>attribute_lang / <prefix>attribute_group_lang",
+      "columns": [
+        "id_product_attribute",
+        "id_attribute",
+        "id_attribute_group",
+        "name"
+      ],
+      "joinKey": "id_product_attribute + id_attribute",
+      "rowCardinality": "zero to many attribute values per combination",
+      "sourceOfTruthRole": "combination attribute groups and values",
+      "containsPii": false,
+      "exportStrategy": "structured"
+    },
+    {
+      "domain": "Stock",
+      "databaseSchema": "PrestaShop RDS / configured database",
+      "table": "<prefix>stock_available",
+      "columns": [
+        "id_product",
+        "id_product_attribute",
+        "id_shop",
+        "quantity",
+        "out_of_stock"
+      ],
+      "joinKey": "id_product + id_product_attribute + configured id_shop when available",
+      "rowCardinality": "zero to many stock rows per product/combination",
+      "sourceOfTruthRole": "availability/quantity signal",
+      "containsPii": false,
+      "exportStrategy": "aggregate-only"
+    },
+    {
+      "domain": "Tags",
+      "databaseSchema": "PrestaShop RDS / configured database",
+      "table": "<prefix>product_tag / <prefix>tag",
+      "columns": [
+        "id_product",
+        "id_tag",
+        "id_lang",
+        "name"
+      ],
+      "joinKey": "id_product + id_tag + configured id_lang",
+      "rowCardinality": "zero to many tags per product",
+      "sourceOfTruthRole": "existing PrestaShop tag labels",
+      "containsPii": false,
+      "exportStrategy": "structured"
+    },
+    {
+      "domain": "Orders",
+      "databaseSchema": "PrestaShop RDS / configured database",
+      "table": "<prefix>orders",
+      "columns": [
+        "id_order",
+        "id_customer",
+        "valid",
+        "date_add"
+      ],
+      "joinKey": "id_order",
+      "rowCardinality": "one row per order header",
+      "sourceOfTruthRole": "valid-order policy and sale date/customer aggregate input",
+      "containsPii": true,
+      "exportStrategy": "aggregate-only"
+    },
+    {
+      "domain": "Order lines",
+      "databaseSchema": "PrestaShop RDS / configured database",
+      "table": "<prefix>order_detail",
+      "columns": [
+        "id_order",
+        "product_id",
+        "product_attribute_id",
+        "product_name",
+        "product_reference",
+        "product_quantity",
+        "total_price_tax_incl"
+      ],
+      "joinKey": "id_order + product_id + product_attribute_id",
+      "rowCardinality": "zero to many order lines per order",
+      "sourceOfTruthRole": "historical units/revenue by product and fallback identity for sold products missing from current catalog",
+      "containsPii": false,
+      "exportStrategy": "aggregate-only"
+    },
+    {
+      "domain": "Behavioral relationships",
+      "databaseSchema": "Catalog Service snapshot / external artifact",
+      "table": "relationship snapshot",
+      "columns": [
+        "sourceProductId",
+        "targetProductId",
+        "score",
+        "confidence",
+        "lift",
+        "support",
+        "reliability"
+      ],
+      "joinKey": "sourceProductId/productId",
+      "rowCardinality": "zero to many related targets per source product",
+      "sourceOfTruthRole": "behavioral product relationship evidence only",
+      "containsPii": false,
+      "exportStrategy": "structured"
+    },
+    {
+      "domain": "Customer table",
+      "databaseSchema": "PrestaShop RDS / configured database",
+      "table": "<prefix>customer",
+      "columns": [
+        "id_customer",
+        "firstname",
+        "lastname",
+        "email"
+      ],
+      "joinKey": "id_customer",
+      "rowCardinality": "one row per PrestaShop customer",
+      "sourceOfTruthRole": "not needed for product export; listed explicitly as raw non-export",
+      "containsPii": true,
+      "exportStrategy": "do-not-export-raw"
+    },
+    {
+      "domain": "Address table",
+      "databaseSchema": "PrestaShop RDS / configured database",
+      "table": "<prefix>address",
+      "columns": [
+        "id_address",
+        "firstname",
+        "lastname",
+        "address1",
+        "address2",
+        "phone",
+        "phone_mobile"
+      ],
+      "joinKey": "id_address",
+      "rowCardinality": "one row per address",
+      "sourceOfTruthRole": "not needed for product export; listed explicitly as raw non-export",
+      "containsPii": true,
+      "exportStrategy": "do-not-export-raw"
+    }
+  ],
+  "exportDataModel": [
+    {
+      "table": "Products",
+      "primaryKey": "productId",
+      "grain": "one row per PrestaShop base product",
+      "fields": [
+        "productId",
+        "reference",
+        "name",
+        "active",
+        "visibility",
+        "manufacturerId",
+        "manufacturerName",
+        "price",
+        "wholesalePrice",
+        "defaultCategoryId",
+        "defaultCategoryName",
+        "defaultCategoryPath",
+        "allCategoryIds",
+        "allCategoryNames",
+        "categoryHierarchyPaths",
+        "shortDescription",
+        "fullDescription",
+        "tags_json",
+        "tags_text",
+        "condition",
+        "weight",
+        "width",
+        "height",
+        "depth",
+        "dateAdded",
+        "dateUpdated",
+        "stockQuantity",
+        "features_json",
+        "features_text",
+        "combinations_json",
+        "commercial aggregate fields",
+        "relationship summary fields",
+        "deterministic diagnostics"
+      ],
+      "sourceTables": [
+        "product",
+        "product_shop",
+        "product_lang",
+        "manufacturer",
+        "category_product",
+        "category",
+        "category_lang",
+        "feature_*",
+        "attribute_*",
+        "stock_available",
+        "orders",
+        "order_detail"
+      ],
+      "expectedRowCount": "catalog product count, including active and inactive products",
+      "required": true
+    },
+    {
+      "table": "Categories",
+      "primaryKey": "categoryId",
+      "grain": "one row per category",
+      "fields": [
+        "categoryId",
+        "parentCategoryId",
+        "name",
+        "active",
+        "levelDepth",
+        "computedDepth",
+        "pathIds",
+        "pathNames",
+        "assignedProductCount"
+      ],
+      "sourceTables": [
+        "category",
+        "category_lang",
+        "category_product"
+      ],
+      "expectedRowCount": "category count",
+      "required": true
+    },
+    {
+      "table": "ProductCategories",
+      "primaryKey": "productId + categoryId",
+      "grain": "one row per product/category assignment",
+      "fields": [
+        "productId",
+        "categoryId",
+        "categoryName",
+        "categoryPath",
+        "levelDepth",
+        "position",
+        "isDefaultCategory"
+      ],
+      "sourceTables": [
+        "category_product",
+        "category",
+        "category_lang",
+        "product",
+        "product_shop"
+      ],
+      "expectedRowCount": "sum of category assignments across all products",
+      "required": true
+    },
+    {
+      "table": "Features",
+      "primaryKey": "featureId",
+      "grain": "one row per feature definition",
+      "fields": [
+        "featureId",
+        "featureName",
+        "position",
+        "assignedProductCount"
+      ],
+      "sourceTables": [
+        "feature",
+        "feature_lang",
+        "feature_product"
+      ],
+      "expectedRowCount": "feature definition count; zero if feature tables are absent",
+      "required": false
+    },
+    {
+      "table": "ProductFeatures",
+      "primaryKey": "productId + featureId + featureValueId",
+      "grain": "one row per product feature value",
+      "fields": [
+        "productId",
+        "featureId",
+        "featureName",
+        "featureValueId",
+        "featureValue",
+        "custom"
+      ],
+      "sourceTables": [
+        "feature_product",
+        "feature_lang",
+        "feature_value",
+        "feature_value_lang"
+      ],
+      "expectedRowCount": "sum of feature assignments across all products; zero if feature tables are absent",
+      "required": false
+    },
+    {
+      "table": "Combinations",
+      "primaryKey": "combinationId",
+      "grain": "one row per product combination/variant",
+      "fields": [
+        "combinationId",
+        "productId",
+        "reference",
+        "priceImpact",
+        "weightImpact",
+        "defaultOn",
+        "stockQuantity",
+        "attributeGroups",
+        "attributeValues",
+        "attributes_json",
+        "attributes_text",
+        "validOrderCount",
+        "unitsSold"
+      ],
+      "sourceTables": [
+        "product_attribute",
+        "product_attribute_shop",
+        "product_attribute_combination",
+        "attribute",
+        "attribute_lang",
+        "attribute_group_lang",
+        "stock_available",
+        "orders",
+        "order_detail"
+      ],
+      "expectedRowCount": "combination count; zero for products without variants",
+      "required": false
+    },
+    {
+      "table": "SalesAggregates",
+      "primaryKey": "productId",
+      "grain": "one row per base product with any valid-order history",
+      "fields": [
+        "productId",
+        "validOrderCount",
+        "unitsSold",
+        "uniqueCustomerCount",
+        "totalRevenueTaxIncl",
+        "firstSaleAt",
+        "lastSaleAt",
+        "averageUnitsPerOrder"
+      ],
+      "sourceTables": [
+        "orders",
+        "order_detail"
+      ],
+      "expectedRowCount": "products with at least one valid order line",
+      "required": true
+    },
+    {
+      "table": "Relationships",
+      "primaryKey": "sourceProductId + targetProductId",
+      "grain": "one row per behavioral relationship edge",
+      "fields": [
+        "sourceProductId",
+        "targetProductId",
+        "score",
+        "confidence",
+        "lift",
+        "support",
+        "reliability",
+        "snapshotId"
+      ],
+      "sourceTables": [
+        "Catalog Service relationship snapshot, when supplied"
+      ],
+      "expectedRowCount": "zero unless a relationship snapshot is configured",
+      "required": false
+    },
+    {
+      "table": "DataQuality",
+      "primaryKey": "metric",
+      "grain": "one deterministic diagnostic metric or evidence row",
+      "fields": [
+        "metric",
+        "value",
+        "details_json"
+      ],
+      "sourceTables": [
+        "derived from exported logical tables"
+      ],
+      "expectedRowCount": "dozens of summary rows",
+      "required": true
+    }
+  ],
+  "piiCheck": {
+    "exportedFieldFindings": [],
+    "rawTablesNotExported": [
+      "<prefix>customer",
+      "<prefix>address"
+    ]
+  },
+  "writeSafety": {
+    "sqlGuardrail": "static guard rejects write/DDL keywords and direct PII columns",
+    "grantGuardrail": {
+      "safe": true,
+      "disallowedPrivileges": [],
+      "hasGrantOption": false
+    },
+    "loadGuardrail": {
+      "safe": true,
+      "threadsRunning": 3,
+      "maxConnections": 646,
+      "ratio": 0.0046439628482972135,
+      "reason": null
+    },
+    "writesToPrestashop": false
+  },
+  "catalogServiceAudit": {
+    "localPath": "C:\\Users\\Goli\\Pesas Chile\\MS\\MS-Stock\\services",
+    "prestashopShopIdPolicy": 1,
+    "relationshipSnapshotDirectory": "C:\\Users\\Goli\\Pesas Chile\\MS\\MS-Stock\\services\\data\\relationship-snapshots",
+    "reusableComponentsReviewed": [
+      "src/infrastructure/catalog/mysqlCatalogExploreDataReader.ts",
+      "src/infrastructure/catalog/mysqlCatalogCommercialDataReader.ts",
+      "src/infrastructure/recommendation/fileProductRelationshipSnapshotStore.ts",
+      "src/domain/recommendation/relationship-engine/publication/contracts.ts"
+    ],
+    "reuseDecision": "Do not use explore-products reader as source for A00 because it is product-discovery/runtime oriented; reuse its shop/lang policy and active relationship snapshot contract as evidence inputs."
+  }
+}

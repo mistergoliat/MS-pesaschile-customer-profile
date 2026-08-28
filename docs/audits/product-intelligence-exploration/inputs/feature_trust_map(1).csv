@@ -1,0 +1,76 @@
+featureId,featureName,assignedProductCount,trustClass,reason
+1,Clasificación de Uso,304,SEMANTIC,strong product/use/technical semantics useful for ontology evidence
+2,Categoría,440,SEMANTIC,strong product/use/technical semantics useful for ontology evidence
+3,Peso Neto (N.W.),1187,TECHNICAL,"technical spec; useful for family/level inference, not affinity alone"
+4,Anillo central,112,NOISE,low coverage or unclear ontology value
+5,Diámetro externo,245,TECHNICAL,"technical spec; useful for family/level inference, not affinity alone"
+6,Diámetro interno,181,TECHNICAL,"technical spec; useful for family/level inference, not affinity alone"
+7,Diámetro placa central,1,TECHNICAL,"technical spec; useful for family/level inference, not affinity alone"
+8,Espesor,241,TECHNICAL,"technical spec; useful for family/level inference, not affinity alone"
+9,Densidad,40,TECHNICAL,"technical spec; useful for family/level inference, not affinity alone"
+10,Peso Bruto (G.W.),718,TECHNICAL,"technical spec; useful for family/level inference, not affinity alone"
+11,Peso máximo de usuario,356,SEMANTIC,strong product/use/technical semantics useful for ontology evidence
+12,Peso máximo de carga,357,SEMANTIC,strong product/use/technical semantics useful for ontology evidence
+14,Resistencia,53,NOISE,low coverage or unclear ontology value
+15,Dimensiones del producto armado,354,TECHNICAL,"technical spec; useful for family/level inference, not affinity alone"
+16,Dimensiones del producto,419,TECHNICAL,"technical spec; useful for family/level inference, not affinity alone"
+17,Dimensiones del Empaque,741,TECHNICAL,"technical spec; useful for family/level inference, not affinity alone"
+18,Área de trote ,13,SEMANTIC,strong product/use/technical semantics useful for ontology evidence
+19,Motor,19,SEMANTIC,strong product/use/technical semantics useful for ontology evidence
+20,Potencia de Motor,15,SEMANTIC,strong product/use/technical semantics useful for ontology evidence
+21,Voltaje de alimentación,25,LOGISTICS,service/warranty/logistics/safety info; keep as attributes
+22,Temperatura ambiente de funcionamiento,12,LOGISTICS,service/warranty/logistics/safety info; keep as attributes
+23,Temperatura estable,18,LOGISTICS,service/warranty/logistics/safety info; keep as attributes
+24,Pantalla,36,SEMANTIC,strong product/use/technical semantics useful for ontology evidence
+25,Sistema operativo,2,NOISE,low coverage or unclear ontology value
+26,Memoria,1,NOISE,low coverage or unclear ontology value
+27,Internet,1,NOISE,low coverage or unclear ontology value
+28,USB,1,NOISE,low coverage or unclear ontology value
+29,Sistema HRC (Medidor de pulso),14,NOISE,low coverage or unclear ontology value
+30,Freno de emergencia,13,NOISE,low coverage or unclear ontology value
+31,Inclinación,15,SEMANTIC,strong product/use/technical semantics useful for ontology evidence
+32,Velocidad,21,SEMANTIC,strong product/use/technical semantics useful for ontology evidence
+33,Amortiguación,6,SEMANTIC,strong product/use/technical semantics useful for ontology evidence
+34,Pila de Stack,105,SEMANTIC,strong product/use/technical semantics useful for ontology evidence
+35,Espesor de material,121,SEMANTIC,strong product/use/technical semantics useful for ontology evidence
+36,Perfiles,356,TECHNICAL,"technical spec; useful for family/level inference, not affinity alone"
+37,Disco de inercia,20,SEMANTIC,strong product/use/technical semantics useful for ontology evidence
+38,Sistema de transmisión,19,SEMANTIC,strong product/use/technical semantics useful for ontology evidence
+39,Estructura,190,SEMANTIC,strong product/use/technical semantics useful for ontology evidence
+40,Tapicería,123,PRESENTATION,presentation/model variant; generally not customer-affinity semantics
+41,Carga máxima,36,SEMANTIC,strong product/use/technical semantics useful for ontology evidence
+42,Largo total,132,TECHNICAL,"technical spec; useful for family/level inference, not affinity alone"
+43,Ancho,54,TECHNICAL,"technical spec; useful for family/level inference, not affinity alone"
+44,Circunferencia,7,TECHNICAL,"technical spec; useful for family/level inference, not affinity alone"
+45,Largo de la manga,131,TECHNICAL,"technical spec; useful for family/level inference, not affinity alone"
+46,Largo de agarre,154,TECHNICAL,"technical spec; useful for family/level inference, not affinity alone"
+47,Diámetro de agarre,287,SEMANTIC,strong product/use/technical semantics useful for ontology evidence
+48,Diámetro de manga,189,SEMANTIC,strong product/use/technical semantics useful for ontology evidence
+49,Rodamiento / Cojinete,56,SEMANTIC,strong product/use/technical semantics useful for ontology evidence
+50,Moleteado,88,SEMANTIC,strong product/use/technical semantics useful for ontology evidence
+51,Material,947,SEMANTIC,strong product/use/technical semantics useful for ontology evidence
+52,Capacidad,36,TECHNICAL,"technical spec; useful for family/level inference, not affinity alone"
+53,Material exterior,18,SEMANTIC,strong product/use/technical semantics useful for ontology evidence
+54,Relleno,84,PRESENTATION,presentation/model variant; generally not customer-affinity semantics
+55,Acabado,339,PRESENTATION,presentation/model variant; generally not customer-affinity semantics
+56,Resistencia a la tracción,22,SEMANTIC,strong product/use/technical semantics useful for ontology evidence
+57,Durómetro,79,NOISE,low coverage or unclear ontology value
+58,Tolerancia (Margen de error en peso),390,TECHNICAL,"technical spec; useful for family/level inference, not affinity alone"
+59,Certificación,125,SEMANTIC,strong product/use/technical semantics useful for ontology evidence
+60,Talla,51,NOISE,low coverage or unclear ontology value
+61,Color(es),490,PRESENTATION,presentation/model variant; generally not customer-affinity semantics
+62,Marca,1080,SEMANTIC,brand helps catalog organization but should not become customer archetype
+63,Modelo ,341,PRESENTATION,presentation/model variant; generally not customer-affinity semantics
+64,Garantía Legal,968,LOGISTICS,service/warranty/logistics/safety info; keep as attributes
+65,Relación de cable y polea,47,SEMANTIC,strong product/use/technical semantics useful for ontology evidence
+66,Servicio de Armado,281,LOGISTICS,service/warranty/logistics/safety info; keep as attributes
+67,Largo,13,TECHNICAL,"technical spec; useful for family/level inference, not affinity alone"
+68,Composición,2,NOISE,low coverage or unclear ontology value
+69,Contenido,14,LOGISTICS,service/warranty/logistics/safety info; keep as attributes
+70,Precauciones Importantes,16,LOGISTICS,service/warranty/logistics/safety info; keep as attributes
+71,Peso máximo de almacenamiento,19,SEMANTIC,strong product/use/technical semantics useful for ontology evidence
+72,Diámetro de perforación,24,TECHNICAL,"technical spec; useful for family/level inference, not affinity alone"
+73,Rango de Peso,1,TECHNICAL,"technical spec; useful for family/level inference, not affinity alone"
+74,Condición de Venta,54,LOGISTICS,service/warranty/logistics/safety info; keep as attributes
+75,Codificación de Color,25,PRESENTATION,presentation/model variant; generally not customer-affinity semantics
+76,Dimensiones Plegado,1,TECHNICAL,"technical spec; useful for family/level inference, not affinity alone"

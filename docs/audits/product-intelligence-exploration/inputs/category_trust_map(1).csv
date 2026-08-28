@@ -1,0 +1,254 @@
+categoryId,categoryName,path,assignedProductCount,levelDepth,trustClass,reason
+1,Raíz,Raíz,0,0,NAVIGATION,navigation/root/container
+2,CATEGORÍAS,Raíz > CATEGORÍAS,1554,1,NAVIGATION,navigation/root/container
+8,Test,Raíz > CATEGORÍAS > Test,99,2,UNKNOWN,test/empty/no current assignment
+18,ITEM PAR,Raíz > CATEGORÍAS > ITEM PAR,0,2,UNKNOWN,test/empty/no current assignment
+60,Obelix Cardiovascular,Raíz > CATEGORÍAS > Test > Obelix Cardiovascular,8,3,LEGACY,"brand/collection/series, not independent semantics"
+61,Obelix MO Series,Raíz > CATEGORÍAS > Test > Obelix MO Series,33,3,LEGACY,"brand/collection/series, not independent semantics"
+62,Obelix T8 Series,Raíz > CATEGORÍAS > Test > Obelix T8 Series,8,3,LEGACY,"brand/collection/series, not independent semantics"
+63,Obelix V8 Series,Raíz > CATEGORÍAS > Test > Obelix V8 Series,33,3,LEGACY,"brand/collection/series, not independent semantics"
+64,Mancuernas Hexagonales,Raíz > CATEGORÍAS > POR DEPORTE > CrossFit HWM® > Mancuernas Hexagonales,43,4,SEMANTIC_STRONG,discipline/sport evidence
+65,Kettlebells,Raíz > CATEGORÍAS > POR DEPORTE > CrossFit HWM® > Kettlebells,12,4,SEMANTIC_STRONG,discipline/sport evidence
+66,Bumper Plates,Raíz > CATEGORÍAS > POR DEPORTE > CrossFit HWM® > Bumper Plates,65,4,SEMANTIC_STRONG,discipline/sport evidence
+67,Barras Olímpicas,Raíz > CATEGORÍAS > POR DEPORTE > CrossFit HWM® > Barras Olímpicas,26,4,SEMANTIC_STRONG,discipline/sport evidence
+68,Power Racks y Bancos,Raíz > CATEGORÍAS > POR DEPORTE > CrossFit HWM® > Power Racks y Bancos,19,4,SEMANTIC_STRONG,discipline/sport evidence
+69,Gimnasia y Acondicionamiento,Raíz > CATEGORÍAS > POR DEPORTE > CrossFit HWM® > Gimnasia y Acondicionamiento,79,4,SEMANTIC_STRONG,discipline/sport evidence
+143,Accesorios y Complementos,Raíz > CATEGORÍAS > POR DEPORTE > CrossFit HWM® > Accesorios y Complementos,155,4,SEMANTIC_STRONG,discipline/sport evidence
+248,FUERZA,Raíz > CATEGORÍAS > FUERZA,309,2,SEMANTIC_WEAK,broad or mixed commercial grouping
+249,Barras Hombre 20 kg,Raíz > CATEGORÍAS > FUERZA > Barras > Barras Hombre 20 kg,10,4,SEMANTIC_STRONG,functional product family/subfamily
+250,Barras Mujer 15 kg,Raíz > CATEGORÍAS > FUERZA > Barras > Barras Mujer 15 kg,7,4,SEMANTIC_STRONG,functional product family/subfamily
+251,Barras Técnicas,Raíz > CATEGORÍAS > FUERZA > Barras > Barras Técnicas,2,4,SEMANTIC_STRONG,functional product family/subfamily
+252,Barras Junior,Raíz > CATEGORÍAS > FUERZA > Barras > Barras Junior,2,4,SEMANTIC_STRONG,functional product family/subfamily
+253,Barras Especiales,Raíz > CATEGORÍAS > FUERZA > Barras > Barras Especiales,16,4,SEMANTIC_STRONG,functional product family/subfamily
+254,Barras Powerlifting,Raíz > CATEGORÍAS > FUERZA > Barras > Barras Powerlifting,3,4,SEMANTIC_STRONG,discipline/sport evidence
+255,Barras Preolímpicas,Raíz > CATEGORÍAS > FUERZA > Barras > Barras Preolímpicas,5,4,SEMANTIC_STRONG,functional product family/subfamily
+256,Barras de Peso Fijo,Raíz > CATEGORÍAS > FUERZA > Barras > Barras de Peso Fijo,12,4,SEMANTIC_STRONG,functional product family/subfamily
+258,Barras,Raíz > CATEGORÍAS > FUERZA > Barras,64,3,SEMANTIC_STRONG,functional product family/subfamily
+259,Discos,Raíz > CATEGORÍAS > FUERZA > Discos,107,3,SEMANTIC_STRONG,functional product family/subfamily
+260,Discos Bumper,Raíz > CATEGORÍAS > FUERZA > Discos > Discos Bumper,35,4,SEMANTIC_STRONG,functional product family/subfamily
+261,Discos de Competición,Raíz > CATEGORÍAS > FUERZA > Discos > Discos de Competición,13,4,SEMANTIC_STRONG,functional product family/subfamily
+262,Discos Fraccionados,Raíz > CATEGORÍAS > FUERZA > Discos > Discos Fraccionados,18,4,SEMANTIC_STRONG,functional product family/subfamily
+263,Discos Con Agarre,Raíz > CATEGORÍAS > FUERZA > Discos > Discos Con Agarre,22,4,SEMANTIC_STRONG,functional product family/subfamily
+264,Discos de Acero,Raíz > CATEGORÍAS > FUERZA > Discos > Discos de Acero,36,4,SEMANTIC_STRONG,functional product family/subfamily
+265,Discos de Powerlifting,Raíz > CATEGORÍAS > FUERZA > Discos > Discos de Powerlifting,21,4,SEMANTIC_STRONG,discipline/sport evidence
+266,Discos Preolímpicos,Raíz > CATEGORÍAS > FUERZA > Discos > Discos Preolímpicos,8,4,SEMANTIC_STRONG,functional product family/subfamily
+267,Mancuernas,Raíz > CATEGORÍAS > FUERZA > Mancuernas,110,3,SEMANTIC_STRONG,functional product family/subfamily
+268,Mancuernas Hexagonales,Raíz > CATEGORÍAS > FUERZA > Mancuernas > Mancuernas Hexagonales,50,4,SEMANTIC_STRONG,functional product family/subfamily
+269,Mancuernas Pu,Raíz > CATEGORÍAS > FUERZA > Mancuernas > Mancuernas Pu,22,4,SEMANTIC_STRONG,functional product family/subfamily
+270,Mancuernas de Acero,Raíz > CATEGORÍAS > FUERZA > Mancuernas > Mancuernas de Acero,21,4,SEMANTIC_STRONG,functional product family/subfamily
+271,Mancuernas de Neopreno,Raíz > CATEGORÍAS > FUERZA > Mancuernas > Mancuernas de Neopreno,5,4,SEMANTIC_STRONG,functional product family/subfamily
+272,Mancuernas Ajustables,Raíz > CATEGORÍAS > FUERZA > Mancuernas > Mancuernas Ajustables,10,4,SEMANTIC_STRONG,functional product family/subfamily
+273,Set de Mancuernas,Raíz > CATEGORÍAS > FUERZA > Mancuernas > Set de Mancuernas,19,4,SEMANTIC_STRONG,functional product family/subfamily
+274,Set de Barras,Raíz > CATEGORÍAS > FUERZA > Barras > Set de Barras,2,4,SEMANTIC_STRONG,functional product family/subfamily
+275,Accesorios para Barras,Raíz > CATEGORÍAS > ACCESORIOS > Accesorios para Barras,21,3,SEMANTIC_STRONG,functional product family/subfamily
+276,Kettlebells,Raíz > CATEGORÍAS > FUERZA > Kettlebells,28,3,SEMANTIC_STRONG,functional product family/subfamily
+277,Kettlebells de Acero,Raíz > CATEGORÍAS > FUERZA > Kettlebells > Kettlebells de Acero,10,4,SEMANTIC_STRONG,functional product family/subfamily
+278,Kettlebells de Vinilo,Raíz > CATEGORÍAS > FUERZA > Kettlebells > Kettlebells de Vinilo,7,4,SEMANTIC_STRONG,functional product family/subfamily
+279,Clubells,Raíz > CATEGORÍAS > FUERZA > Kettlebells > Clubells,8,4,SEMANTIC_STRONG,functional product family/subfamily
+280,EQUIPAMIENTO,Raíz > CATEGORÍAS > EQUIPAMIENTO,257,2,SEMANTIC_WEAK,broad or mixed commercial grouping
+281,Máquinas Selectorizadas,Raíz > CATEGORÍAS > EQUIPAMIENTO > Máquinas Selectorizadas,47,3,SEMANTIC_STRONG,functional product family/subfamily
+282,Serie Movment,Raíz > CATEGORÍAS > EQUIPAMIENTO > Máquinas Selectorizadas > Serie Movment,10,4,LEGACY,"brand/collection/series, not independent semantics"
+283,Serie Movement 2.0,Raíz > CATEGORÍAS > EQUIPAMIENTO > Máquinas Selectorizadas > Serie Movement 2.0,21,4,LEGACY,"brand/collection/series, not independent semantics"
+284,Serie Virgin8,Raíz > CATEGORÍAS > EQUIPAMIENTO > Máquinas Selectorizadas > Serie Virgin8,16,4,LEGACY,"brand/collection/series, not independent semantics"
+285,Máquinas con Carga de Discos,Raíz > CATEGORÍAS > EQUIPAMIENTO > Máquinas con Carga de Discos,60,3,SEMANTIC_STRONG,functional product family/subfamily
+286,Training8 Series,Raíz > CATEGORÍAS > EQUIPAMIENTO > Máquinas con Carga de Discos > Training8 Series,7,4,LEGACY,"brand/collection/series, not independent semantics"
+287,Movement 2.0 Series,Raíz > CATEGORÍAS > EQUIPAMIENTO > Máquinas con Carga de Discos > Movement 2.0 Series,9,4,LEGACY,"brand/collection/series, not independent semantics"
+288,Virgin8 Series,Raíz > CATEGORÍAS > EQUIPAMIENTO > Máquinas con Carga de Discos > Virgin8 Series,4,4,LEGACY,"brand/collection/series, not independent semantics"
+289,Solid Rock Series,Raíz > CATEGORÍAS > EQUIPAMIENTO > Máquinas con Carga de Discos > Solid Rock Series,3,4,LEGACY,"brand/collection/series, not independent semantics"
+290,Máquinas con Poleas,Raíz > CATEGORÍAS > EQUIPAMIENTO > Máquinas con Poleas,26,3,SEMANTIC_STRONG,functional product family/subfamily
+291,Máquinas Multifuncionales,Raíz > CATEGORÍAS > EQUIPAMIENTO > Máquinas Multifuncionales,53,3,SEMANTIC_WEAK,broad or mixed commercial grouping
+292,Accesorios para Máquinas,Raíz > CATEGORÍAS > ACCESORIOS > Accesorios para Máquinas,57,3,SEMANTIC_WEAK,broad or mixed commercial grouping
+293,Racks,Raíz > CATEGORÍAS > EQUIPAMIENTO > Racks,24,3,SEMANTIC_STRONG,functional product family/subfamily
+294,Power Racks,Raíz > CATEGORÍAS > EQUIPAMIENTO > Racks > Power Racks,4,4,SEMANTIC_STRONG,functional product family/subfamily
+295,Half Racks,Raíz > CATEGORÍAS > EQUIPAMIENTO > Racks > Half Racks,4,4,SEMANTIC_STRONG,functional product family/subfamily
+296,Squat Racks,Raíz > CATEGORÍAS > EQUIPAMIENTO > Racks > Squat Racks,6,4,SEMANTIC_STRONG,functional product family/subfamily
+297,Atriles,Raíz > CATEGORÍAS > EQUIPAMIENTO > Racks > Atriles,8,4,SEMANTIC_STRONG,functional product family/subfamily
+298,Powerlifting Racks,Raíz > CATEGORÍAS > EQUIPAMIENTO > Racks > Powerlifting Racks,1,4,SEMANTIC_STRONG,discipline/sport evidence
+299,Wall Racks,Raíz > CATEGORÍAS > EQUIPAMIENTO > Racks > Wall Racks,2,4,SEMANTIC_STRONG,functional product family/subfamily
+300,Accesorios para Racks,Raíz > CATEGORÍAS > ACCESORIOS > Accesorios para Máquinas > Accesorios para Racks,30,4,SEMANTIC_STRONG,functional product family/subfamily
+301,Bancos,Raíz > CATEGORÍAS > EQUIPAMIENTO > Bancos,67,3,SEMANTIC_STRONG,functional product family/subfamily
+302,Bancos Olímpicos,Raíz > CATEGORÍAS > EQUIPAMIENTO > Bancos > Bancos Olímpicos,11,4,SEMANTIC_STRONG,functional product family/subfamily
+303,Bancos Planos,Raíz > CATEGORÍAS > EQUIPAMIENTO > Bancos > Bancos Planos,9,4,SEMANTIC_STRONG,functional product family/subfamily
+304,Bancos Ajustables,Raíz > CATEGORÍAS > EQUIPAMIENTO > Bancos > Bancos Ajustables,18,4,SEMANTIC_STRONG,functional product family/subfamily
+305,Bancos Ergo,Raíz > CATEGORÍAS > EQUIPAMIENTO > Bancos > Bancos Ergo,18,4,SEMANTIC_STRONG,functional product family/subfamily
+306,Bancos Abdominales,Raíz > CATEGORÍAS > EQUIPAMIENTO > Bancos > Bancos Abdominales,9,4,SEMANTIC_STRONG,functional product family/subfamily
+307,Bancos Especiales,Raíz > CATEGORÍAS > EQUIPAMIENTO > Bancos > Bancos Especiales,30,4,SEMANTIC_STRONG,functional product family/subfamily
+308,Cardio,Raíz > CATEGORÍAS > EQUIPAMIENTO > Cardio,35,3,SEMANTIC_STRONG,functional product family/subfamily
+309,Trotadoras,Raíz > CATEGORÍAS > EQUIPAMIENTO > Cardio > Trotadoras,10,4,SEMANTIC_STRONG,functional product family/subfamily
+310,Elípticas,Raíz > CATEGORÍAS > EQUIPAMIENTO > Cardio > Elípticas,4,4,SEMANTIC_STRONG,functional product family/subfamily
+311,Escaladoras,Raíz > CATEGORÍAS > EQUIPAMIENTO > Cardio > Escaladoras,4,4,SEMANTIC_STRONG,functional product family/subfamily
+312,Bicicletas,Raíz > CATEGORÍAS > EQUIPAMIENTO > Cardio > Bicicletas,13,4,SEMANTIC_STRONG,functional product family/subfamily
+313,Remos & Ski,Raíz > CATEGORÍAS > EQUIPAMIENTO > Cardio > Remos & Ski,6,4,SEMANTIC_STRONG,functional product family/subfamily
+314,Máquinas Home Gym,Raíz > CATEGORÍAS > EQUIPAMIENTO > Máquinas Home Gym,60,3,SEMANTIC_STRONG,functional product family/subfamily
+315,Accesorios para Bancos,Raíz > CATEGORÍAS > ACCESORIOS > Accesorios para Máquinas > Accesorios para Bancos,5,4,SEMANTIC_STRONG,functional product family/subfamily
+316,Beast Series,Raíz > CATEGORÍAS > EQUIPAMIENTO > Máquinas con Carga de Discos > Beast Series,14,4,LEGACY,"brand/collection/series, not independent semantics"
+317,ACONDICIONAMIENTO,Raíz > CATEGORÍAS > ACONDICIONAMIENTO,200,2,SEMANTIC_WEAK,broad or mixed commercial grouping
+318,Balones & Sacos,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Balones & Sacos,57,3,SEMANTIC_STRONG,functional product family/subfamily
+319,Barras Pull Up & Push Up,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Barras Pull Up & Push Up,32,3,SEMANTIC_STRONG,functional product family/subfamily
+320,Bandas,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Bandas,20,3,SEMANTIC_STRONG,functional product family/subfamily
+321,Cuerdas,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Cuerdas,11,3,SEMANTIC_STRONG,functional product family/subfamily
+322,Lastre,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Lastre,20,3,SEMANTIC_STRONG,functional product family/subfamily
+323,Gimnasia & Funcional,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Gimnasia & Funcional,73,3,SEMANTIC_WEAK,broad or mixed commercial grouping
+341,PISO,Raíz > CATEGORÍAS > PISO,22,2,SEMANTIC_STRONG,functional product family/subfamily
+342,Palmetas de Caucho,Raíz > CATEGORÍAS > PISO > Palmetas de Caucho,9,3,SEMANTIC_STRONG,functional product family/subfamily
+343,Pisos Interlock,Raíz > CATEGORÍAS > PISO > Pisos Interlock,8,3,SEMANTIC_STRONG,functional product family/subfamily
+344,Rollos de Caucho,Raíz > CATEGORÍAS > PISO > Rollos de Caucho,2,3,SEMANTIC_STRONG,functional product family/subfamily
+345,Pasto Sintético,Raíz > CATEGORÍAS > PISO > Pasto Sintético,1,3,SEMANTIC_STRONG,functional product family/subfamily
+346,Crash Pads,Raíz > CATEGORÍAS > PISO > Crash Pads,1,3,SEMANTIC_STRONG,functional product family/subfamily
+347,Plataformas de Levantamiento,Raíz > CATEGORÍAS > PISO > Plataformas de Levantamiento,1,3,SEMANTIC_STRONG,functional product family/subfamily
+348,ACCESORIOS,Raíz > CATEGORÍAS > ACCESORIOS,221,2,SEMANTIC_WEAK,broad or mixed commercial grouping
+349,Accesorios de Protección,Raíz > CATEGORÍAS > ACCESORIOS > Accesorios de Protección,82,3,SEMANTIC_WEAK,broad or mixed commercial grouping
+350,Calleras,Raíz > CATEGORÍAS > ACCESORIOS > Accesorios de Protección > Calleras,16,4,SEMANTIC_STRONG,functional product family/subfamily
+351,Cinturones de Levantamiento,Raíz > CATEGORÍAS > ACCESORIOS > Accesorios de Protección > Cinturones de Levantamiento,15,4,SEMANTIC_STRONG,functional product family/subfamily
+352,Muñequeras,Raíz > CATEGORÍAS > ACCESORIOS > Accesorios de Protección > Muñequeras,21,4,SEMANTIC_STRONG,functional product family/subfamily
+353,Rodilleras,Raíz > CATEGORÍAS > ACCESORIOS > Accesorios de Protección > Rodilleras,10,4,SEMANTIC_STRONG,functional product family/subfamily
+354,Correas de Levantamiento,Raíz > CATEGORÍAS > ACCESORIOS > Accesorios de Protección > Correas de Levantamiento,7,4,SEMANTIC_STRONG,functional product family/subfamily
+355,Abdominales,Raíz > CATEGORÍAS > ACCESORIOS > Abdominales,7,3,SEMANTIC_STRONG,functional product family/subfamily
+356,Agarres OCR,Raíz > CATEGORÍAS > ACCESORIOS > Agarres OCR,14,3,SEMANTIC_STRONG,discipline/sport evidence
+359,Botellas & Shakers,Raíz > CATEGORÍAS > ACCESORIOS > Botellas & Shakers,5,3,SEMANTIC_STRONG,functional product family/subfamily
+362,Elevadores de Talones,Raíz > CATEGORÍAS > ACCESORIOS > Elevadores de Talones,2,3,SEMANTIC_STRONG,functional product family/subfamily
+363,Magnesio,Raíz > CATEGORÍAS > ACCESORIOS > Magnesio,4,3,SEMANTIC_STRONG,functional product family/subfamily
+364,Timers,Raíz > CATEGORÍAS > ACCESORIOS > Timers,2,3,SEMANTIC_STRONG,functional product family/subfamily
+365,Ventiladores,Raíz > CATEGORÍAS > EQUIPAMIENTO > Ventiladores,1,3,SEMANTIC_STRONG,functional product family/subfamily
+366,RECOVERY,Raíz > CATEGORÍAS > RECOVERY,18,2,SEMANTIC_STRONG,functional product family/subfamily
+367,Cámaras Hiperbáricas,Raíz > CATEGORÍAS > RECOVERY > Cámaras Hiperbáricas,3,3,SEMANTIC_STRONG,functional product family/subfamily
+368,Foam Rollers,Raíz > CATEGORÍAS > RECOVERY > Foam Rollers,8,3,SEMANTIC_STRONG,functional product family/subfamily
+369,Masajeadores,Raíz > CATEGORÍAS > RECOVERY > Masajeadores,3,3,SEMANTIC_STRONG,functional product family/subfamily
+370,Pistolas de Masaje,Raíz > CATEGORÍAS > RECOVERY > Pistolas de Masaje,2,3,SEMANTIC_STRONG,functional product family/subfamily
+371,Presoterapia,Raíz > CATEGORÍAS > RECOVERY > Presoterapia,1,3,SEMANTIC_STRONG,functional product family/subfamily
+372,Vendaje K-Tape,Raíz > CATEGORÍAS > RECOVERY > Vendaje K-Tape,1,3,SEMANTIC_STRONG,functional product family/subfamily
+373,ALMACENAMIENTO,Raíz > CATEGORÍAS > ALMACENAMIENTO,34,2,SEMANTIC_STRONG,functional product family/subfamily
+374,Racks para Balones,Raíz > CATEGORÍAS > ALMACENAMIENTO > Racks para Balones,7,3,SEMANTIC_STRONG,functional product family/subfamily
+375,Racks para Barras,Raíz > CATEGORÍAS > ALMACENAMIENTO > Racks para Barras,11,3,SEMANTIC_STRONG,functional product family/subfamily
+376,Racks para Discos,Raíz > CATEGORÍAS > ALMACENAMIENTO > Racks para Discos,8,3,SEMANTIC_STRONG,functional product family/subfamily
+377,Racks para Kettlebells,Raíz > CATEGORÍAS > ALMACENAMIENTO > Racks para Kettlebells,2,3,SEMANTIC_STRONG,functional product family/subfamily
+378,Racks para Mancuernas,Raíz > CATEGORÍAS > ALMACENAMIENTO > Racks para Mancuernas,6,3,SEMANTIC_STRONG,functional product family/subfamily
+379,APPAREL,Raíz > CATEGORÍAS > APPAREL,43,2,SEMANTIC_WEAK,broad or mixed commercial grouping
+380,Poleras,Raíz > CATEGORÍAS > APPAREL > Poleras,27,3,SEMANTIC_STRONG,functional product family/subfamily
+381,Polerones,Raíz > CATEGORÍAS > APPAREL > Polerones,6,3,SEMANTIC_STRONG,functional product family/subfamily
+382,Gorras,Raíz > CATEGORÍAS > APPAREL > Gorras,1,3,SEMANTIC_STRONG,functional product family/subfamily
+383,Mochilas & Bolsos,Raíz > CATEGORÍAS > APPAREL > Mochilas & Bolsos,5,3,SEMANTIC_STRONG,functional product family/subfamily
+384,Llaveros,Raíz > CATEGORÍAS > APPAREL > Llaveros,1,3,SEMANTIC_STRONG,functional product family/subfamily
+385,Pulseras,Raíz > CATEGORÍAS > APPAREL > Pulseras,1,3,SEMANTIC_STRONG,functional product family/subfamily
+386,PACKS,Raíz > CATEGORÍAS > PACKS,86,2,SEMANTIC_WEAK,broad or mixed commercial grouping
+387,"Packs de Discos, Barras & Mancuernas","Raíz > CATEGORÍAS > PACKS > Packs de Discos, Barras & Mancuernas",53,3,SEMANTIC_WEAK,broad or mixed commercial grouping
+388,Packs CrossFit,Raíz > CATEGORÍAS > PACKS > Packs CrossFit,0,3,UNKNOWN,test/empty/no current assignment
+389,Packs Garage Gym,Raíz > CATEGORÍAS > PACKS > Packs Garage Gym,4,3,SEMANTIC_WEAK,broad or mixed commercial grouping
+390,Packs Gimnasio,Raíz > CATEGORÍAS > PACKS > Packs Gimnasio,9,3,SEMANTIC_WEAK,broad or mixed commercial grouping
+391,Otros Packs,Raíz > CATEGORÍAS > PACKS > Otros Packs,20,3,SEMANTIC_WEAK,broad or mixed commercial grouping
+392,COLECCIONES,Raíz > CATEGORÍAS > COLECCIONES,29,2,NAVIGATION,navigation/root/container
+393,Movment Series,Raíz > CATEGORÍAS > COLECCIONES > Movment Series,0,3,UNKNOWN,test/empty/no current assignment
+394,Movement 2.0 Series,Raíz > CATEGORÍAS > COLECCIONES > Movement 2.0 Series,46,3,LEGACY,"brand/collection/series, not independent semantics"
+395,Training8 Series,Raíz > CATEGORÍAS > COLECCIONES > Training8 Series,0,3,UNKNOWN,test/empty/no current assignment
+396,Virgin8 Series,Raíz > CATEGORÍAS > COLECCIONES > Virgin8 Series,35,3,LEGACY,"brand/collection/series, not independent semantics"
+397,Beast Series,Raíz > CATEGORÍAS > COLECCIONES > Beast Series,14,3,LEGACY,"brand/collection/series, not independent semantics"
+398,Delta Series,Raíz > CATEGORÍAS > COLECCIONES > Delta Series,18,3,LEGACY,"brand/collection/series, not independent semantics"
+399,Alpha Series,Raíz > CATEGORÍAS > COLECCIONES > Alpha Series,26,3,LEGACY,"brand/collection/series, not independent semantics"
+400,Magnum Series,Raíz > CATEGORÍAS > COLECCIONES > Magnum Series,5,3,LEGACY,"brand/collection/series, not independent semantics"
+401,Lite Series,Raíz > CATEGORÍAS > COLECCIONES > Lite Series,0,3,UNKNOWN,test/empty/no current assignment
+402,Star1 Series,Raíz > CATEGORÍAS > COLECCIONES > Star1 Series,6,3,LEGACY,"brand/collection/series, not independent semantics"
+403,Solid Rock Series,Raíz > CATEGORÍAS > COLECCIONES > Solid Rock Series,0,3,UNKNOWN,test/empty/no current assignment
+404,Zero Series,Raíz > CATEGORÍAS > COLECCIONES > Zero Series,32,3,LEGACY,"brand/collection/series, not independent semantics"
+405,Live Hard Series,Raíz > CATEGORÍAS > COLECCIONES > Live Hard Series,36,3,LEGACY,"brand/collection/series, not independent semantics"
+406,Crazy Fox Series,Raíz > CATEGORÍAS > COLECCIONES > Crazy Fox Series,0,3,UNKNOWN,test/empty/no current assignment
+407,Home FZ Series,Raíz > CATEGORÍAS > COLECCIONES > Home FZ Series,20,3,LEGACY,"brand/collection/series, not independent semantics"
+409,POR DEPORTE,Raíz > CATEGORÍAS > POR DEPORTE,32,2,NAVIGATION,navigation/root/container
+410,CrossFit HWM®,Raíz > CATEGORÍAS > POR DEPORTE > CrossFit HWM®,30,3,LEGACY,"brand/collection/series, not independent semantics"
+411,Powerlifting,Raíz > CATEGORÍAS > POR DEPORTE > Powerlifting,8,3,SEMANTIC_STRONG,discipline/sport evidence
+412,Calistenia,Raíz > CATEGORÍAS > POR DEPORTE > Calistenia,1,3,SEMANTIC_STRONG,discipline/sport evidence
+413,OCR,Raíz > CATEGORÍAS > POR DEPORTE > OCR,0,3,UNKNOWN,test/empty/no current assignment
+414,Yoga & Pilates,Raíz > CATEGORÍAS > POR DEPORTE > Yoga & Pilates,1,3,SEMANTIC_STRONG,discipline/sport evidence
+415,Boxeo & Artes Marciales,Raíz > CATEGORÍAS > POR DEPORTE > Boxeo & Artes Marciales,0,3,UNKNOWN,test/empty/no current assignment
+416,PREVENTA,Raíz > CATEGORÍAS > PREVENTA,0,2,CAMPAIGN,campaign/promotion/merchandising
+417,NEW ARRIVALS,Raíz > CATEGORÍAS > NEW ARRIVALS,61,2,CAMPAIGN,campaign/promotion/merchandising
+418,EN TENDENCIA,Raíz > CATEGORÍAS > EN TENDENCIA,58,2,CAMPAIGN,campaign/promotion/merchandising
+419,DESTACADOS,Raíz > CATEGORÍAS > DESTACADOS,40,2,CAMPAIGN,campaign/promotion/merchandising
+420,OUTLET,Raíz > CATEGORÍAS > OUTLET,59,2,CAMPAIGN,campaign/promotion/merchandising
+421,Wodstock Chile,Raíz > CATEGORÍAS > OUTLET > Wodstock Chile,7,3,CAMPAIGN,campaign/promotion/merchandising
+422,Nuevos - Fuera de Temporada,Raíz > CATEGORÍAS > OUTLET > Nuevos - Fuera de Temporada,32,3,CAMPAIGN,campaign/promotion/merchandising
+423,Segunda Selección,Raíz > CATEGORÍAS > OUTLET > Segunda Selección,27,3,CAMPAIGN,campaign/promotion/merchandising
+424,Balones de Pilates,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Balones & Sacos > Balones de Pilates,5,4,SEMANTIC_STRONG,discipline/sport evidence
+425,Balones Medicinales,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Balones & Sacos > Balones Medicinales,20,4,SEMANTIC_STRONG,functional product family/subfamily
+426,Bosu,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Balones & Sacos > Bosu,5,4,SEMANTIC_STRONG,functional product family/subfamily
+427,Slam Balls,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Balones & Sacos > Slam Balls,7,4,SEMANTIC_STRONG,functional product family/subfamily
+428,Sand Bags,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Balones & Sacos > Sand Bags,19,4,SEMANTIC_STRONG,functional product family/subfamily
+429,Barras de Dominadas,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Barras Pull Up & Push Up > Barras de Dominadas,21,4,SEMANTIC_STRONG,functional product family/subfamily
+430,Barras Paralelas,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Barras Pull Up & Push Up > Barras Paralelas,12,4,SEMANTIC_STRONG,functional product family/subfamily
+431,Bandas de Resistencia,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Bandas > Bandas de Resistencia,11,4,SEMANTIC_STRONG,functional product family/subfamily
+432,Glute Bands,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Bandas > Glute Bands,6,4,SEMANTIC_STRONG,functional product family/subfamily
+433,Tubos Elásticos,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Bandas > Tubos Elásticos,3,4,SEMANTIC_STRONG,functional product family/subfamily
+434,Cuerdas de Salto,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Cuerdas > Cuerdas de Salto,7,4,SEMANTIC_STRONG,functional product family/subfamily
+435,Battle Ropes,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Cuerdas > Battle Ropes,2,4,SEMANTIC_STRONG,functional product family/subfamily
+436,Sogas de Trepa,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Cuerdas > Sogas de Trepa,1,4,SEMANTIC_STRONG,functional product family/subfamily
+437,Chalecos de Lastre,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Lastre > Chalecos de Lastre,6,4,SEMANTIC_STRONG,functional product family/subfamily
+438,Cinturones de Lastre,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Lastre > Cinturones de Lastre,2,4,SEMANTIC_STRONG,functional product family/subfamily
+439,Cinturones para Hip Thrust,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Lastre > Cinturones para Hip Thrust,6,4,SEMANTIC_STRONG,functional product family/subfamily
+440,Pesos de Tobillo & Muñeca,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Lastre > Pesos de Tobillo & Muñeca,6,4,SEMANTIC_STRONG,functional product family/subfamily
+441,Body Pump,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Gimnasia & Funcional > Body Pump,2,4,SEMANTIC_STRONG,functional product family/subfamily
+442,Anillas & Bandas de Suspensión,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Gimnasia & Funcional > Anillas & Bandas de Suspensión,4,4,SEMANTIC_STRONG,functional product family/subfamily
+443,Colchonetas & Mats,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Gimnasia & Funcional > Colchonetas & Mats,14,4,SEMANTIC_STRONG,functional product family/subfamily
+444,Cajones de Salto,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Gimnasia & Funcional > Cajones de Salto,5,4,SEMANTIC_STRONG,functional product family/subfamily
+445,Escaleras & Conos de Agilidad,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Gimnasia & Funcional > Escaleras & Conos de Agilidad,4,4,SEMANTIC_STRONG,functional product family/subfamily
+446,Step Aeróbicos,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Gimnasia & Funcional > Step Aeróbicos,3,4,SEMANTIC_STRONG,functional product family/subfamily
+447,Tablas de Escalada,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Gimnasia & Funcional > Tablas de Escalada,4,4,SEMANTIC_STRONG,functional product family/subfamily
+448,Trineos de Arrastre,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Gimnasia & Funcional > Trineos de Arrastre,3,4,SEMANTIC_STRONG,functional product family/subfamily
+449,Vallas de Salto,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Gimnasia & Funcional > Vallas de Salto,3,4,SEMANTIC_STRONG,functional product family/subfamily
+450,Guantes,Raíz > CATEGORÍAS > ACCESORIOS > Accesorios de Protección > Guantes,23,4,SEMANTIC_STRONG,functional product family/subfamily
+451,Accesorios de Polea,Raíz > CATEGORÍAS > ACCESORIOS > Accesorios para Máquinas > Accesorios de Polea,21,4,SEMANTIC_STRONG,functional product family/subfamily
+453,TESTDEPTI,Raíz > CATEGORÍAS > TESTDEPTI,1,2,UNKNOWN,test/empty/no current assignment
+454,TEST1,Raíz > CATEGORÍAS > TESTDEPTI > TEST1,1,3,UNKNOWN,test/empty/no current assignment
+455,TEST2,Raíz > CATEGORÍAS > TESTDEPTI > TEST2,0,3,UNKNOWN,test/empty/no current assignment
+456,TEST3,Raíz > CATEGORÍAS > TESTDEPTI > TEST3,0,3,UNKNOWN,test/empty/no current assignment
+457,TEST4,Raíz > CATEGORÍAS > TESTDEPTI > TEST4,0,3,UNKNOWN,test/empty/no current assignment
+458,CYBERDAY,Raíz > CATEGORÍAS > CYBERDAY,199,2,CAMPAIGN,campaign/promotion/merchandising
+459,PRIMAVERA,Raíz > CATEGORÍAS > PRIMAVERA,73,2,CAMPAIGN,campaign/promotion/merchandising
+460,BLACK FRIDAY,Raíz > CATEGORÍAS > BLACK FRIDAY,3,2,CAMPAIGN,campaign/promotion/merchandising
+461,NAVIDAD,Raíz > CATEGORÍAS > NAVIDAD,50,2,CAMPAIGN,campaign/promotion/merchandising
+463,SUMMER SALE,Raíz > CATEGORÍAS > SUMMER SALE,76,2,CAMPAIGN,campaign/promotion/merchandising
+464,StrongFit Games,Raíz > CATEGORÍAS > OUTLET > StrongFit Games,0,3,CAMPAIGN,campaign/promotion/merchandising
+465,Pantalones,Raíz > CATEGORÍAS > APPAREL > Pantalones,2,3,SEMANTIC_STRONG,functional product family/subfamily
+466,Accesorios Delta,Raíz > CATEGORÍAS > ACCESORIOS > Accesorios para Máquinas > Accesorios para Racks > Accesorios Delta,11,5,LEGACY,"brand/collection/series, not independent semantics"
+467,Boxeo & MMA,Raíz > CATEGORÍAS > ACONDICIONAMIENTO > Gimnasia & Funcional > Boxeo & MMA,13,4,SEMANTIC_STRONG,discipline/sport evidence
+468,Vendaje,Raíz > CATEGORÍAS > ACCESORIOS > Accesorios de Protección > Vendaje,2,4,SEMANTIC_STRONG,functional product family/subfamily
+469,Zero Series,Raíz > CATEGORÍAS > EQUIPAMIENTO > Máquinas con Carga de Discos > Zero Series,16,4,LEGACY,"brand/collection/series, not independent semantics"
+470,FALL SEASON,Raíz > CATEGORÍAS > FALL SEASON,66,2,CAMPAIGN,campaign/promotion/merchandising
+471,Rising Fit Series,Raíz > CATEGORÍAS > COLECCIONES > Rising Fit Series,76,3,LEGACY,"brand/collection/series, not independent semantics"
+472,Martillos,Raíz > CATEGORÍAS > FUERZA > Kettlebells > Martillos,3,4,SEMANTIC_STRONG,functional product family/subfamily
+473,WINTER SALE,Raíz > CATEGORÍAS > WINTER SALE,149,2,CAMPAIGN,campaign/promotion/merchandising
+474,Accesorios Alpha,Raíz > CATEGORÍAS > ACCESORIOS > Accesorios para Máquinas > Accesorios para Racks > Accesorios Alpha,19,5,LEGACY,"brand/collection/series, not independent semantics"
+475,EQUIPATÓN,Raíz > CATEGORÍAS > EQUIPATÓN,2,2,CAMPAIGN,campaign/promotion/merchandising
+476,Peach Builder,Raíz > CATEGORÍAS > EQUIPAMIENTO > Máquinas con Carga de Discos > Peach Builder,8,4,LEGACY,"brand/collection/series, not independent semantics"
+477,Peach Builder,Raíz > CATEGORÍAS > COLECCIONES > Peach Builder,8,3,LEGACY,"brand/collection/series, not independent semantics"
+478,Accesorios de Weightlifting,Raíz > CATEGORÍAS > ACCESORIOS > Accesorios de Weightlifting,11,3,SEMANTIC_STRONG,functional product family/subfamily
+479,SPRINGFIT,Raíz > CATEGORÍAS > SPRINGFIT,8,2,CAMPAIGN,campaign/promotion/merchandising
+480,Home FZLUX Series,Raíz > CATEGORÍAS > COLECCIONES > Home FZLUX Series,3,3,LEGACY,"brand/collection/series, not independent semantics"
+481,Discos & Barras,Raíz > CATEGORÍAS > NAVIDAD > Discos & Barras,11,3,CAMPAIGN,campaign/promotion/merchandising
+482,Máquinas Comerciales,Raíz > CATEGORÍAS > NAVIDAD > Máquinas Comerciales,4,3,CAMPAIGN,campaign/promotion/merchandising
+483,Home Gym,Raíz > CATEGORÍAS > NAVIDAD > Home Gym,8,3,CAMPAIGN,campaign/promotion/merchandising
+484,Accesorios,Raíz > CATEGORÍAS > NAVIDAD > Accesorios,19,3,CAMPAIGN,campaign/promotion/merchandising
+485,Funcional,Raíz > CATEGORÍAS > NAVIDAD > Funcional,15,3,CAMPAIGN,campaign/promotion/merchandising
+486,Discos & Barras,Raíz > CATEGORÍAS > SUMMER SALE > Discos & Barras,18,3,CAMPAIGN,campaign/promotion/merchandising
+487,Funcional,Raíz > CATEGORÍAS > SUMMER SALE > Funcional,15,3,CAMPAIGN,campaign/promotion/merchandising
+488,Máquinas,Raíz > CATEGORÍAS > SUMMER SALE > Máquinas,2,3,CAMPAIGN,campaign/promotion/merchandising
+489,Accesorios,Raíz > CATEGORÍAS > SUMMER SALE > Accesorios,18,3,CAMPAIGN,campaign/promotion/merchandising
+490,Protección,Raíz > CATEGORÍAS > SUMMER SALE > Protección,2,3,CAMPAIGN,campaign/promotion/merchandising
+491,Mancuernas,Raíz > CATEGORÍAS > SUMMER SALE > Mancuernas,18,3,CAMPAIGN,campaign/promotion/merchandising
+492,BLACK SALE,Raíz > CATEGORÍAS > BLACK SALE,30,2,CAMPAIGN,campaign/promotion/merchandising
+493,HYROX,Raíz > CATEGORÍAS > POR DEPORTE > HYROX,27,3,SEMANTIC_STRONG,discipline/sport evidence
+494,Discos & Barras,Raíz > CATEGORÍAS > FALL SEASON > Discos & Barras,10,3,SEMANTIC_WEAK,broad or mixed commercial grouping
+495,Funcional,Raíz > CATEGORÍAS > FALL SEASON > Funcional,12,3,SEMANTIC_WEAK,broad or mixed commercial grouping
+496,Máquinas,Raíz > CATEGORÍAS > FALL SEASON > Máquinas,12,3,SEMANTIC_WEAK,broad or mixed commercial grouping
+497,Mancuernas,Raíz > CATEGORÍAS > FALL SEASON > Mancuernas,17,3,SEMANTIC_STRONG,functional product family/subfamily
+500,Accesorios,Raíz > CATEGORÍAS > FALL SEASON > Accesorios,7,3,SEMANTIC_WEAK,broad or mixed commercial grouping
+501,PESAS DAYS,Raíz > CATEGORÍAS > PESAS DAYS,199,2,CAMPAIGN,campaign/promotion/merchandising
+502,Fuerza,Raíz > CATEGORÍAS > CYBERDAY > Fuerza,16,3,CAMPAIGN,campaign/promotion/merchandising
+503,Máquinas,Raíz > CATEGORÍAS > CYBERDAY > Máquinas,52,3,CAMPAIGN,campaign/promotion/merchandising
+505,Accesorios,Raíz > CATEGORÍAS > CYBERDAY > Accesorios,94,3,CAMPAIGN,campaign/promotion/merchandising
+506,Funcional,Raíz > CATEGORÍAS > CYBERDAY > Funcional,51,3,CAMPAIGN,campaign/promotion/merchandising
+507,Fuerza,Raíz > CATEGORÍAS > PESAS DAYS > Fuerza,16,3,CAMPAIGN,campaign/promotion/merchandising
+508,Máquinas,Raíz > CATEGORÍAS > PESAS DAYS > Máquinas,52,3,CAMPAIGN,campaign/promotion/merchandising
+509,Accesorios,Raíz > CATEGORÍAS > PESAS DAYS > Accesorios,93,3,CAMPAIGN,campaign/promotion/merchandising
+510,Funcional,Raíz > CATEGORÍAS > PESAS DAYS > Funcional,50,3,CAMPAIGN,campaign/promotion/merchandising
+511,Home Gym,Raíz > CATEGORÍAS > EQUIPATÓN > Home Gym,0,3,UNKNOWN,test/empty/no current assignment
+512,GYM / Alto Tráfico,Raíz > CATEGORÍAS > EQUIPATÓN > GYM / Alto Tráfico,0,3,UNKNOWN,test/empty/no current assignment
+513,Hurricane Series,Raíz > CATEGORÍAS > COLECCIONES > Hurricane Series,3,3,LEGACY,"brand/collection/series, not independent semantics"
