@@ -3,10 +3,8 @@ import {
   RECENCY_HALF_LIFE_DAYS,
   confidenceMultiplier,
   diversityBonus,
-  frequencyWeight,
   monetaryWeight,
   recencyWeight,
-  repeatBonus,
   roleMultiplier,
   roundToAffinityPrecision,
   saturate,
@@ -32,33 +30,6 @@ describe('recencyWeight — half-life decay', () => {
     expect(() => recencyWeight(-1)).toThrow();
     expect(() => recencyWeight(NaN)).toThrow();
     expect(() => recencyWeight(Infinity)).toThrow();
-  });
-});
-
-describe('frequencyWeight — saturating transform', () => {
-  it('is 0 at zero orders', () => {
-    expect(frequencyWeight(0)).toBe(0);
-  });
-
-  it('grows with diminishing returns: 20 orders is not 20x the evidence of 1 order', () => {
-    const one = frequencyWeight(1);
-    const twenty = frequencyWeight(20);
-
-    expect(twenty).toBeGreaterThan(one);
-    expect(twenty).toBeLessThan(one * 20);
-    expect(twenty).toBeLessThan(1); // bounded, never reaches the ceiling
-  });
-
-  it('rejects negative or non-integer input', () => {
-    expect(() => frequencyWeight(-1)).toThrow();
-    expect(() => frequencyWeight(1.5)).toThrow();
-  });
-});
-
-describe('repeatBonus', () => {
-  it('is a flat, bounded 0/1 bonus', () => {
-    expect(repeatBonus(true)).toBe(1);
-    expect(repeatBonus(false)).toBe(0);
   });
 });
 

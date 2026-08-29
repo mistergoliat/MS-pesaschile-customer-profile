@@ -69,11 +69,11 @@ describe('CustomerCommercialAffinityRow — normalized shape', () => {
       affinityAxis: 'PRODUCT_FAMILY' satisfies CustomerCommercialAffinityAxis,
       affinityCode: 'BENCH',
       score: 0.72,
-      supportingOrderCount: 4,
+      approximateSupportingOrderCount: 4,
       supportingProductCount: 3,
       supportingSpend: '145000.00',
       lastEvidenceAt: '2026-08-01T00:00:00.000Z',
-      evidenceCoverage: 0.5,
+      explicitEvidenceCoverage: 0.5,
     };
 
     expect(Object.keys(row)).not.toContain('productName');

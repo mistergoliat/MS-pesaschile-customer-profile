@@ -2,7 +2,7 @@
 // No scoring, no accumulation — only bound/shape checks a future kernel (A01.2+) and any
 // snapshot builder (A01.4+) can reuse so these invariants are enforced in exactly one place.
 
-import type { CustomerCommercialAffinityCoverage, CustomerCommercialAffinityRow } from './contracts.js';
+import type { CustomerCommercialAffinityCoverage, CustomerCommercialAffinityRow, ProductSemanticFact, ProductSemanticFactTag } from './contracts.js';
 
 // ── Score bounds (task Section 7) ──────────────────────────────────────────────────────────
 //
@@ -37,6 +37,13 @@ export function assertValidCoveragePercentage(value: number, name = 'coverage pe
 export function assertNonNegativeCount(value: number, name: string): void {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new Error(`Invalid ${name}: must be a non-negative integer (got ${value})`);
+  }
+}
+
+// ── Positive integers (task Section 18: productId) ─────────────────────────────────────────
+export function assertPositiveInt(value: number, name: string): void {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`Invalid ${name}: must be a positive integer (got ${value})`);
   }
 }
 
@@ -75,12 +82,48 @@ export function assertValidDecimalString(value: string, name: string): void {
 export function assertValidAffinityRow(row: CustomerCommercialAffinityRow): void {
   assertNonEmptyIdentifier(row.affinityCode, 'affinityCode');
   assertValidAffinityScore(row.score);
-  assertNonNegativeCount(row.supportingOrderCount, 'supportingOrderCount');
+  assertNonNegativeCount(row.approximateSupportingOrderCount, 'approximateSupportingOrderCount');
   assertNonNegativeCount(row.supportingProductCount, 'supportingProductCount');
   assertValidDecimalString(row.supportingSpend, 'supportingSpend');
   assertValidIsoTimestamp(row.lastEvidenceAt, 'lastEvidenceAt');
-  if (!isValidAffinityScore(row.evidenceCoverage)) {
-    throw new Error(`Invalid evidenceCoverage: must be a finite number within [0,1] (got ${row.evidenceCoverage})`);
+  if (row.explicitEvidenceCoverage !== null && !isValidAffinityScore(row.explicitEvidenceCoverage)) {
+    throw new Error(`Invalid explicitEvidenceCoverage: must be null or a finite number within [0,1] (got ${row.explicitEvidenceCoverage})`);
+  }
+}
+
+// ── Semantic-fact transport invariants (A01.2.1 hardening, task Section 16/17/18) ─────────
+//
+// A malformed ProductSemanticFact is REJECTED at this consumer boundary, never silently
+// deduplicated/repaired: catalog-service should publish canonical facts, and silently repairing
+// a malformed one here would hide an upstream defect instead of surfacing it (task Section 17's
+// explicit preference). Deliberately does NOT validate whether a code exists in any ontology —
+// codes remain opaque strings owned entirely by catalog-service (task Section 18).
+export function assertValidProductSemanticFact(fact: ProductSemanticFact): void {
+  assertPositiveInt(fact.productId, 'productId');
+  assertNonEmptyIdentifier(fact.ontologyVersion, 'ontologyVersion');
+  assertNonEmptyIdentifier(fact.ontologyHash, 'ontologyHash');
+
+  if (fact.primaryProductFamily) {
+    assertNonEmptyIdentifier(fact.primaryProductFamily.code, 'primaryProductFamily.code');
+    if (fact.secondaryProductFamilies.some((tag) => tag.code === fact.primaryProductFamily?.code)) {
+      throw new Error(
+        `Malformed ProductSemanticFact for productId ${fact.productId}: primary PRODUCT_FAMILY code "${fact.primaryProductFamily.code}" also appears in secondaryProductFamilies`,
+      );
+    }
+  }
+  assertUniqueTagCodes(fact.secondaryProductFamilies, 'secondaryProductFamilies', fact.productId);
+  assertUniqueTagCodes(fact.disciplines, 'disciplines', fact.productId);
+  assertUniqueTagCodes(fact.useContexts, 'useContexts', fact.productId);
+}
+
+function assertUniqueTagCodes(tags: readonly ProductSemanticFactTag[], fieldName: string, productId: number): void {
+  const seen = new Set<string>();
+  for (const tag of tags) {
+    assertNonEmptyIdentifier(tag.code, `${fieldName}[].code`);
+    if (seen.has(tag.code)) {
+      throw new Error(`Malformed ProductSemanticFact for productId ${productId}: duplicate code "${tag.code}" in ${fieldName}`);
+    }
+    seen.add(tag.code);
   }
 }
 

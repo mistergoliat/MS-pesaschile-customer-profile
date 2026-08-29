@@ -198,11 +198,23 @@ meaningful across the whole customer population.
 
 ## 7. Signal inventory
 
+> **A01.2.1 finding, not yet known when this table was written:** `PurchaseBehaviorProduct.orderCount`
+> is `COUNT(DISTINCT id_order)` scoped to a *single product*, not to an affinity code. Summing it
+> across multiple products supporting the same code overcounts distinct purchase occasions
+> whenever those products were bought together in one order — and `isRepeated` is literally
+> `orderCount >= 2`, so it inherits the same problem. Both signals were **removed from v1 scoring**
+> (not merely dampened) in
+> [`CUSTOMER-INTELLIGENCE-R2-A01.2.1-affinity-scoring-semantic-hardening.md`](../releases/CUSTOMER-INTELLIGENCE-R2-A01.2.1-affinity-scoring-semantic-hardening.md),
+> deferred until A01.4 can supply exact distinct-order evidence from `AnalyticalOrder` line data.
+> The classification below (`USE`) was this design's original, and reasonable, expectation before
+> that grain issue was found by implementation-time auditing — kept here for history, not as
+> current guidance.
+
 | Signal | Classification | Rationale |
 | --- | --- | --- |
 | Recency (`daysSinceLastPurchase` / `lastPurchasedAt`) | **USE** | Decayed contribution — recent evidence should count more than a single purchase from years ago; folds "historical decay" into one signal rather than treating it separately. |
-| Frequency (`orderCount`, i.e. `supportingOrderCount`) | **USE** | Independent of spend; a customer with 5 separate `BARBELL` orders shows a real behavioral pattern regardless of unit price. |
-| Repeat purchase (`isRepeated`) | **USE** | A bonus weight on top of frequency — repeat-buy behavior is stronger evidence than the same order count spread across first-time purchases only. |
+| Frequency (`orderCount`, i.e. `supportingOrderCount`) | **USE** *(reversed in A01.2.1 — see note above)* | Independent of spend; a customer with 5 separate `BARBELL` orders shows a real behavioral pattern regardless of unit price. |
+| Repeat purchase (`isRepeated`) | **USE** *(reversed in A01.2.1 — see note above)* | A bonus weight on top of frequency — repeat-buy behavior is stronger evidence than the same order count spread across first-time purchases only. |
 | Monetary contribution (`spendShare`, dampened `totalSpentTaxIncl`) | **USE, dampened** | See [Section 8](#8-avoiding-spend-dominance) — never linear, never the dominant term. |
 | Diversity of supporting products (distinct `productId` count per code) | **USE** | Distinguishes "one $2M multi-gym" from "3 different barbells from 3 different orders" — see Section 8. |
 | Primary vs. secondary family evidence | **USE** | Bounded lower weight for secondary — see [Section 9](#9-primary-vs-secondary-product-family). |

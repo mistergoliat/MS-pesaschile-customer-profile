@@ -4,10 +4,26 @@ import {
   assertValidCoverage,
   assertValidCoveragePercentage,
   assertValidDecimalString,
+  assertValidProductSemanticFact,
   isValidAffinityScore,
   isValidCoveragePercentage,
   type CustomerCommercialAffinityCoverage,
+  type ProductSemanticFact,
 } from '../../src/domain/customer-commercial-affinity/index.js';
+
+function fact(overrides: Partial<ProductSemanticFact> = {}): ProductSemanticFact {
+  return {
+    productId: 1,
+    ontologyVersion: 'commercial-product-ontology-v3',
+    ontologyHash: 'f2de79fb',
+    classificationStatus: 'CLASSIFIED',
+    primaryProductFamily: { code: 'BENCH' },
+    secondaryProductFamilies: [],
+    disciplines: [],
+    useContexts: [],
+    ...overrides,
+  };
+}
 
 function baseCoverage(overrides: Partial<CustomerCommercialAffinityCoverage> = {}): CustomerCommercialAffinityCoverage {
   return {
@@ -102,5 +118,63 @@ describe('decimal string validation (supportingSpend / excludedNonProductSpend)'
     expect(() => assertValidDecimalString('-1', 'supportingSpend')).toThrow();
     expect(() => assertValidDecimalString('1e5', 'supportingSpend')).toThrow();
     expect(() => assertValidDecimalString('abc', 'supportingSpend')).toThrow();
+  });
+});
+
+describe('assertValidProductSemanticFact — transport invariants (A01.2.1 hardening)', () => {
+  it('accepts a well-formed fact', () => {
+    expect(() => assertValidProductSemanticFact(fact())).not.toThrow();
+  });
+
+  it('rejects a non-positive or non-integer productId', () => {
+    expect(() => assertValidProductSemanticFact(fact({ productId: 0 }))).toThrow(/productId/);
+    expect(() => assertValidProductSemanticFact(fact({ productId: -1 }))).toThrow(/productId/);
+    expect(() => assertValidProductSemanticFact(fact({ productId: 1.5 }))).toThrow(/productId/);
+  });
+
+  it('rejects an empty ontologyVersion or ontologyHash', () => {
+    expect(() => assertValidProductSemanticFact(fact({ ontologyVersion: '' }))).toThrow(/ontologyVersion/);
+    expect(() => assertValidProductSemanticFact(fact({ ontologyHash: '   ' }))).toThrow(/ontologyHash/);
+  });
+
+  it('rejects an empty tag code', () => {
+    expect(() => assertValidProductSemanticFact(fact({ primaryProductFamily: { code: '' } }))).toThrow();
+    expect(() => assertValidProductSemanticFact(fact({ disciplines: [{ code: '' }] }))).toThrow();
+  });
+
+  it('rejects a primary PRODUCT_FAMILY code that repeats in secondaryProductFamilies', () => {
+    expect(() =>
+      assertValidProductSemanticFact(
+        fact({ primaryProductFamily: { code: 'BENCH' }, secondaryProductFamilies: [{ code: 'BENCH' }] }),
+      ),
+    ).toThrow(/secondaryProductFamilies/);
+  });
+
+  it('rejects duplicate codes within secondaryProductFamilies', () => {
+    expect(() =>
+      assertValidProductSemanticFact(fact({ secondaryProductFamilies: [{ code: 'CABLE_MACHINE' }, { code: 'CABLE_MACHINE' }] })),
+    ).toThrow(/secondaryProductFamilies/);
+  });
+
+  it('rejects duplicate codes within disciplines', () => {
+    expect(() =>
+      assertValidProductSemanticFact(fact({ disciplines: [{ code: 'POWERLIFTING' }, { code: 'POWERLIFTING' }] })),
+    ).toThrow(/disciplines/);
+  });
+
+  it('rejects duplicate codes within useContexts', () => {
+    expect(() =>
+      assertValidProductSemanticFact(fact({ useContexts: [{ code: 'HOME_GYM' }, { code: 'HOME_GYM' }] })),
+    ).toThrow(/useContexts/);
+  });
+
+  it('does not validate whether a code exists in any ontology -- codes are opaque and unconstrained beyond non-emptiness/uniqueness', () => {
+    expect(() => assertValidProductSemanticFact(fact({ primaryProductFamily: { code: 'TOTALLY_UNKNOWN_CODE_123' } }))).not.toThrow();
+  });
+
+  it('allows a null primaryProductFamily with a non-empty secondaryProductFamilies (no primary to collide with)', () => {
+    expect(() =>
+      assertValidProductSemanticFact(fact({ primaryProductFamily: null, secondaryProductFamilies: [{ code: 'CABLE_MACHINE' }] })),
+    ).not.toThrow();
   });
 });

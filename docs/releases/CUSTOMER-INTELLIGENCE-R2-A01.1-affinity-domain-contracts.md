@@ -4,6 +4,13 @@ Status: **IMPLEMENTED** (pure domain contracts only — no population, no scorin
 Type: domain-contract slice, implementing
 [`docs/design/CUSTOMER-INTELLIGENCE-R2-A01-customer-commercial-affinity-design.md`](../design/CUSTOMER-INTELLIGENCE-R2-A01-customer-commercial-affinity-design.md).
 
+> **Superseded field names (A01.2.1 hardening):** `CustomerCommercialAffinityRow.supportingOrderCount`
+> was renamed to `approximateSupportingOrderCount`, and `evidenceCoverage` was renamed to
+> `explicitEvidenceCoverage: number | null` (no confidence metadata ⇒ `null`, never `1`). See
+> [`CUSTOMER-INTELLIGENCE-R2-A01.2.1-affinity-scoring-semantic-hardening.md`](CUSTOMER-INTELLIGENCE-R2-A01.2.1-affinity-scoring-semantic-hardening.md)
+> for why. Everything else below (identity, snapshot lineage, score/coverage invariants, status
+> eligibility, confidence optionality, the Catalog Service boundary) remains accurate as written.
+
 New module: `src/domain/customer-commercial-affinity/` — `contracts.ts`, `eligibility.ts`,
 `snapshot.ts`, `validation.ts`, `index.ts`. Tests:
 `tests/unit/customer-commercial-affinity-{contracts,eligibility,validation,snapshot,architecture-guard}.test.ts`

@@ -1,8 +1,30 @@
 # CUSTOMER-INTELLIGENCE-R2-A01.2 — Deterministic Customer Commercial Affinity Scoring Kernel
 
-Status: **IMPLEMENTED** (pure computation only — no population, no catalog-service adapter, no
-persistence). Type: pure domain computation, implementing the scoring formula the A01.0 design
-doc deferred and the A01.1 contracts left unimplemented.
+Status: **IMPLEMENTED, then hardened in A01.2.1 — see the correction notice below.** Type: pure
+domain computation, implementing the scoring formula the A01.0 design doc deferred and the A01.1
+contracts left unimplemented.
+
+> **Superseded by [`CUSTOMER-INTELLIGENCE-R2-A01.2.1-affinity-scoring-semantic-hardening.md`](CUSTOMER-INTELLIGENCE-R2-A01.2.1-affinity-scoring-semantic-hardening.md)
+> on four points** — do not treat the sections below as the current formula:
+>
+> 1. **FREQUENCY and REPEAT were removed**, not merely documented as an approximation.
+>    `PurchaseBehaviorProduct.orderCount` is `COUNT(DISTINCT id_order)` scoped to a single
+>    product (confirmed against the actual SQL); summing it across products supporting the same
+>    code overcounts distinct purchase occasions. `isRepeated` is literally `orderCount >= 2`, so
+>    it inherited the same problem. Both `frequencyWeight`/`FREQUENCY_WEIGHT` and
+>    `repeatBonus`/`REPEAT_WEIGHT` no longer exist in `scoring-policy.ts`.
+> 2. **Monetary evidence is now summed at code level before dampening**, not dampened per product
+>    then summed — the old order caused `sqrt(a) + sqrt(b) > sqrt(a + b)` to reward splitting the
+>    same spend across more products, on top of the separate diversity bonus.
+> 3. **`evidenceCoverage` (defaulting an untagged group to `1`) was replaced by
+>    `explicitEvidenceCoverage: number | null`** — `null` when no contributing fact carries
+>    confidence metadata at all, never encoded as `1`.
+> 4. **`addRfmDecimals` was replaced by `addDecimals` from `src/shared/decimal.ts`** — Customer
+>    Commercial Affinity no longer depends on the RFM domain for generic decimal arithmetic.
+>
+> The API shape (`scoreCustomerCommercialAffinity`, `expandSemanticEvidence`,
+> `aggregateAffinityEvidence`, `scoreAffinityEvidence`), the saturation function, recency
+> half-life, role/confidence multipliers, and diversity bonus described below are still accurate.
 
 New files in `src/domain/customer-commercial-affinity/`: `scoring-policy.ts` (constants + pure
 component transforms), `scoring.ts` (the kernel). Tests:

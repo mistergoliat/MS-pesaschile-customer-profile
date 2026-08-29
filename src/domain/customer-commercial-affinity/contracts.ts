@@ -57,11 +57,20 @@ export type CustomerCommercialAffinityRow = {
   readonly affinityAxis: CustomerCommercialAffinityAxis;
   readonly affinityCode: string; // opaque, semantically owned by the catalog ontology
   readonly score: number; // bounded [0,1] — see validation.ts assertValidAffinityScore
-  readonly supportingOrderCount: number;
+  // Approximate UPPER BOUND, not an exact distinct-order count (A01.2.1 hardening, task Section
+  // 6): summed per-product orderCount overcounts whenever two distinct products supporting this
+  // code were bought in the same physical order. Named explicitly so it never reads as exact.
+  // Not used for scoring (see scoring-policy.ts — frequency is deferred to A01.4, which can join
+  // exact order-line data).
+  readonly approximateSupportingOrderCount: number;
   readonly supportingProductCount: number;
   readonly supportingSpend: string; // decimal string, never a JS float
   readonly lastEvidenceAt: string; // ISO timestamp
-  readonly evidenceCoverage: number; // bounded [0,1] — share of evidence mass with EXPLICIT confidence; 1 when the snapshot carries no confidence field at all
+  // null when none of the contributing semantic facts carried confidence metadata at all (A01.2.1
+  // hardening, task Section 11) — never encoded as 1. 0 = confidence metadata exists but none of
+  // its evidence mass is EXPLICIT. 1 = all confidence-tagged evidence mass is EXPLICIT. A
+  // fractional value in between reflects a genuine mix.
+  readonly explicitEvidenceCoverage: number | null;
 };
 
 // ── Coverage ────────────────────────────────────────────────────────────────────────────────
