@@ -2,7 +2,7 @@ import { addDecimals, compareDecimalAsc, divideDecimal, formatDecimal } from '..
 import { sha256Stable } from '../customer-rfm/checksum.js';
 import {
   CUSTOMER_CLV_MODEL_VERSION,
-  type CustomerClvReliabilityBucket,
+  type CustomerClvEstimateSupportLevel,
 } from './contracts.js';
 import {
   CUSTOMER_CLV_DET_TIEBREAK_POLICY_VERSION,
@@ -27,25 +27,32 @@ export const CUSTOMER_CLV_TWO_STAGE_VALUE_PRIOR_STRENGTH_EXACT = 20;
 export const CUSTOMER_CLV_TWO_STAGE_VALUE_PRIOR_STRENGTH_ORDER_RECENCY = 30;
 export const CUSTOMER_CLV_TWO_STAGE_VALUE_PRIOR_STRENGTH_RECENCY = 45;
 export const CUSTOMER_CLV_TWO_STAGE_RECENT_ACTIVITY_CUTOFF_WINDOW = 2;
-export const CUSTOMER_CLV_TWO_STAGE_RELIABILITY_POLICY_VERSION = 'customer-clv-two-stage-reliability-history-support-fallback-v1';
-export const CUSTOMER_CLV_TWO_STAGE_SUPPORT_POLICY_VERSION = 'customer-clv-two-stage-estimate-support-v1';
+export const CUSTOMER_CLV_TWO_STAGE_ESTIMATE_SUPPORT_POLICY_VERSION = 'customer-clv-estimate-support-v1';
 export const CUSTOMER_CLV_TWO_STAGE_SELECTION_POLICY_VERSION = 'customer-clv-two-stage-selection-calibration-then-ranking-v1';
 export const CUSTOMER_CLV_TWO_STAGE_ACTIVITY_BAND_POLICY_VERSION = 'customer-clv-two-stage-activity-probability-bands-v1';
 export const CUSTOMER_CLV_TWO_STAGE_ACTIVITY_RECALIBRATION_POLICY_VERSION =
   'customer-clv-two-stage-activity-recalibration-band-recency-v1';
 export const CUSTOMER_CLV_TWO_STAGE_STALE_ACTIVITY_POLICY_VERSION =
   'customer-clv-two-stage-activity-recalibration-stale-parent-v1';
+export const CUSTOMER_CLV_TWO_STAGE_STALE_ADJUSTMENT_POLICY_VERSION =
+  'customer-clv-two-stage-stale-activity-adjustment-v1';
 export const CUSTOMER_CLV_TWO_STAGE_VALUE_RANK_REFINEMENT_POLICY_VERSION =
   'customer-clv-two-stage-value-rank-refinement-log1p-revenue365d-v1';
 export const CUSTOMER_CLV_TWO_STAGE_CORRECTION_SELECTION_POLICY_VERSION =
   'customer-clv-two-stage-selection-temporal-calibration-ranking-stale-ties-v1';
 export const CUSTOMER_CLV_TWO_STAGE_HARDENING_SELECTION_POLICY_VERSION =
-  'customer-clv-two-stage-selection-stale-support-hardening-v1';
-export const CUSTOMER_CLV_TWO_STAGE_RELIABILITY_SCALE_POLICY_VERSION =
-  'customer-clv-two-stage-reliability-scale-aware-v1';
+  'customer-clv-two-stage-selection-far-stale-support-hardening-v1';
+export const CUSTOMER_CLV_TWO_STAGE_ESTIMATE_SUPPORT_DIAGNOSTIC_POLICY_VERSION =
+  'customer-clv-two-stage-estimate-support-diagnostics-v1';
 export const CUSTOMER_CLV_TWO_STAGE_TIE_DIAGNOSTICS_POLICY_VERSION = 'customer-clv-two-stage-tie-diagnostics-v1';
 export const CUSTOMER_CLV_TWO_STAGE_ACTIVITY_RECALIBRATION_BAND_PRIOR_STRENGTH = 80;
 export const CUSTOMER_CLV_TWO_STAGE_ACTIVITY_RECALIBRATION_BAND_RECENCY_PRIOR_STRENGTH = 40;
+export const CUSTOMER_CLV_TWO_STAGE_STALE_ADJUSTMENT_PARENT_PRIOR_STRENGTH = 20;
+export const CUSTOMER_CLV_TWO_STAGE_STALE_ADJUSTMENT_CHILD_PRIOR_STRENGTH = 12;
+export const CUSTOMER_CLV_TWO_STAGE_STALE_ADJUSTMENT_MIN_FACTOR = 0.4;
+export const CUSTOMER_CLV_TWO_STAGE_STALE_ADJUSTMENT_MAX_FACTOR = 1.0;
+export const CUSTOMER_CLV_TWO_STAGE_STALE_ADJUSTMENT_CHILD_MIN_SUPPORT = 2;
+export const CUSTOMER_CLV_TWO_STAGE_STALE_ADJUSTMENT_PARENT_MIN_SUPPORT = 4;
 export const CUSTOMER_CLV_TWO_STAGE_VALUE_SIGNAL_PRIOR_STRENGTH_RECENCY = 30;
 export const CUSTOMER_CLV_TWO_STAGE_VALUE_SIGNAL_PRIOR_STRENGTH_ORDER_RECENCY = 20;
 export const CUSTOMER_CLV_TWO_STAGE_VALUE_SIGNAL_PRIOR_STRENGTH_EXACT = 10;
@@ -64,9 +71,20 @@ export type CustomerClvTwoStageCandidateId =
   | 'two-stage-cohort-a04-band-recency-rank25-v1'
   | 'two-stage-cohort-a04-band-recency-rank50-refined-v1'
   | 'two-stage-cohort-a04-2-stale-support-recent2-v1'
-  | 'two-stage-cohort-a04-2-stale-support-recent1-v1';
+  | 'two-stage-cohort-a04-2-stale-support-recent1-v1'
+  | 'two-stage-cohort-a04-3-far-stale-adjustment-recent2-v1'
+  | 'two-stage-cohort-a04-3-far-stale-adjustment-recent1-v1';
 
 export type CustomerClvTwoStageFallbackLevel = 'exact' | 'order_recency' | 'recency' | 'global';
+export type CustomerClvTwoStageActivityRecalibrationStrategy =
+  | 'none'
+  | 'probability_band'
+  | 'probability_band_broad_recency'
+  | 'probability_band_stale_parent';
+export type CustomerClvTwoStageStaleAdjustmentStrategy = 'none' | 'stale_recency_order_depth';
+export type CustomerClvTwoStageStaleOrderDepthBucket = '1' | '2+';
+export type CustomerClvTwoStageStaleRecencyBucket = '366-730d' | '731-1095d' | '>1095d';
+export type CustomerClvTwoStageStaleAdjustmentParentBucket = '366-730d' | '731+d';
 
 export type CustomerClvTwoStagePrediction = {
   readonly customerId: number;
@@ -85,7 +103,7 @@ export type CustomerClvTwoStagePrediction = {
   readonly valueTrainingCutoffCoverage: number;
   readonly activityFallbackLevel: CustomerClvTwoStageFallbackLevel;
   readonly valueFallbackLevel: CustomerClvTwoStageFallbackLevel;
-  readonly reliabilityBucket: CustomerClvReliabilityBucket;
+  readonly estimateSupportLevel: CustomerClvEstimateSupportLevel;
 };
 
 export type CustomerClvTwoStageProbabilityBandRow = {
@@ -96,8 +114,8 @@ export type CustomerClvTwoStageProbabilityBandRow = {
   readonly calibrationRatio: string | null;
 };
 
-export type CustomerClvTwoStageReliabilityRow = {
-  readonly reliabilityBucket: CustomerClvReliabilityBucket;
+export type CustomerClvTwoStageEstimateSupportRow = {
+  readonly estimateSupportLevel: CustomerClvEstimateSupportLevel;
   readonly customerCount: number;
   readonly populationShare: string;
   readonly predictedActivityRate: string | null;
@@ -108,9 +126,51 @@ export type CustomerClvTwoStageReliabilityRow = {
   readonly normalizedAbsoluteError: string | null;
   readonly medianNormalizedAbsoluteError: string | null;
   readonly spearmanRankCorrelation: string | null;
+  readonly historicalOrderDepthDistribution: Readonly<Record<'1' | '2' | '3-4' | '5+', number>>;
+  readonly activitySupportSummary: {
+    readonly min: number;
+    readonly median: number;
+    readonly max: number;
+  };
+  readonly valueSupportSummary: {
+    readonly min: number;
+    readonly median: number;
+    readonly max: number;
+  };
+  readonly fallbackDepthDistribution: Readonly<Record<'exact' | 'order_recency' | 'recency' | 'global', number>>;
+  readonly activityCutoffCoverageSummary: {
+    readonly min: number;
+    readonly median: number;
+    readonly max: number;
+  };
+  readonly valueCutoffCoverageSummary: {
+    readonly min: number;
+    readonly median: number;
+    readonly max: number;
+  };
+};
+
+export type CustomerClvTwoStageStaleOrderDepthAuditRow = {
+  readonly recencyBucket: CustomerClvTwoStageStaleRecencyBucket;
+  readonly orderDepthBucket: CustomerClvTwoStageStaleOrderDepthBucket;
+  readonly customerCount: number;
+  readonly predictedActivityRate: string | null;
+  readonly actualActivityRate: string | null;
+  readonly calibrationRatio: string | null;
+};
+
+export type CustomerClvTwoStageStaleAdjustmentDiagnosticRow = {
+  readonly scope: 'recency_parent' | 'recency_order_depth';
+  readonly recencyBucket: CustomerClvTwoStageStaleAdjustmentParentBucket | CustomerClvTwoStageStaleRecencyBucket;
+  readonly orderDepthBucket: CustomerClvTwoStageStaleOrderDepthBucket | null;
+  readonly parentKey: string | null;
+  readonly support: number;
   readonly cutoffCoverage: number;
-  readonly historyDepthCoverage: number;
-  readonly recencyCoverage: number;
+  readonly meanPredictedActivityRate: string;
+  readonly actualActivityRate: string;
+  readonly rawAdjustmentFactor: string;
+  readonly shrunkAdjustmentFactor: string;
+  readonly appliedAdjustmentFactor: string;
 };
 
 export type CustomerClvTwoStageActivitySummary = CustomerClvActivityMetrics & {
@@ -148,7 +208,7 @@ export type CustomerClvTwoStageTopCustomerRow = {
   readonly valueCohortKey: string;
   readonly activitySupport: number;
   readonly valueSupport: number;
-  readonly reliabilityBucket: CustomerClvReliabilityBucket;
+  readonly estimateSupportLevel: CustomerClvEstimateSupportLevel;
 };
 
 export type CustomerClvTwoStagePerCutoffEvaluation = {
@@ -166,8 +226,9 @@ export type CustomerClvTwoStagePerCutoffEvaluation = {
   readonly historyDepth: readonly CustomerClvSegmentMetrics[];
   readonly recency: readonly CustomerClvSegmentMetrics[];
   readonly activityProbabilityBands: readonly CustomerClvTwoStageProbabilityBandRow[];
-  readonly reliability: readonly CustomerClvTwoStageReliabilityRow[];
+  readonly estimateSupport: readonly CustomerClvTwoStageEstimateSupportRow[];
   readonly recencyAudit: readonly CustomerClvTwoStageRecencyAuditRow[];
+  readonly staleOrderDepthAudit: readonly CustomerClvTwoStageStaleOrderDepthAuditRow[];
 };
 
 export type CustomerClvTwoStageCandidateEvaluation = {
@@ -176,7 +237,7 @@ export type CustomerClvTwoStageCandidateEvaluation = {
   readonly modelFitVersion: typeof CUSTOMER_CLV_TWO_STAGE_MODEL_FIT_VERSION;
   readonly trainingProtocolVersion: typeof CUSTOMER_CLV_TRAINING_PROTOCOL_VERSION;
   readonly deterministicTiebreakPolicyVersion: typeof CUSTOMER_CLV_DET_TIEBREAK_POLICY_VERSION;
-  readonly reliabilityPolicyVersion: typeof CUSTOMER_CLV_TWO_STAGE_RELIABILITY_POLICY_VERSION;
+  readonly estimateSupportPolicyVersion: typeof CUSTOMER_CLV_TWO_STAGE_ESTIMATE_SUPPORT_POLICY_VERSION;
   readonly driftPolicy: {
     readonly activityTrainingWindow: 'all_eligible_cutoffs' | 'recent_2_eligible_cutoffs' | 'recent_1_eligible_cutoffs';
     readonly valueTrainingWindow: 'all_eligible_cutoffs';
@@ -215,7 +276,10 @@ export type CustomerClvTwoStageCandidateEvaluation = {
   readonly overallRecency: readonly CustomerClvSegmentMetrics[];
   readonly outlierSensitivity: CustomerClvOutlierSensitivity;
   readonly activityProbabilityBands: readonly CustomerClvTwoStageProbabilityBandRow[];
-  readonly reliabilityResults: readonly CustomerClvTwoStageReliabilityRow[];
+  readonly estimateSupportResults: readonly CustomerClvTwoStageEstimateSupportRow[];
+  readonly staleOrderDepthAudit: readonly CustomerClvTwoStageStaleOrderDepthAuditRow[];
+  readonly zeroFutureRevenue: CustomerClvTwoStageZeroFutureRevenueSummary;
+  readonly positiveFutureRevenue: CustomerClvTwoStagePositiveFutureRevenueSummary;
   readonly majorActivityCohorts: readonly CustomerClvTwoStageCohortCalibrationRow[];
   readonly majorValueCohorts: readonly CustomerClvTwoStageCohortCalibrationRow[];
   readonly fallbackUsage: {
@@ -282,12 +346,30 @@ export type CustomerClvTwoStageCohortObservedCalibrationRow = {
 export type CustomerClvTwoStageCorrectionCandidateEvaluation = CustomerClvTwoStageCandidateEvaluation & {
   readonly correctionPolicyVersion: typeof CUSTOMER_CLV_TWO_STAGE_CORRECTION_SELECTION_POLICY_VERSION;
   readonly activityRecalibration: {
-    readonly strategy: 'none' | 'probability_band' | 'probability_band_broad_recency' | 'probability_band_stale_parent';
+    readonly strategy: CustomerClvTwoStageActivityRecalibrationStrategy;
     readonly policyVersion:
       | typeof CUSTOMER_CLV_TWO_STAGE_ACTIVITY_RECALIBRATION_POLICY_VERSION
       | typeof CUSTOMER_CLV_TWO_STAGE_STALE_ACTIVITY_POLICY_VERSION
       | null;
     readonly bandPolicyVersion: typeof CUSTOMER_CLV_TWO_STAGE_ACTIVITY_BAND_POLICY_VERSION | null;
+  };
+  readonly staleActivityAdjustment: {
+    readonly strategy: CustomerClvTwoStageStaleAdjustmentStrategy;
+    readonly policyVersion: typeof CUSTOMER_CLV_TWO_STAGE_STALE_ADJUSTMENT_POLICY_VERSION | null;
+    readonly supportThresholds:
+      | {
+          readonly childMinSupport: number;
+          readonly parentMinSupport: number;
+        }
+      | null;
+    readonly bounds:
+      | {
+          readonly min: string;
+          readonly max: string;
+        }
+      | null;
+    readonly fallbackHierarchy: readonly ['recency_order_depth', 'recency_parent', 'neutral'];
+    readonly diagnosticRows: readonly CustomerClvTwoStageStaleAdjustmentDiagnosticRow[];
   };
   readonly conditionalValueRankRefinement: {
     readonly signal: 'none' | 'log1p_revenue365d';
@@ -299,7 +381,7 @@ export type CustomerClvTwoStageCorrectionCandidateEvaluation = CustomerClvTwoSta
     readonly policyVersion: typeof CUSTOMER_CLV_TWO_STAGE_VALUE_RANK_REFINEMENT_POLICY_VERSION | null;
   };
   readonly tieDiagnosticsPolicyVersion: typeof CUSTOMER_CLV_TWO_STAGE_TIE_DIAGNOSTICS_POLICY_VERSION;
-  readonly reliabilityScalePolicyVersion: typeof CUSTOMER_CLV_TWO_STAGE_RELIABILITY_SCALE_POLICY_VERSION;
+  readonly estimateSupportDiagnosticPolicyVersion: typeof CUSTOMER_CLV_TWO_STAGE_ESTIMATE_SUPPORT_DIAGNOSTIC_POLICY_VERSION;
   readonly rankingDiagnostics: CustomerClvTwoStageRankingDiagnostics;
   readonly tieDiagnostics: CustomerClvTwoStageTieDiagnostics;
   readonly observedActivityCohorts: readonly CustomerClvTwoStageCohortObservedCalibrationRow[];
@@ -338,12 +420,34 @@ export type CustomerClvTwoStageFrozenCandidateDescriptor = {
   readonly modelVersion: typeof CUSTOMER_CLV_MODEL_VERSION;
   readonly estimatorPolicyVersion: string;
   readonly activityModelVersion: typeof CUSTOMER_CLV_TWO_STAGE_MODEL_FIT_VERSION;
+  readonly activityTrainingWindowPolicy: 'all_eligible_cutoffs' | 'recent_2_eligible_cutoffs' | 'recent_1_eligible_cutoffs';
   readonly activityRecalibrationVersion: string;
+  readonly staleAdjustmentPolicyVersion: string;
   readonly conditionalValuePolicyVersion: string;
-  readonly rankRefinementVersion: string;
-  readonly reliabilitySupportPolicyVersion: string;
+  readonly rankRefinementPolicyVersion: string;
+  readonly estimateSupportPolicyVersion: string;
   readonly trainingTimePolicyVersion: typeof CUSTOMER_CLV_TRAINING_PROTOCOL_VERSION;
+  readonly datasetVersion: string;
+  readonly populationPolicyVersion: string;
+  readonly monetaryPolicyVersion: string;
   readonly modelChecksum: string;
+};
+
+export type CustomerClvTwoStageZeroFutureRevenueSummary = {
+  readonly customerCount: number;
+  readonly populationShare: string;
+  readonly meanPredictedClv: string | null;
+  readonly medianPredictedClv: string | null;
+  readonly p90PredictedClv: string | null;
+  readonly p95PredictedClv: string | null;
+};
+
+export type CustomerClvTwoStagePositiveFutureRevenueSummary = {
+  readonly customerCount: number;
+  readonly meanActualRevenue: string | null;
+  readonly medianActualRevenue: string | null;
+  readonly meanPredictedClv: string | null;
+  readonly deciles: readonly CustomerClvDecileRow[];
 };
 
 export type CustomerClvTwoStageHardeningEvaluationReport = {
@@ -361,7 +465,30 @@ export type CustomerClvTwoStageHardeningEvaluationReport = {
   readonly selectedCandidate: CustomerClvTwoStageCorrectionCandidateEvaluation;
   readonly a041CandidateId: CustomerClvTwoStageCandidateId;
   readonly a041Candidate: CustomerClvTwoStageCorrectionCandidateEvaluation;
+  readonly a042CandidateId: CustomerClvTwoStageCandidateId;
+  readonly a042Candidate: CustomerClvTwoStageCorrectionCandidateEvaluation;
   readonly frozenCandidateDescriptor: CustomerClvTwoStageFrozenCandidateDescriptor;
+};
+
+export type CustomerClvTwoStageFrozenCandidateEvaluation = {
+  readonly frozenDescriptorMatch: {
+    readonly valid: boolean;
+    readonly mismatches: readonly string[];
+  };
+  readonly rollingOriginPlan: readonly {
+    readonly evaluationCutoff: string;
+    readonly eligibleTrainingCutoffs: readonly string[];
+  }[];
+  readonly candidateEvaluation: CustomerClvTwoStageCorrectionCandidateEvaluation;
+};
+
+export type CustomerClvTwoStageFrozenProductionPrediction = {
+  readonly predictions: readonly CustomerClvTwoStagePrediction[];
+  readonly trainingCutoffs: readonly string[];
+  readonly trainingDatasetChecksums: readonly string[];
+  readonly trainingRowCount: number;
+  readonly modelChecksum: string;
+  readonly predictionChecksum: string;
 };
 
 type CandidateConfig = {
@@ -424,10 +551,29 @@ type ActivityCalibrationCellEstimate = {
 };
 
 type ActivityCalibrationModel = {
-  readonly strategy: CorrectionCandidateConfig['activityRecalibration'];
+  readonly strategy: CustomerClvTwoStageActivityRecalibrationStrategy;
   readonly globalActivityRate: string;
   readonly checksumShape: Readonly<Record<string, unknown>>;
   calibrate(row: CustomerClvBacktestExample, baseProbability: string): string;
+};
+
+type StaleActivityAdjustmentCellEstimate = {
+  readonly key: string;
+  readonly parentKey: string | null;
+  readonly support: number;
+  readonly cutoffCoverage: number;
+  readonly meanPredictedActivityRate: string;
+  readonly actualActivityRate: string;
+  readonly rawAdjustmentFactor: string;
+  readonly shrunkAdjustmentFactor: string;
+  readonly appliedAdjustmentFactor: string;
+};
+
+type StaleActivityAdjustmentModel = {
+  readonly strategy: CustomerClvTwoStageStaleAdjustmentStrategy;
+  readonly checksumShape: Readonly<Record<string, unknown>>;
+  readonly diagnosticRows: readonly CustomerClvTwoStageStaleAdjustmentDiagnosticRow[];
+  adjust(row: CustomerClvBacktestExample, calibratedProbability: string): string;
 };
 
 type ValueSignalCellEstimate = {
@@ -470,11 +616,8 @@ type CorrectionCandidateConfig = {
   readonly activityTrainingWindow: 'recent_2_eligible_cutoffs' | 'recent_1_eligible_cutoffs';
   readonly valueTrainingWindow: 'all_eligible_cutoffs';
   readonly valueCohortStrategy: 'order_depth_recency_revenue365d' | 'order_depth_recency_revenue365d_refined';
-  readonly activityRecalibration:
-    | 'none'
-    | 'probability_band'
-    | 'probability_band_broad_recency'
-    | 'probability_band_stale_parent';
+  readonly activityRecalibration: CustomerClvTwoStageActivityRecalibrationStrategy;
+  readonly staleActivityAdjustment: CustomerClvTwoStageStaleAdjustmentStrategy;
   readonly valueRankSignal: 'none' | 'log1p_revenue365d';
   readonly valueRankLambda: 0 | 0.25 | 0.5;
 };
@@ -486,6 +629,7 @@ const CORRECTION_CANDIDATE_CONFIGS: readonly CorrectionCandidateConfig[] = [
     valueTrainingWindow: 'all_eligible_cutoffs',
     valueCohortStrategy: 'order_depth_recency_revenue365d',
     activityRecalibration: 'none',
+    staleActivityAdjustment: 'none',
     valueRankSignal: 'none',
     valueRankLambda: 0,
   },
@@ -495,6 +639,7 @@ const CORRECTION_CANDIDATE_CONFIGS: readonly CorrectionCandidateConfig[] = [
     valueTrainingWindow: 'all_eligible_cutoffs',
     valueCohortStrategy: 'order_depth_recency_revenue365d',
     activityRecalibration: 'probability_band',
+    staleActivityAdjustment: 'none',
     valueRankSignal: 'none',
     valueRankLambda: 0,
   },
@@ -504,6 +649,7 @@ const CORRECTION_CANDIDATE_CONFIGS: readonly CorrectionCandidateConfig[] = [
     valueTrainingWindow: 'all_eligible_cutoffs',
     valueCohortStrategy: 'order_depth_recency_revenue365d',
     activityRecalibration: 'probability_band_broad_recency',
+    staleActivityAdjustment: 'none',
     valueRankSignal: 'log1p_revenue365d',
     valueRankLambda: 0.25,
   },
@@ -513,6 +659,7 @@ const CORRECTION_CANDIDATE_CONFIGS: readonly CorrectionCandidateConfig[] = [
     valueTrainingWindow: 'all_eligible_cutoffs',
     valueCohortStrategy: 'order_depth_recency_revenue365d_refined',
     activityRecalibration: 'probability_band_broad_recency',
+    staleActivityAdjustment: 'none',
     valueRankSignal: 'log1p_revenue365d',
     valueRankLambda: 0.5,
   },
@@ -525,6 +672,7 @@ const HARDENING_CANDIDATE_CONFIGS: readonly CorrectionCandidateConfig[] = [
     valueTrainingWindow: 'all_eligible_cutoffs',
     valueCohortStrategy: 'order_depth_recency_revenue365d_refined',
     activityRecalibration: 'probability_band_broad_recency',
+    staleActivityAdjustment: 'none',
     valueRankSignal: 'log1p_revenue365d',
     valueRankLambda: 0.5,
   },
@@ -534,6 +682,7 @@ const HARDENING_CANDIDATE_CONFIGS: readonly CorrectionCandidateConfig[] = [
     valueTrainingWindow: 'all_eligible_cutoffs',
     valueCohortStrategy: 'order_depth_recency_revenue365d_refined',
     activityRecalibration: 'probability_band_stale_parent',
+    staleActivityAdjustment: 'none',
     valueRankSignal: 'log1p_revenue365d',
     valueRankLambda: 0.5,
   },
@@ -543,6 +692,27 @@ const HARDENING_CANDIDATE_CONFIGS: readonly CorrectionCandidateConfig[] = [
     valueTrainingWindow: 'all_eligible_cutoffs',
     valueCohortStrategy: 'order_depth_recency_revenue365d_refined',
     activityRecalibration: 'probability_band_stale_parent',
+    staleActivityAdjustment: 'none',
+    valueRankSignal: 'log1p_revenue365d',
+    valueRankLambda: 0.5,
+  },
+  {
+    candidateId: 'two-stage-cohort-a04-3-far-stale-adjustment-recent2-v1',
+    activityTrainingWindow: 'recent_2_eligible_cutoffs',
+    valueTrainingWindow: 'all_eligible_cutoffs',
+    valueCohortStrategy: 'order_depth_recency_revenue365d_refined',
+    activityRecalibration: 'probability_band_stale_parent',
+    staleActivityAdjustment: 'stale_recency_order_depth',
+    valueRankSignal: 'log1p_revenue365d',
+    valueRankLambda: 0.5,
+  },
+  {
+    candidateId: 'two-stage-cohort-a04-3-far-stale-adjustment-recent1-v1',
+    activityTrainingWindow: 'recent_1_eligible_cutoffs',
+    valueTrainingWindow: 'all_eligible_cutoffs',
+    valueCohortStrategy: 'order_depth_recency_revenue365d_refined',
+    activityRecalibration: 'probability_band_stale_parent',
+    staleActivityAdjustment: 'stale_recency_order_depth',
     valueRankSignal: 'log1p_revenue365d',
     valueRankLambda: 0.5,
   },
@@ -647,9 +817,12 @@ export function evaluateCustomerClvTwoStageHardeningCandidates(input: {
     evaluateCorrectionCandidateAcrossRollingOrigin(datasets, plan, config),
   ).sort((left, right) => left.candidateId.localeCompare(right.candidateId));
 
-  const selectedCandidate = [...candidateEvaluations].sort(compareHardeningCandidateEvaluations)[0];
+  const selectedCandidate = [...candidateEvaluations]
+    .filter((candidate) => candidate.staleActivityAdjustment.strategy === 'stale_recency_order_depth')
+    .sort(compareHardeningCandidateEvaluations)[0];
   const a041Candidate = candidateEvaluations.find((candidate) => candidate.candidateId === 'two-stage-cohort-a04-band-recency-rank50-refined-v1');
-  if (!selectedCandidate || !a041Candidate) {
+  const a042Candidate = candidateEvaluations.find((candidate) => candidate.candidateId === 'two-stage-cohort-a04-2-stale-support-recent2-v1');
+  if (!selectedCandidate || !a041Candidate || !a042Candidate) {
     throw new Error('CLV two-stage hardening evaluation did not produce the required candidate models');
   }
 
@@ -668,19 +841,120 @@ export function evaluateCustomerClvTwoStageHardeningCandidates(input: {
     selectedCandidate,
     a041CandidateId: a041Candidate.candidateId,
     a041Candidate,
+    a042CandidateId: a042Candidate.candidateId,
+    a042Candidate,
     frozenCandidateDescriptor: {
       modelVersion: CUSTOMER_CLV_MODEL_VERSION,
       estimatorPolicyVersion: selectedCandidate.candidateId,
       activityModelVersion: CUSTOMER_CLV_TWO_STAGE_MODEL_FIT_VERSION,
+      activityTrainingWindowPolicy: selectedCandidate.driftPolicy.activityTrainingWindow,
       activityRecalibrationVersion:
         selectedCandidate.activityRecalibration.policyVersion ?? CUSTOMER_CLV_TWO_STAGE_STALE_ACTIVITY_POLICY_VERSION,
+      staleAdjustmentPolicyVersion:
+        selectedCandidate.staleActivityAdjustment.policyVersion ?? 'none',
       conditionalValuePolicyVersion: `value-cohort-${selectedCandidate.driftPolicy.valueCohortStrategy}`,
-      rankRefinementVersion:
+      rankRefinementPolicyVersion:
         selectedCandidate.conditionalValueRankRefinement.policyVersion ?? 'none',
-      reliabilitySupportPolicyVersion: CUSTOMER_CLV_TWO_STAGE_SUPPORT_POLICY_VERSION,
+      estimateSupportPolicyVersion: CUSTOMER_CLV_TWO_STAGE_ESTIMATE_SUPPORT_POLICY_VERSION,
       trainingTimePolicyVersion: CUSTOMER_CLV_TRAINING_PROTOCOL_VERSION,
+      datasetVersion: datasets[0]!.manifest.datasetVersion,
+      populationPolicyVersion: datasets[0]!.manifest.populationPolicyVersion,
+      monetaryPolicyVersion: datasets[0]!.manifest.monetaryPolicyVersion,
       modelChecksum: selectedCandidate.modelChecksum,
     },
+  };
+}
+
+export function evaluateCustomerClvTwoStageFrozenCandidate(input: {
+  readonly datasets: readonly CustomerClvBacktestDataset[];
+  readonly generatedAt: string;
+  readonly frozenDescriptor: CustomerClvTwoStageFrozenCandidateDescriptor;
+  readonly evaluationCutoff?: string;
+}): CustomerClvTwoStageFrozenCandidateEvaluation {
+  const datasets = sortDatasetsByCutoff(input.datasets);
+  const config = HARDENING_CANDIDATE_CONFIGS.find(
+    (candidate) => candidate.candidateId === input.frozenDescriptor.estimatorPolicyVersion,
+  );
+  if (!config) {
+    throw new Error(`Frozen CLV candidate is not a known immutable configuration: ${input.frozenDescriptor.estimatorPolicyVersion}`);
+  }
+  const plan = buildCustomerClvRollingOriginPlan(datasets, input.evaluationCutoff);
+  if (plan.length === 0) {
+    throw new Error('Frozen CLV evaluation found no evaluation cutoffs with mature prior training history');
+  }
+  const candidateEvaluation = evaluateCorrectionCandidateAcrossRollingOrigin(datasets, plan, config);
+  const expectedDescriptor: CustomerClvTwoStageFrozenCandidateDescriptor = {
+    modelVersion: CUSTOMER_CLV_MODEL_VERSION,
+    estimatorPolicyVersion: config.candidateId,
+    activityModelVersion: CUSTOMER_CLV_TWO_STAGE_MODEL_FIT_VERSION,
+    activityTrainingWindowPolicy: config.activityTrainingWindow,
+    activityRecalibrationVersion:
+      candidateEvaluation.activityRecalibration.policyVersion ?? CUSTOMER_CLV_TWO_STAGE_STALE_ACTIVITY_POLICY_VERSION,
+    staleAdjustmentPolicyVersion: candidateEvaluation.staleActivityAdjustment.policyVersion ?? 'none',
+    conditionalValuePolicyVersion: `value-cohort-${config.valueCohortStrategy}`,
+    rankRefinementPolicyVersion: candidateEvaluation.conditionalValueRankRefinement.policyVersion ?? 'none',
+    estimateSupportPolicyVersion: CUSTOMER_CLV_TWO_STAGE_ESTIMATE_SUPPORT_POLICY_VERSION,
+    trainingTimePolicyVersion: CUSTOMER_CLV_TRAINING_PROTOCOL_VERSION,
+    datasetVersion: datasets[0]!.manifest.datasetVersion,
+    populationPolicyVersion: datasets[0]!.manifest.populationPolicyVersion,
+    monetaryPolicyVersion: datasets[0]!.manifest.monetaryPolicyVersion,
+    modelChecksum: candidateEvaluation.modelChecksum,
+  };
+  const mismatches = (Object.keys(expectedDescriptor) as (keyof CustomerClvTwoStageFrozenCandidateDescriptor)[])
+    .filter((key) => expectedDescriptor[key] !== input.frozenDescriptor[key])
+    .map((key) => `${key}: expected ${String(expectedDescriptor[key])}, received ${String(input.frozenDescriptor[key])}`);
+  return {
+    frozenDescriptorMatch: { valid: mismatches.length === 0, mismatches },
+    rollingOriginPlan: plan.map((row) => ({ evaluationCutoff: row.evaluationCutoff, eligibleTrainingCutoffs: row.trainingCutoffs })),
+    candidateEvaluation,
+  };
+}
+
+export function predictCustomerClvTwoStageFrozenProduction(input: {
+  readonly trainingDatasets: readonly CustomerClvBacktestDataset[];
+  readonly productionDataset: CustomerClvBacktestDataset;
+  readonly frozenDescriptor: CustomerClvTwoStageFrozenCandidateDescriptor;
+}): CustomerClvTwoStageFrozenProductionPrediction {
+  const config = HARDENING_CANDIDATE_CONFIGS.find(
+    (candidate) => candidate.candidateId === input.frozenDescriptor.estimatorPolicyVersion,
+  );
+  if (!config) {
+    throw new Error(`Frozen CLV candidate is not a known immutable configuration: ${input.frozenDescriptor.estimatorPolicyVersion}`);
+  }
+  const eligibleTraining = sortDatasetsByCutoff(input.trainingDatasets);
+  if (eligibleTraining.length === 0) {
+    throw new Error('Frozen CLV production prediction requires at least one mature training dataset');
+  }
+  const activityTraining = selectTrainingWindow(eligibleTraining, config.activityTrainingWindow);
+  const valueTraining = selectTrainingWindow(eligibleTraining, config.valueTrainingWindow);
+  const fitted = fitCandidateModel({
+    config: {
+      candidateId: config.candidateId,
+      activityTrainingWindow: config.activityTrainingWindow,
+      valueTrainingWindow: config.valueTrainingWindow,
+      valueCohortStrategy: config.valueCohortStrategy,
+    },
+    activityTrainingDatasets: activityTraining,
+    valueTrainingDatasets: valueTraining,
+  });
+  const activityCalibration = buildActivityRecalibrationModel(activityTraining, fitted, config.activityRecalibration);
+  const staleActivityAdjustment = buildStaleActivityAdjustmentModel(eligibleTraining, config, config.staleActivityAdjustment);
+  const valueRankRefinement = buildValueRankRefinementModel(valueTraining, fitted, config);
+  const predictions = predictCorrectionDataset(
+    input.productionDataset,
+    fitted,
+    activityCalibration,
+    staleActivityAdjustment,
+    valueRankRefinement,
+    config.candidateId,
+  );
+  return {
+    predictions,
+    trainingCutoffs: fitted.activityTrainingCutoffs,
+    trainingDatasetChecksums: activityTraining.map((dataset) => dataset.manifest.datasetChecksum),
+    trainingRowCount: activityTraining.reduce((total, dataset) => total + dataset.rows.length, 0),
+    modelChecksum: fitted.modelChecksum,
+    predictionChecksum: sha256Stable(predictions),
   };
 }
 
@@ -753,7 +1027,7 @@ function evaluateCandidateAcrossRollingOrigin(
     modelFitVersion: CUSTOMER_CLV_TWO_STAGE_MODEL_FIT_VERSION,
     trainingProtocolVersion: CUSTOMER_CLV_TRAINING_PROTOCOL_VERSION,
     deterministicTiebreakPolicyVersion: CUSTOMER_CLV_DET_TIEBREAK_POLICY_VERSION,
-    reliabilityPolicyVersion: CUSTOMER_CLV_TWO_STAGE_RELIABILITY_POLICY_VERSION,
+    estimateSupportPolicyVersion: CUSTOMER_CLV_TWO_STAGE_ESTIMATE_SUPPORT_POLICY_VERSION,
     driftPolicy: latestFit.driftPolicy,
     activityModel: {
       exactDimensions: ['orderDepth', 'recency', 'tenure'],
@@ -788,7 +1062,10 @@ function evaluateCandidateAcrossRollingOrigin(
     overallRecency: buildBucketMetrics(prepared, (entry) => recencyBucket(entry.example.features.daysSinceLastOrder)),
     outlierSensitivity: buildOutlierSensitivity(prepared),
     activityProbabilityBands: buildActivityProbabilityBands(prepared),
-    reliabilityResults: buildReliabilityRows(prepared),
+    estimateSupportResults: buildEstimateSupportRows(prepared),
+    staleOrderDepthAudit: buildStaleOrderDepthAuditRows(prepared),
+    zeroFutureRevenue: buildZeroFutureRevenueSummary(prepared),
+    positiveFutureRevenue: buildPositiveFutureRevenueSummary(prepared),
     majorActivityCohorts: latestFit.majorActivityCohorts,
     majorValueCohorts: latestFit.majorValueCohorts,
     fallbackUsage: buildFallbackUsage(prepared),
@@ -816,6 +1093,7 @@ function evaluateCorrectionCandidateAcrossRollingOrigin(
   const cutoffResults: CustomerClvTwoStagePerCutoffEvaluation[] = [];
   const prepared: PreparedPrediction[] = [];
   let latestFit: FittedCandidateModel | null = null;
+  let latestStaleActivityAdjustment: StaleActivityAdjustmentModel | null = null;
 
   for (const planRow of plan) {
     const evaluationDataset = datasets.find((dataset) => dataset.manifest.cutoffTime === planRow.evaluationCutoff);
@@ -842,14 +1120,24 @@ function evaluateCorrectionCandidateAcrossRollingOrigin(
     });
     latestFit = fitted;
     const activityCalibration = buildActivityRecalibrationModel(activityTraining, fitted, config.activityRecalibration);
+    const staleActivityAdjustment = buildStaleActivityAdjustmentModel(eligibleTraining, config, config.staleActivityAdjustment);
+    latestStaleActivityAdjustment = staleActivityAdjustment;
     const valueRankRefinement = buildValueRankRefinementModel(valueTraining, fitted, config);
     const modelChecksum = sha256Stable({
       candidateId: config.candidateId,
       baseModelChecksum: fitted.modelChecksum,
       activityRecalibration: activityCalibration.checksumShape,
+      staleActivityAdjustment: staleActivityAdjustment.checksumShape,
       valueRankRefinement: valueRankRefinement.checksumShape,
     });
-    const predictions = predictCorrectionDataset(evaluationDataset, fitted, activityCalibration, valueRankRefinement, config.candidateId);
+    const predictions = predictCorrectionDataset(
+      evaluationDataset,
+      fitted,
+      activityCalibration,
+      staleActivityAdjustment,
+      valueRankRefinement,
+      config.candidateId,
+    );
     const preparedCutoff = pairDatasetWithPredictions(evaluationDataset, predictions);
     prepared.push(...preparedCutoff);
     cutoffResults.push(
@@ -866,6 +1154,9 @@ function evaluateCorrectionCandidateAcrossRollingOrigin(
 
   if (!latestFit) {
     throw new Error(`Correction candidate ${config.candidateId} never fit any rolling-origin cutoff`);
+  }
+  if (!latestStaleActivityAdjustment) {
+    throw new Error(`Correction candidate ${config.candidateId} never produced a stale activity adjustment model`);
   }
 
   const overallRevenueMetrics = buildRevenueMetrics(prepared);
@@ -891,7 +1182,7 @@ function evaluateCorrectionCandidateAcrossRollingOrigin(
     modelFitVersion: CUSTOMER_CLV_TWO_STAGE_MODEL_FIT_VERSION,
     trainingProtocolVersion: CUSTOMER_CLV_TRAINING_PROTOCOL_VERSION,
     deterministicTiebreakPolicyVersion: CUSTOMER_CLV_DET_TIEBREAK_POLICY_VERSION,
-    reliabilityPolicyVersion: CUSTOMER_CLV_TWO_STAGE_RELIABILITY_POLICY_VERSION,
+    estimateSupportPolicyVersion: CUSTOMER_CLV_TWO_STAGE_ESTIMATE_SUPPORT_POLICY_VERSION,
     driftPolicy: latestFit.driftPolicy,
     activityModel: {
       exactDimensions: ['orderDepth', 'recency', 'tenure'],
@@ -923,7 +1214,10 @@ function evaluateCorrectionCandidateAcrossRollingOrigin(
     overallRecency: buildBucketMetrics(prepared, (entry) => recencyBucket(entry.example.features.daysSinceLastOrder)),
     outlierSensitivity: buildOutlierSensitivity(prepared),
     activityProbabilityBands: buildActivityProbabilityBands(prepared),
-    reliabilityResults: buildReliabilityRows(prepared),
+    estimateSupportResults: buildEstimateSupportRows(prepared),
+    staleOrderDepthAudit: buildStaleOrderDepthAuditRows(prepared),
+    zeroFutureRevenue: buildZeroFutureRevenueSummary(prepared),
+    positiveFutureRevenue: buildPositiveFutureRevenueSummary(prepared),
     majorActivityCohorts: latestFit.majorActivityCohorts,
     majorValueCohorts: latestFit.majorValueCohorts,
     fallbackUsage: buildFallbackUsage(prepared),
@@ -951,6 +1245,27 @@ function evaluateCorrectionCandidateAcrossRollingOrigin(
             : CUSTOMER_CLV_TWO_STAGE_ACTIVITY_RECALIBRATION_POLICY_VERSION,
       bandPolicyVersion: config.activityRecalibration === 'none' ? null : CUSTOMER_CLV_TWO_STAGE_ACTIVITY_BAND_POLICY_VERSION,
     },
+    staleActivityAdjustment: {
+      strategy: config.staleActivityAdjustment,
+      policyVersion:
+        config.staleActivityAdjustment === 'none' ? null : CUSTOMER_CLV_TWO_STAGE_STALE_ADJUSTMENT_POLICY_VERSION,
+      supportThresholds:
+        config.staleActivityAdjustment === 'none'
+          ? null
+          : {
+              childMinSupport: CUSTOMER_CLV_TWO_STAGE_STALE_ADJUSTMENT_CHILD_MIN_SUPPORT,
+              parentMinSupport: CUSTOMER_CLV_TWO_STAGE_STALE_ADJUSTMENT_PARENT_MIN_SUPPORT,
+            },
+      bounds:
+        config.staleActivityAdjustment === 'none'
+          ? null
+          : {
+              min: formatDecimal(CUSTOMER_CLV_TWO_STAGE_STALE_ADJUSTMENT_MIN_FACTOR.toFixed(6)),
+              max: formatDecimal(CUSTOMER_CLV_TWO_STAGE_STALE_ADJUSTMENT_MAX_FACTOR.toFixed(6)),
+            },
+      fallbackHierarchy: ['recency_order_depth', 'recency_parent', 'neutral'],
+      diagnosticRows: latestStaleActivityAdjustment.diagnosticRows,
+    },
     conditionalValueRankRefinement: {
       signal: config.valueRankSignal,
       lambda: formatDecimal(config.valueRankLambda.toFixed(2)),
@@ -965,7 +1280,7 @@ function evaluateCorrectionCandidateAcrossRollingOrigin(
         config.valueRankSignal === 'none' ? null : CUSTOMER_CLV_TWO_STAGE_VALUE_RANK_REFINEMENT_POLICY_VERSION,
     },
     tieDiagnosticsPolicyVersion: CUSTOMER_CLV_TWO_STAGE_TIE_DIAGNOSTICS_POLICY_VERSION,
-    reliabilityScalePolicyVersion: CUSTOMER_CLV_TWO_STAGE_RELIABILITY_SCALE_POLICY_VERSION,
+    estimateSupportDiagnosticPolicyVersion: CUSTOMER_CLV_TWO_STAGE_ESTIMATE_SUPPORT_DIAGNOSTIC_POLICY_VERSION,
     rankingDiagnostics: buildRankingDiagnostics(prepared),
     tieDiagnostics: buildTieDiagnostics(prepared),
     observedActivityCohorts: buildObservedActivityCohorts(prepared),
@@ -977,6 +1292,7 @@ function predictCorrectionDataset(
   dataset: CustomerClvBacktestDataset,
   fitted: FittedCandidateModel,
   activityCalibration: ActivityCalibrationModel,
+  staleActivityAdjustment: StaleActivityAdjustmentModel,
   valueRankRefinement: ValueRankRefinementModel,
   candidateId: CustomerClvTwoStageCandidateId,
 ): readonly CustomerClvTwoStagePrediction[] {
@@ -990,9 +1306,10 @@ function predictCorrectionDataset(
         throw new Error(`Missing base correction prediction for customerId ${row.customerId}`);
       }
       const calibratedActivity = activityCalibration.calibrate(row, base.predictedActiveProbability);
+      const adjustedActivity = staleActivityAdjustment.adjust(row, calibratedActivity);
       const valueMultiplier = valueRankRefinement.multiplier(row, base);
       const expectedRevenueGivenActiveTaxIncl = moneyFromNumber(parseMoney(base.expectedRevenueGivenActiveTaxIncl) * parseMoney(valueMultiplier));
-      const predictedRevenueTaxIncl = multiplyMoney(expectedRevenueGivenActiveTaxIncl, calibratedActivity);
+      const predictedRevenueTaxIncl = multiplyMoney(expectedRevenueGivenActiveTaxIncl, adjustedActivity);
       const expectedOrders =
         base.expectedOrders === undefined
           ? undefined
@@ -1000,13 +1317,13 @@ function predictCorrectionDataset(
               parseProbability(base.predictedActiveProbability) === 0
                 ? parseMoney(base.expectedOrders)
                 : (parseMoney(base.expectedOrders) / parseProbability(base.predictedActiveProbability)) *
-                    parseProbability(calibratedActivity),
+                    parseProbability(adjustedActivity),
             );
       return {
         ...base,
         candidateId,
         predictedRevenueTaxIncl,
-        predictedActiveProbability: calibratedActivity,
+        predictedActiveProbability: adjustedActivity,
         expectedRevenueGivenActiveTaxIncl,
         ...(expectedOrders === undefined ? {} : { expectedOrders }),
       } satisfies CustomerClvTwoStagePrediction;
@@ -1199,7 +1516,7 @@ function fitCandidateModel(input: {
             valueTrainingCutoffCoverage: value.cutoffCoverage,
             activityFallbackLevel: activity.level,
             valueFallbackLevel: value.level,
-            reliabilityBucket: deriveReliabilityBucket(row, activity, value),
+            estimateSupportLevel: deriveEstimateSupportLevel(row, activity, value),
           } satisfies CustomerClvTwoStagePrediction;
         })
         .sort((left, right) => left.customerId - right.customerId);
@@ -1515,6 +1832,266 @@ function buildActivityRecalibrationModel(
   };
 }
 
+function buildStaleActivityAdjustmentModel(
+  trainingDatasets: readonly CustomerClvBacktestDataset[],
+  config: CorrectionCandidateConfig,
+  strategy: CustomerClvTwoStageStaleAdjustmentStrategy,
+): StaleActivityAdjustmentModel {
+  if (strategy === 'none') {
+    return {
+      strategy,
+      checksumShape: { strategy },
+      diagnosticRows: [],
+      adjust: (_row, calibratedProbability) => calibratedProbability,
+    };
+  }
+
+  const outOfTimePrepared = buildOutOfTimePreparedPredictions(trainingDatasets, config);
+  const trainingPrepared = outOfTimePrepared.some((entry) => staleAuditRecencyBucket(entry.example.features.daysSinceLastOrder) !== null)
+    ? outOfTimePrepared
+    : buildInSamplePreparedPredictions(trainingDatasets, config);
+  if (trainingPrepared.length === 0) {
+    return {
+      strategy,
+      checksumShape: {
+        strategy,
+        supportThresholds: {
+          childMinSupport: CUSTOMER_CLV_TWO_STAGE_STALE_ADJUSTMENT_CHILD_MIN_SUPPORT,
+          parentMinSupport: CUSTOMER_CLV_TWO_STAGE_STALE_ADJUSTMENT_PARENT_MIN_SUPPORT,
+        },
+        bounds: {
+          min: formatDecimal(CUSTOMER_CLV_TWO_STAGE_STALE_ADJUSTMENT_MIN_FACTOR.toFixed(6)),
+          max: formatDecimal(CUSTOMER_CLV_TWO_STAGE_STALE_ADJUSTMENT_MAX_FACTOR.toFixed(6)),
+        },
+        diagnosticRows: [],
+      },
+      diagnosticRows: [],
+      adjust: (_row, calibratedProbability) => calibratedProbability,
+    };
+  }
+
+  const parentGroups = buildPreparedGroups(
+    trainingPrepared,
+    (entry) => staleAdjustmentParentBucket(entry.example.features.daysSinceLastOrder),
+  );
+  const parentEstimates = new Map<string, StaleActivityAdjustmentCellEstimate>();
+  for (const [key, entries] of parentGroups.entries()) {
+    const support = entries.length;
+    const cutoffCoverage = new Set(entries.map((entry) => entry.example.cutoffTime)).size;
+    const meanPredictedActivityRate = meanNumber(entries.map((entry) => parseProbability(entry.prediction.predictedActiveProbability)));
+    const actualActivityRate = meanNumber(entries.map((entry) => (entry.example.labels.futureValidOrderCount > 0 ? 1 : 0)));
+    const rawAdjustmentFactor = boundedStaleAdjustmentFactor(meanPredictedActivityRate, actualActivityRate);
+    const shrunkAdjustmentFactor = weightedAverageFactor(
+      rawAdjustmentFactor,
+      '1.000000',
+      support,
+      CUSTOMER_CLV_TWO_STAGE_STALE_ADJUSTMENT_PARENT_PRIOR_STRENGTH,
+    );
+    const appliedAdjustmentFactor = clampStaleAdjustmentFactor(shrunkAdjustmentFactor);
+    parentEstimates.set(key, {
+      key,
+      parentKey: null,
+      support,
+      cutoffCoverage,
+      meanPredictedActivityRate: ratioFromNumber(meanPredictedActivityRate),
+      actualActivityRate: ratioFromNumber(actualActivityRate),
+      rawAdjustmentFactor,
+      shrunkAdjustmentFactor,
+      appliedAdjustmentFactor,
+    });
+  }
+
+  const childGroups = buildPreparedGroups(
+    trainingPrepared,
+    (entry) => {
+      const recencyBucket = staleAuditRecencyBucket(entry.example.features.daysSinceLastOrder);
+      if (recencyBucket === null) return null;
+      return `${recencyBucket}|orders:${staleOrderDepthBucket(entry.example.features.historicalValidOrderCount)}`;
+    },
+  );
+  const childEstimates = new Map<string, StaleActivityAdjustmentCellEstimate>();
+  for (const [key, entries] of childGroups.entries()) {
+    const recencyBucket = key.split('|orders:')[0] ?? '731-1095d';
+    const parentKey = recencyBucket === '>1095d' ? '731+d' : recencyBucket;
+    const support = entries.length;
+    const cutoffCoverage = new Set(entries.map((entry) => entry.example.cutoffTime)).size;
+    const meanPredictedActivityRate = meanNumber(entries.map((entry) => parseProbability(entry.prediction.predictedActiveProbability)));
+    const actualActivityRate = meanNumber(entries.map((entry) => (entry.example.labels.futureValidOrderCount > 0 ? 1 : 0)));
+    const rawAdjustmentFactor = boundedStaleAdjustmentFactor(meanPredictedActivityRate, actualActivityRate);
+    const parentFactor = parentEstimates.get(parentKey)?.appliedAdjustmentFactor ?? '1.000000';
+    const shrunkAdjustmentFactor = weightedAverageFactor(
+      rawAdjustmentFactor,
+      parentFactor,
+      support,
+      CUSTOMER_CLV_TWO_STAGE_STALE_ADJUSTMENT_CHILD_PRIOR_STRENGTH,
+    );
+    const appliedAdjustmentFactor = clampStaleAdjustmentFactor(shrunkAdjustmentFactor);
+    childEstimates.set(key, {
+      key,
+      parentKey,
+      support,
+      cutoffCoverage,
+      meanPredictedActivityRate: ratioFromNumber(meanPredictedActivityRate),
+      actualActivityRate: ratioFromNumber(actualActivityRate),
+      rawAdjustmentFactor,
+      shrunkAdjustmentFactor,
+      appliedAdjustmentFactor,
+    });
+  }
+  const orderDepthCeilings = new Map<CustomerClvTwoStageStaleOrderDepthBucket, string>();
+  for (const orderDepthBucket of ['1', '2+'] as const) {
+    const supportedChildren = Array.from(childEstimates.values()).filter(
+      (row) => row.key.endsWith(`|orders:${orderDepthBucket}`) && row.support >= CUSTOMER_CLV_TWO_STAGE_STALE_ADJUSTMENT_CHILD_MIN_SUPPORT,
+    );
+    if (supportedChildren.length === 0) continue;
+    const ceiling = supportedChildren
+      .map((row) => row.actualActivityRate)
+      .sort((left, right) => Number(left) - Number(right))[0];
+    if (ceiling !== undefined) {
+      orderDepthCeilings.set(orderDepthBucket, ceiling);
+    }
+  }
+  const nearestSupportedStaleFallbackFactor = parentEstimates.get('366-730d')?.appliedAdjustmentFactor ?? '1.000000';
+
+  return {
+    strategy,
+    checksumShape: {
+      strategy,
+      bounds: {
+        min: formatDecimal(CUSTOMER_CLV_TWO_STAGE_STALE_ADJUSTMENT_MIN_FACTOR.toFixed(6)),
+        max: formatDecimal(CUSTOMER_CLV_TWO_STAGE_STALE_ADJUSTMENT_MAX_FACTOR.toFixed(6)),
+      },
+      supportThresholds: {
+        childMinSupport: CUSTOMER_CLV_TWO_STAGE_STALE_ADJUSTMENT_CHILD_MIN_SUPPORT,
+        parentMinSupport: CUSTOMER_CLV_TWO_STAGE_STALE_ADJUSTMENT_PARENT_MIN_SUPPORT,
+      },
+      orderDepthCeilings: Array.from(orderDepthCeilings.entries()).sort(([left], [right]) => left.localeCompare(right)),
+      nearestSupportedStaleFallbackFactor,
+      parentEstimates: Array.from(parentEstimates.values()).sort((left, right) => left.key.localeCompare(right.key)),
+      childEstimates: Array.from(childEstimates.values()).sort((left, right) => left.key.localeCompare(right.key)),
+    },
+    diagnosticRows: buildStaleAdjustmentDiagnosticRows(parentEstimates, childEstimates),
+    adjust: (row, calibratedProbability) => {
+      const recencyBucket = staleAuditRecencyBucket(row.features.daysSinceLastOrder);
+      if (recencyBucket === null) {
+        return calibratedProbability;
+      }
+      const childKey = `${recencyBucket}|orders:${staleOrderDepthBucket(row.features.historicalValidOrderCount)}`;
+      const child = childEstimates.get(childKey);
+      let adjustedProbability = calibratedProbability;
+      if (child && child.support >= CUSTOMER_CLV_TWO_STAGE_STALE_ADJUSTMENT_CHILD_MIN_SUPPORT) {
+        adjustedProbability = multiplyProbability(calibratedProbability, child.appliedAdjustmentFactor);
+      } else {
+        const parentKey = staleAdjustmentParentBucket(row.features.daysSinceLastOrder);
+        const parent = parentKey === null ? null : parentEstimates.get(parentKey);
+        if (parent && parent.support >= CUSTOMER_CLV_TWO_STAGE_STALE_ADJUSTMENT_PARENT_MIN_SUPPORT) {
+          adjustedProbability = multiplyProbability(calibratedProbability, parent.appliedAdjustmentFactor);
+        } else if (row.features.daysSinceLastOrder > 730) {
+          adjustedProbability = multiplyProbability(calibratedProbability, nearestSupportedStaleFallbackFactor);
+        }
+      }
+      const ceiling = orderDepthCeilings.get(staleOrderDepthBucket(row.features.historicalValidOrderCount));
+      if (ceiling !== undefined) {
+        return ratioFromNumber(Math.min(parseProbability(adjustedProbability), parseProbability(ceiling)));
+      }
+      return adjustedProbability;
+    },
+  };
+}
+
+function buildOutOfTimePreparedPredictions(
+  trainingDatasets: readonly CustomerClvBacktestDataset[],
+  config: CorrectionCandidateConfig,
+): readonly PreparedPrediction[] {
+  const sortedTraining = sortDatasetsByCutoff(trainingDatasets);
+  const prepared: PreparedPrediction[] = [];
+
+  for (const targetDataset of sortedTraining) {
+    const priorTraining = sortedTraining.filter(
+      (dataset) =>
+        Date.parse(dataset.manifest.cutoffTime) < Date.parse(targetDataset.manifest.cutoffTime) &&
+        Date.parse(dataset.manifest.labelWindowEndExclusive) <= Date.parse(targetDataset.manifest.cutoffTime),
+    );
+    if (priorTraining.length === 0) {
+      continue;
+    }
+    const activityTraining = selectTrainingWindow(priorTraining, config.activityTrainingWindow);
+    const valueTraining = selectTrainingWindow(priorTraining, config.valueTrainingWindow);
+    const fitted = fitCandidateModel({
+      config: {
+        candidateId: config.candidateId,
+        activityTrainingWindow: config.activityTrainingWindow,
+        valueTrainingWindow: config.valueTrainingWindow,
+        valueCohortStrategy: config.valueCohortStrategy,
+      },
+      activityTrainingDatasets: activityTraining,
+      valueTrainingDatasets: valueTraining,
+    });
+    const activityCalibration = buildActivityRecalibrationModel(activityTraining, fitted, config.activityRecalibration);
+    const calibratedPredictions = applyActivityCalibrationToPredictions(targetDataset, fitted.predict(targetDataset), activityCalibration);
+    prepared.push(...pairDatasetWithPredictions(targetDataset, calibratedPredictions));
+  }
+
+  return prepared;
+}
+
+function buildInSamplePreparedPredictions(
+  trainingDatasets: readonly CustomerClvBacktestDataset[],
+  config: CorrectionCandidateConfig,
+): readonly PreparedPrediction[] {
+  if (trainingDatasets.length === 0) {
+    return [];
+  }
+  const activityTraining = selectTrainingWindow(trainingDatasets, config.activityTrainingWindow);
+  const valueTraining = selectTrainingWindow(trainingDatasets, config.valueTrainingWindow);
+  const fitted = fitCandidateModel({
+    config: {
+      candidateId: config.candidateId,
+      activityTrainingWindow: config.activityTrainingWindow,
+      valueTrainingWindow: config.valueTrainingWindow,
+      valueCohortStrategy: config.valueCohortStrategy,
+    },
+    activityTrainingDatasets: activityTraining,
+    valueTrainingDatasets: valueTraining,
+  });
+  const activityCalibration = buildActivityRecalibrationModel(activityTraining, fitted, config.activityRecalibration);
+  return trainingDatasets.flatMap((dataset) =>
+    pairDatasetWithPredictions(dataset, applyActivityCalibrationToPredictions(dataset, fitted.predict(dataset), activityCalibration)),
+  );
+}
+
+function applyActivityCalibrationToPredictions(
+  dataset: CustomerClvBacktestDataset,
+  predictions: readonly CustomerClvTwoStagePrediction[],
+  activityCalibration: ActivityCalibrationModel,
+): readonly CustomerClvTwoStagePrediction[] {
+  const predictionByCustomer = new Map(predictions.map((prediction) => [prediction.customerId, prediction] as const));
+  return [...dataset.rows]
+    .sort((left, right) => left.customerId - right.customerId)
+    .map((row) => {
+      const base = predictionByCustomer.get(row.customerId);
+      if (!base) {
+        throw new Error(`Missing base activity-calibration prediction for customerId ${row.customerId}`);
+      }
+      const calibratedActivity = activityCalibration.calibrate(row, base.predictedActiveProbability);
+      const expectedOrders =
+        base.expectedOrders === undefined
+          ? undefined
+          : moneyFromNumber(
+              parseProbability(base.predictedActiveProbability) === 0
+                ? parseMoney(base.expectedOrders)
+                : (parseMoney(base.expectedOrders) / parseProbability(base.predictedActiveProbability)) *
+                    parseProbability(calibratedActivity),
+            );
+      return {
+        ...base,
+        predictedActiveProbability: calibratedActivity,
+        predictedRevenueTaxIncl: multiplyMoney(base.expectedRevenueGivenActiveTaxIncl, calibratedActivity),
+        ...(expectedOrders === undefined ? {} : { expectedOrders }),
+      } satisfies CustomerClvTwoStagePrediction;
+    });
+}
+
 function buildValueRankRefinementModel(
   trainingDatasets: readonly CustomerClvBacktestDataset[],
   fitted: FittedCandidateModel,
@@ -1704,6 +2281,21 @@ function buildPreparedRateMap(
   return grouped;
 }
 
+function buildPreparedGroups(
+  prepared: readonly PreparedPrediction[],
+  keyOf: (entry: PreparedPrediction) => string | null,
+): ReadonlyMap<string, readonly PreparedPrediction[]> {
+  const grouped = new Map<string, PreparedPrediction[]>();
+  for (const entry of prepared) {
+    const key = keyOf(entry);
+    if (key === null) continue;
+    const rows = grouped.get(key) ?? [];
+    rows.push(entry);
+    grouped.set(key, rows);
+  }
+  return grouped;
+}
+
 function shrinkActivityCalibrationCells(
   rawCells: ReadonlyMap<string, readonly PreparedPrediction[]>,
   parentOf: (key: string) => {
@@ -1817,15 +2409,32 @@ function staleCalibrationRecencyBucket(daysSinceLastOrder: number): '0-180d' | '
   return '>1095d';
 }
 
+function staleAuditRecencyBucket(daysSinceLastOrder: number): CustomerClvTwoStageStaleRecencyBucket | null {
+  if (daysSinceLastOrder <= 365) return null;
+  if (daysSinceLastOrder <= 730) return '366-730d';
+  if (daysSinceLastOrder <= 1095) return '731-1095d';
+  return '>1095d';
+}
+
+function staleAdjustmentParentBucket(daysSinceLastOrder: number): CustomerClvTwoStageStaleAdjustmentParentBucket | null {
+  if (daysSinceLastOrder <= 365) return null;
+  if (daysSinceLastOrder <= 730) return '366-730d';
+  return '731+d';
+}
+
+function staleOrderDepthBucket(historicalValidOrderCount: number): CustomerClvTwoStageStaleOrderDepthBucket {
+  return historicalValidOrderCount <= 1 ? '1' : '2+';
+}
+
 function probabilityBandOrder(band: string): number {
   return ['[0.00,0.05]', '(0.05,0.10]', '(0.10,0.20]', '(0.20,0.35]', '(0.35,1.00]'].indexOf(band);
 }
 
-function deriveReliabilityBucket(
+function deriveEstimateSupportLevel(
   row: CustomerClvBacktestExample,
   activity: ActivityCellEstimate,
   value: ValueCellEstimate,
-): CustomerClvReliabilityBucket {
+): CustomerClvEstimateSupportLevel {
   const maxFallbackDepth = Math.max(fallbackDepth(activity.level), fallbackDepth(value.level));
   const minCutoffCoverage = Math.min(activity.cutoffCoverage, value.cutoffCoverage);
   if (
@@ -1835,9 +2444,9 @@ function deriveReliabilityBucket(
     minCutoffCoverage < CUSTOMER_CLV_TWO_STAGE_SUPPORT_LOW_MIN_CUTOFF_COVERAGE ||
     row.features.daysSinceLastOrder > 730
   ) {
-    return 'LOW';
+    return 'SPARSE';
   }
-  return 'MEDIUM';
+  return 'SUPPORTED';
 }
 
 function fallbackDepth(level: CustomerClvTwoStageFallbackLevel): number {
@@ -1867,7 +2476,7 @@ function evaluatePreparedCutoff(input: {
         predictedRevenueTaxIncl: entry.prediction.predictedRevenueTaxIncl,
         predictedActiveProbability: entry.prediction.predictedActiveProbability,
         expectedRevenueGivenActiveTaxIncl: entry.prediction.expectedRevenueGivenActiveTaxIncl,
-        reliabilityBucket: entry.prediction.reliabilityBucket,
+        estimateSupportLevel: entry.prediction.estimateSupportLevel,
       })),
     ),
     revenueMetrics: buildRevenueMetrics(input.prepared),
@@ -1878,8 +2487,9 @@ function evaluatePreparedCutoff(input: {
     historyDepth: buildBucketMetrics(input.prepared, (entry) => historyDepthBucket(entry.example.features.historicalValidOrderCount)),
     recency: buildBucketMetrics(input.prepared, (entry) => recencyBucket(entry.example.features.daysSinceLastOrder)),
     activityProbabilityBands: buildActivityProbabilityBands(input.prepared),
-    reliability: buildReliabilityRows(input.prepared),
+    estimateSupport: buildEstimateSupportRows(input.prepared),
     recencyAudit: buildRecencyAuditRows(input.prepared),
+    staleOrderDepthAudit: buildStaleOrderDepthAuditRows(input.prepared),
   };
 }
 
@@ -2101,17 +2711,17 @@ function probabilityBand(probability: number): string {
   return '(0.35,1.00]';
 }
 
-function buildReliabilityRows(prepared: readonly PreparedPrediction[]): readonly CustomerClvTwoStageReliabilityRow[] {
-  const grouped = new Map<CustomerClvReliabilityBucket, PreparedPrediction[]>();
+function buildEstimateSupportRows(prepared: readonly PreparedPrediction[]): readonly CustomerClvTwoStageEstimateSupportRow[] {
+  const grouped = new Map<CustomerClvEstimateSupportLevel, PreparedPrediction[]>();
   for (const entry of prepared) {
-    const rows = grouped.get(entry.prediction.reliabilityBucket) ?? [];
+    const rows = grouped.get(entry.prediction.estimateSupportLevel) ?? [];
     rows.push(entry);
-    grouped.set(entry.prediction.reliabilityBucket, rows);
+    grouped.set(entry.prediction.estimateSupportLevel, rows);
   }
-  return (['LOW', 'MEDIUM', 'HIGH'] as const)
-    .filter((bucket) => grouped.has(bucket))
-    .map((bucket) => {
-      const entries = grouped.get(bucket)!;
+  return (['SPARSE', 'SUPPORTED'] as const)
+    .filter((level) => grouped.has(level))
+    .map((level) => {
+      const entries = grouped.get(level)!;
       const revenue = buildRevenueMetrics(entries);
       const predictedActivityRate = meanNumber(entries.map((entry) => parseProbability(entry.prediction.predictedActiveProbability)));
       const actualActivityRate = meanNumber(entries.map((entry) => (entry.example.labels.futureValidOrderCount > 0 ? 1 : 0)));
@@ -2122,7 +2732,7 @@ function buildReliabilityRows(prepared: readonly PreparedPrediction[]): readonly
         ),
       );
       return {
-        reliabilityBucket: bucket,
+        estimateSupportLevel: level,
         customerCount: entries.length,
         populationShare: ratioString(entries.length, prepared.length),
         predictedActivityRate: ratioFromNumber(predictedActivityRate),
@@ -2133,10 +2743,41 @@ function buildReliabilityRows(prepared: readonly PreparedPrediction[]): readonly
         normalizedAbsoluteError: ratioFromNumber(meanNumber(normalizedErrors)),
         medianNormalizedAbsoluteError: decimalMetric(medianNumber(normalizedErrors)),
         spearmanRankCorrelation: revenue.spearmanRankCorrelation,
-        cutoffCoverage: new Set(entries.map((entry) => entry.example.cutoffTime)).size,
-        historyDepthCoverage: new Set(entries.map((entry) => historyDepthBucket(entry.example.features.historicalValidOrderCount))).size,
-        recencyCoverage: new Set(entries.map((entry) => recencyBucket(entry.example.features.daysSinceLastOrder))).size,
+        historicalOrderDepthDistribution: buildHistoryDepthDistribution(entries),
+        activitySupportSummary: summarizeIntegerDistribution(entries.map((entry) => entry.prediction.activitySupport)),
+        valueSupportSummary: summarizeIntegerDistribution(entries.map((entry) => entry.prediction.valueSupport)),
+        fallbackDepthDistribution: buildFallbackDepthDistribution(entries),
+        activityCutoffCoverageSummary: summarizeIntegerDistribution(entries.map((entry) => entry.prediction.activityTrainingCutoffCoverage)),
+        valueCutoffCoverageSummary: summarizeIntegerDistribution(entries.map((entry) => entry.prediction.valueTrainingCutoffCoverage)),
       };
+    });
+}
+
+function buildStaleOrderDepthAuditRows(prepared: readonly PreparedPrediction[]): readonly CustomerClvTwoStageStaleOrderDepthAuditRow[] {
+  const grouped = new Map<string, PreparedPrediction[]>();
+  for (const entry of prepared) {
+    const recency = staleAuditRecencyBucket(entry.example.features.daysSinceLastOrder);
+    if (recency === null) continue;
+    const orderDepth = staleOrderDepthBucket(entry.example.features.historicalValidOrderCount);
+    const key = `${recency}|orders:${orderDepth}`;
+    const rows = grouped.get(key) ?? [];
+    rows.push(entry);
+    grouped.set(key, rows);
+  }
+  return Array.from(grouped.entries())
+    .sort(([left], [right]) => staleOrderDepthAuditOrder(left) - staleOrderDepthAuditOrder(right) || left.localeCompare(right))
+    .map(([key, entries]) => {
+      const [recencyBucket, orderDepthBucketRaw] = key.split('|orders:');
+      const predictedActivityRate = meanNumber(entries.map((entry) => parseProbability(entry.prediction.predictedActiveProbability)));
+      const actualActivityRate = meanNumber(entries.map((entry) => (entry.example.labels.futureValidOrderCount > 0 ? 1 : 0)));
+      return {
+        recencyBucket: recencyBucket as CustomerClvTwoStageStaleRecencyBucket,
+        orderDepthBucket: (orderDepthBucketRaw ?? '2+') as CustomerClvTwoStageStaleOrderDepthBucket,
+        customerCount: entries.length,
+        predictedActivityRate: ratioFromNumber(predictedActivityRate),
+        actualActivityRate: ratioFromNumber(actualActivityRate),
+        calibrationRatio: actualActivityRate === 0 ? null : ratioFromNumber(predictedActivityRate / actualActivityRate),
+      } satisfies CustomerClvTwoStageStaleOrderDepthAuditRow;
     });
 }
 
@@ -2189,7 +2830,7 @@ function buildTopCustomerSanityCheck(prepared: readonly PreparedPrediction[]): r
       valueCohortKey: entry.prediction.valueCohortKey,
       activitySupport: entry.prediction.activitySupport,
       valueSupport: entry.prediction.valueSupport,
-      reliabilityBucket: entry.prediction.reliabilityBucket,
+      estimateSupportLevel: entry.prediction.estimateSupportLevel,
     }));
 }
 
@@ -2384,6 +3025,30 @@ function buildOutlierSensitivity(prepared: readonly PreparedPrediction[]): Custo
   };
 }
 
+function buildZeroFutureRevenueSummary(prepared: readonly PreparedPrediction[]): CustomerClvTwoStageZeroFutureRevenueSummary {
+  const entries = prepared.filter((entry) => compareDecimalAsc(entry.example.labels.futureRevenueTaxIncl, '0.000000') === 0);
+  const predictions = entries.map((entry) => entry.prediction.predictedRevenueTaxIncl).sort(compareDecimalAsc);
+  return {
+    customerCount: entries.length,
+    populationShare: ratioString(entries.length, prepared.length),
+    meanPredictedClv: averageMoney(predictions),
+    medianPredictedClv: medianDecimal(predictions),
+    p90PredictedClv: percentileDecimal(predictions, 0.9),
+    p95PredictedClv: percentileDecimal(predictions, 0.95),
+  };
+}
+
+function buildPositiveFutureRevenueSummary(prepared: readonly PreparedPrediction[]): CustomerClvTwoStagePositiveFutureRevenueSummary {
+  const entries = prepared.filter((entry) => compareDecimalAsc(entry.example.labels.futureRevenueTaxIncl, '0.000000') > 0);
+  return {
+    customerCount: entries.length,
+    meanActualRevenue: averageMoney(entries.map((entry) => entry.example.labels.futureRevenueTaxIncl)),
+    medianActualRevenue: medianDecimal(entries.map((entry) => entry.example.labels.futureRevenueTaxIncl)),
+    meanPredictedClv: averageMoney(entries.map((entry) => entry.prediction.predictedRevenueTaxIncl)),
+    deciles: buildDecileTable(entries),
+  };
+}
+
 function compareCandidateEvaluations(
   left: CustomerClvTwoStageCandidateEvaluation,
   right: CustomerClvTwoStageCandidateEvaluation,
@@ -2565,6 +3230,123 @@ function recencyBucket(daysSinceLastOrder: number): '0-90d' | '91-180d' | '181-3
 
 function staleRecencyAuditOrder(bucket: string): number {
   return ['0-90d', '91-180d', '181-365d', '366-730d', '731-1095d', '>1095d', '>730d'].indexOf(bucket);
+}
+
+function staleOrderDepthAuditOrder(key: string): number {
+  const recencyBucket = key.split('|orders:')[0] ?? '366-730d';
+  const orderDepthBucket = key.split('|orders:')[1] ?? '2+';
+  return (
+    staleRecencyAuditOrder(recencyBucket) * 10 +
+    (orderDepthBucket === '1' ? 0 : 1)
+  );
+}
+
+function buildHistoryDepthDistribution(entries: readonly PreparedPrediction[]): Readonly<Record<'1' | '2' | '3-4' | '5+', number>> {
+  const distribution = { '1': 0, '2': 0, '3-4': 0, '5+': 0 } as Record<'1' | '2' | '3-4' | '5+', number>;
+  for (const entry of entries) {
+    distribution[historyDepthBucket(entry.example.features.historicalValidOrderCount)] += 1;
+  }
+  return distribution;
+}
+
+function buildFallbackDepthDistribution(
+  entries: readonly PreparedPrediction[],
+): Readonly<Record<'exact' | 'order_recency' | 'recency' | 'global', number>> {
+  const distribution = { exact: 0, order_recency: 0, recency: 0, global: 0 } as Record<
+    'exact' | 'order_recency' | 'recency' | 'global',
+    number
+  >;
+  for (const entry of entries) {
+    const fallback = fallbackDepth(entry.prediction.activityFallbackLevel) >= fallbackDepth(entry.prediction.valueFallbackLevel)
+      ? entry.prediction.activityFallbackLevel
+      : entry.prediction.valueFallbackLevel;
+    distribution[fallback] += 1;
+  }
+  return distribution;
+}
+
+function summarizeIntegerDistribution(values: readonly number[]): { readonly min: number; readonly median: number; readonly max: number } {
+  if (values.length === 0) {
+    return { min: 0, median: 0, max: 0 };
+  }
+  const sorted = [...values].sort((left, right) => left - right);
+  return {
+    min: sorted[0] ?? 0,
+    median: medianNumber(sorted) ?? 0,
+    max: sorted.at(-1) ?? 0,
+  };
+}
+
+function buildStaleAdjustmentDiagnosticRows(
+  parentEstimates: ReadonlyMap<string, StaleActivityAdjustmentCellEstimate>,
+  childEstimates: ReadonlyMap<string, StaleActivityAdjustmentCellEstimate>,
+): readonly CustomerClvTwoStageStaleAdjustmentDiagnosticRow[] {
+  const parentRows = Array.from(parentEstimates.values())
+    .sort((left, right) => left.key.localeCompare(right.key))
+    .map((row) => ({
+      scope: 'recency_parent',
+      recencyBucket: row.key as CustomerClvTwoStageStaleAdjustmentParentBucket,
+      orderDepthBucket: null,
+      parentKey: row.parentKey,
+      support: row.support,
+      cutoffCoverage: row.cutoffCoverage,
+      meanPredictedActivityRate: row.meanPredictedActivityRate,
+      actualActivityRate: row.actualActivityRate,
+      rawAdjustmentFactor: row.rawAdjustmentFactor,
+      shrunkAdjustmentFactor: row.shrunkAdjustmentFactor,
+      appliedAdjustmentFactor: row.appliedAdjustmentFactor,
+    } satisfies CustomerClvTwoStageStaleAdjustmentDiagnosticRow));
+  const childRows = Array.from(childEstimates.values())
+    .sort((left, right) => staleOrderDepthAuditOrder(left.key) - staleOrderDepthAuditOrder(right.key) || left.key.localeCompare(right.key))
+    .map((row) => {
+      const [recencyBucket, orderDepthBucket = '2+'] = row.key.split('|orders:');
+      return {
+        scope: 'recency_order_depth',
+        recencyBucket: recencyBucket as CustomerClvTwoStageStaleRecencyBucket,
+        orderDepthBucket: orderDepthBucket as CustomerClvTwoStageStaleOrderDepthBucket,
+        parentKey: row.parentKey,
+        support: row.support,
+        cutoffCoverage: row.cutoffCoverage,
+        meanPredictedActivityRate: row.meanPredictedActivityRate,
+        actualActivityRate: row.actualActivityRate,
+        rawAdjustmentFactor: row.rawAdjustmentFactor,
+        shrunkAdjustmentFactor: row.shrunkAdjustmentFactor,
+        appliedAdjustmentFactor: row.appliedAdjustmentFactor,
+      } satisfies CustomerClvTwoStageStaleAdjustmentDiagnosticRow;
+    });
+  return [...parentRows, ...childRows];
+}
+
+function boundedStaleAdjustmentFactor(meanPredictedActivityRate: number, actualActivityRate: number): string {
+  if (meanPredictedActivityRate <= 0) {
+    return '1.000000';
+  }
+  return clampStaleAdjustmentFactor(ratioFromNumber(actualActivityRate / meanPredictedActivityRate));
+}
+
+function weightedAverageFactor(observedFactor: string, priorFactor: string, support: number, priorStrength: number): string {
+  return ratioFromNumber(
+    ((support * parseProbability(observedFactor)) + priorStrength * parseProbability(priorFactor)) /
+      (support + priorStrength),
+  );
+}
+
+function clampStaleAdjustmentFactor(value: string): string {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) {
+    throw new Error(`Invalid stale adjustment factor: ${value}`);
+  }
+  return ratioFromNumber(
+    clampNumber(
+      numeric,
+      CUSTOMER_CLV_TWO_STAGE_STALE_ADJUSTMENT_MIN_FACTOR,
+      CUSTOMER_CLV_TWO_STAGE_STALE_ADJUSTMENT_MAX_FACTOR,
+    ),
+  );
+}
+
+function multiplyProbability(probability: string, factor: string): string {
+  return ratioFromNumber(clampNumber(parseProbability(probability) * parseProbability(factor), 0, 1));
 }
 
 function tenureBucket(days: number): string {

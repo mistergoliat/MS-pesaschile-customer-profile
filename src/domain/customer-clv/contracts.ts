@@ -9,8 +9,8 @@ export type CustomerClvIdentityAuthority = typeof CUSTOMER_CLV_IDENTITY_AUTHORIT
 export type CustomerClvCurrencyIsoCode = typeof CUSTOMER_CLV_CURRENCY_ISO_CODE;
 export type CustomerClvHorizonMonths = typeof CUSTOMER_CLV_HORIZON_MONTHS;
 
-export type CustomerClvReliabilityBucket = 'LOW' | 'MEDIUM' | 'HIGH';
-export const CUSTOMER_CLV_RELIABILITY_BUCKETS: readonly CustomerClvReliabilityBucket[] = ['LOW', 'MEDIUM', 'HIGH'];
+export type CustomerClvEstimateSupportLevel = 'SPARSE' | 'SUPPORTED';
+export const CUSTOMER_CLV_ESTIMATE_SUPPORT_LEVELS: readonly CustomerClvEstimateSupportLevel[] = ['SPARSE', 'SUPPORTED'];
 
 export type CustomerClvSnapshotStatus = 'building' | 'validated' | 'published' | 'failed' | 'superseded';
 export const CUSTOMER_CLV_SNAPSHOT_STATUSES: readonly CustomerClvSnapshotStatus[] = [
@@ -32,7 +32,7 @@ export type CustomerClvRecord = {
   readonly referenceTime: string;
   readonly populationPolicyVersion: string;
   readonly monetaryPolicyVersion: string;
-  readonly reliabilityBucket: CustomerClvReliabilityBucket;
+  readonly estimateSupportLevel: CustomerClvEstimateSupportLevel;
   readonly expectedOrders?: string;
 };
 
@@ -74,7 +74,7 @@ export type CustomerClvSnapshotHeader = {
 export type CustomerClvSnapshotRow = {
   readonly customerId: number;
   readonly expectedRevenueTaxIncl: string;
-  readonly reliabilityBucket: CustomerClvReliabilityBucket;
+  readonly estimateSupportLevel: CustomerClvEstimateSupportLevel;
   readonly expectedOrders?: string;
 };
 
@@ -89,6 +89,6 @@ export type CustomerIntelligenceClv = {
   readonly snapshot: CustomerIntelligenceClvSnapshotRef;
   readonly expectedRevenueTaxIncl: string;
   readonly currencyIsoCode: CustomerClvCurrencyIsoCode;
-  readonly reliabilityBucket: CustomerClvReliabilityBucket;
+  readonly estimateSupportLevel: CustomerClvEstimateSupportLevel;
   readonly expectedOrders?: string;
 };

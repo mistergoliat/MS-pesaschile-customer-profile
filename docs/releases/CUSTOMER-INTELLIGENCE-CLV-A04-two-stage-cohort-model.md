@@ -1,5 +1,11 @@
 # CUSTOMER-INTELLIGENCE-CLV-A04 Two-Stage Cohort Model
 
+Supersession note from A04.3 on Monday, August 31, 2026:
+
+- references below to `reliability` or `reliabilityBucket` are historical A04 terminology
+- the public external field is now `estimateSupportLevel`
+- these historical sections should not be interpreted as a forecast-confidence claim
+
 Status: **NEEDS FIXES**.
 
 Type: deterministic two-stage cohort CLV experiment, rolling-origin evaluation, baseline comparison, and acceptance gate. No production CLV persistence, no Customer Intelligence integration, no migrations, and no production DB writes.

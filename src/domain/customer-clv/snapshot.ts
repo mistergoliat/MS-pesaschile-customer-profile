@@ -6,6 +6,7 @@ export type BuildCustomerClvSnapshotKeyInput = {
   readonly populationPolicyVersion: string;
   readonly monetaryPolicyVersion: string;
   readonly referenceTime: string;
+  readonly modelChecksum?: string;
 };
 
 export function buildCustomerClvSnapshotKey(input: BuildCustomerClvSnapshotKeyInput): string {
@@ -15,6 +16,7 @@ export function buildCustomerClvSnapshotKey(input: BuildCustomerClvSnapshotKeyIn
     input.populationPolicyVersion,
     input.monetaryPolicyVersion,
     input.referenceTime.replace(/[:.]/g, '-'),
+    ...(input.modelChecksum === undefined ? [] : [input.modelChecksum]),
   ].join('__');
 }
 

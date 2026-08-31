@@ -1,5 +1,11 @@
 # CUSTOMER-INTELLIGENCE-CLV-A04.2 Stale Activity Calibration + Reliability Semantics Hardening
 
+Supersession note from A04.3 on Monday, August 31, 2026:
+
+- A04.2 remains the historical baseline candidate for stale-handling comparison
+- its `LOW`/`MEDIUM` reliability semantics were superseded after empirical validation failed
+- the public contract field is now `estimateSupportLevel`, which describes evidence support rather than predictive reliability
+
 Status: **HARDENING NEEDS FIXES**.
 
 Date of evaluation: **Monday, August 31, 2026**.

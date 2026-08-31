@@ -286,7 +286,7 @@ describe('customer CLV two-stage correction candidates', () => {
     expect(left).toEqual(right);
   });
 
-  it('adds scale-aware reliability metrics', () => {
+  it('adds estimate-support diagnostics with scale-aware error summaries', () => {
     const report = evaluationWithDatasets([
       dataset(
         '2023-01-01T00:00:00.000Z',
@@ -309,7 +309,7 @@ describe('customer CLV two-stage correction candidates', () => {
     ]);
 
     const candidate = candidateById(report, 'two-stage-cohort-a04-band-recency-rank50-refined-v1');
-    for (const row of candidate.reliabilityResults) {
+    for (const row of candidate.estimateSupportResults) {
       expect(row.normalizedAbsoluteError).not.toBeNull();
       expect(row.medianNormalizedAbsoluteError).not.toBeNull();
     }
@@ -395,7 +395,7 @@ describe('customer CLV two-stage correction candidates', () => {
     expect(Number(ranked[1]!.activityProbability)).toBeGreaterThan(Number(ranked[2]!.activityProbability));
   });
 
-  it('prevents invalid HIGH support semantics in the hardened candidate', () => {
+  it('emits SPARSE and SUPPORTED support semantics in the hardened candidate', () => {
     const report = hardeningEvaluationWithDatasets([
       dataset(
         '2023-01-01T00:00:00.000Z',
@@ -425,9 +425,186 @@ describe('customer CLV two-stage correction candidates', () => {
       ),
     ]);
 
-    expect(report.selectedCandidate.reliabilityResults.find((row) => row.reliabilityBucket === 'HIGH')).toBeUndefined();
-    const customerReliability = new Map(report.selectedCandidate.topCustomerSanityCheck.map((row) => [row.customerId, row.reliabilityBucket]));
-    expect(customerReliability.get(31)).toBe('LOW');
+    expect(report.selectedCandidate.estimateSupportResults.find((row) => row.estimateSupportLevel === 'SPARSE')).toBeDefined();
+    const customerSupport = new Map(report.selectedCandidate.topCustomerSanityCheck.map((row) => [row.customerId, row.estimateSupportLevel]));
+    expect(customerSupport.get(31)).toBe('SPARSE');
+  });
+
+  it('keeps the A04.3 stale adjustment training-only when evaluation labels change', () => {
+    const training = [
+      dataset(
+        '2023-01-01T00:00:00.000Z',
+        [
+          example({ customerId: 1, features: { ...example().features, historicalValidOrderCount: 1, daysSinceLastOrder: 820, revenue365d: '0.000000', orders365d: 0 }, observationMetadata: { ...example().observationMetadata, historicalValidOrderCount: 1 }, labels: { futureRevenueTaxIncl: '150000.000000', futureValidOrderCount: 1 } }),
+          example({ customerId: 2, features: { ...example().features, historicalValidOrderCount: 1, daysSinceLastOrder: 840, revenue365d: '0.000000', orders365d: 0 }, observationMetadata: { ...example().observationMetadata, historicalValidOrderCount: 1 }, labels: { futureRevenueTaxIncl: '0.000000', futureValidOrderCount: 0 } }),
+          example({ customerId: 3, labels: { futureRevenueTaxIncl: '300000.000000', futureValidOrderCount: 1 } }),
+          example({ customerId: 4, labels: { futureRevenueTaxIncl: '0.000000', futureValidOrderCount: 0 } }),
+        ],
+        '2024-01-01T00:00:00.000Z',
+      ),
+      dataset(
+        '2023-07-01T00:00:00.000Z',
+        [
+          example({ customerId: 11, cutoffTime: '2023-07-01T00:00:00.000Z', features: { ...example().features, historicalValidOrderCount: 1, daysSinceLastOrder: 820, revenue365d: '0.000000', orders365d: 0 }, observationMetadata: { ...example().observationMetadata, historicalValidOrderCount: 1 }, labels: { futureRevenueTaxIncl: '120000.000000', futureValidOrderCount: 1 } }),
+          example({ customerId: 12, cutoffTime: '2023-07-01T00:00:00.000Z', features: { ...example().features, historicalValidOrderCount: 1, daysSinceLastOrder: 860, revenue365d: '0.000000', orders365d: 0 }, observationMetadata: { ...example().observationMetadata, historicalValidOrderCount: 1 }, labels: { futureRevenueTaxIncl: '0.000000', futureValidOrderCount: 0 } }),
+          example({ customerId: 13, cutoffTime: '2023-07-01T00:00:00.000Z', labels: { futureRevenueTaxIncl: '250000.000000', futureValidOrderCount: 1 } }),
+          example({ customerId: 14, cutoffTime: '2023-07-01T00:00:00.000Z', labels: { futureRevenueTaxIncl: '0.000000', futureValidOrderCount: 0 } }),
+        ],
+        '2024-07-01T00:00:00.000Z',
+      ),
+    ] as const;
+
+    const left = hardeningEvaluationWithDatasets([
+      ...training,
+      dataset('2024-01-01T00:00:00.000Z', [example({ customerId: 20, features: { ...example().features, historicalValidOrderCount: 1, daysSinceLastOrder: 840, revenue365d: '0.000000', orders365d: 0 }, observationMetadata: { ...example().observationMetadata, historicalValidOrderCount: 1 }, labels: { futureRevenueTaxIncl: '0.000000', futureValidOrderCount: 0 } })], '2025-01-01T00:00:00.000Z'),
+    ]);
+    const right = hardeningEvaluationWithDatasets([
+      ...training,
+      dataset('2024-01-01T00:00:00.000Z', [example({ customerId: 20, features: { ...example().features, historicalValidOrderCount: 1, daysSinceLastOrder: 840, revenue365d: '0.000000', orders365d: 0 }, observationMetadata: { ...example().observationMetadata, historicalValidOrderCount: 1 }, labels: { futureRevenueTaxIncl: '999999.000000', futureValidOrderCount: 1 } })], '2025-01-01T00:00:00.000Z'),
+    ]);
+
+    expect(left.selectedCandidate.candidateId.startsWith('two-stage-cohort-a04-3-far-stale-adjustment-')).toBe(true);
+    expect(left.selectedCandidate.cutoffResults[0]!.modelChecksum).toBe(right.selectedCandidate.cutoffResults[0]!.modelChecksum);
+    expect(
+      left.selectedCandidate.topCustomerSanityCheck.map((row) => ({
+        customerId: row.customerId,
+        activityProbability: row.activityProbability,
+        expectedRevenueGivenActiveTaxIncl: row.expectedRevenueGivenActiveTaxIncl,
+        expectedRevenueTaxIncl: row.expectedRevenueTaxIncl,
+        estimateSupportLevel: row.estimateSupportLevel,
+      })),
+    ).toEqual(
+      right.selectedCandidate.topCustomerSanityCheck.map((row) => ({
+        customerId: row.customerId,
+        activityProbability: row.activityProbability,
+        expectedRevenueGivenActiveTaxIncl: row.expectedRevenueGivenActiveTaxIncl,
+        expectedRevenueTaxIncl: row.expectedRevenueTaxIncl,
+        estimateSupportLevel: row.estimateSupportLevel,
+      })),
+    );
+  });
+
+  it('bounds the A04.3 stale adjustment while keeping far-stale customers above zero', () => {
+    const staleTemplate = example({
+      features: {
+        ...example().features,
+        historicalValidOrderCount: 1,
+        historicalRevenueTaxIncl: '120000.000000',
+        historicalAovTaxIncl: '120000.000000',
+        daysSinceLastOrder: 820,
+        revenue90d: '0.000000',
+        revenue180d: '0.000000',
+        revenue365d: '0.000000',
+        orders90d: 0,
+        orders180d: 0,
+        orders365d: 0,
+      },
+      observationMetadata: { ...example().observationMetadata, historicalValidOrderCount: 1 },
+    });
+    const report = hardeningEvaluationWithDatasets([
+      dataset(
+        '2023-01-01T00:00:00.000Z',
+        [
+          { ...staleTemplate, customerId: 1, labels: { futureRevenueTaxIncl: '120000.000000', futureValidOrderCount: 1 } },
+          { ...staleTemplate, customerId: 2, labels: { futureRevenueTaxIncl: '0.000000', futureValidOrderCount: 0 } },
+          { ...staleTemplate, customerId: 3, labels: { futureRevenueTaxIncl: '0.000000', futureValidOrderCount: 0 } },
+          example({ customerId: 4, labels: { futureRevenueTaxIncl: '300000.000000', futureValidOrderCount: 1 } }),
+        ],
+        '2024-01-01T00:00:00.000Z',
+      ),
+      dataset(
+        '2023-07-01T00:00:00.000Z',
+        [
+          { ...staleTemplate, customerId: 11, cutoffTime: '2023-07-01T00:00:00.000Z', labels: { futureRevenueTaxIncl: '100000.000000', futureValidOrderCount: 1 } },
+          { ...staleTemplate, customerId: 12, cutoffTime: '2023-07-01T00:00:00.000Z', labels: { futureRevenueTaxIncl: '0.000000', futureValidOrderCount: 0 } },
+          { ...staleTemplate, customerId: 13, cutoffTime: '2023-07-01T00:00:00.000Z', labels: { futureRevenueTaxIncl: '0.000000', futureValidOrderCount: 0 } },
+          example({ customerId: 14, cutoffTime: '2023-07-01T00:00:00.000Z', labels: { futureRevenueTaxIncl: '0.000000', futureValidOrderCount: 0 } }),
+        ],
+        '2024-07-01T00:00:00.000Z',
+      ),
+      dataset(
+        '2024-01-01T00:00:00.000Z',
+        [{ ...staleTemplate, customerId: 20, labels: { futureRevenueTaxIncl: '0.000000', futureValidOrderCount: 0 } }],
+        '2025-01-01T00:00:00.000Z',
+      ),
+    ]);
+
+    const a042 = report.a042Candidate;
+    const a043 = report.selectedCandidate;
+    const staleRowA042 = a042.topCustomerSanityCheck.find((entry) => entry.customerId === 20)!;
+    const staleRowA043 = a043.topCustomerSanityCheck.find((entry) => entry.customerId === 20)!;
+    expect(a043.staleActivityAdjustment.bounds).toEqual({ min: '0.400000', max: '1.000000' });
+    expect(Number(staleRowA043.activityProbability)).toBeGreaterThan(0);
+    expect(Number(staleRowA043.activityProbability)).toBeLessThanOrEqual(Number(staleRowA042.activityProbability));
+    expect(Number(staleRowA043.expectedRevenueTaxIncl)).toBeGreaterThan(0);
+  });
+
+  it('uses recency x order-depth stale audits and leaves recent customers unchanged in A04.3', () => {
+    const report = hardeningEvaluationWithDatasets([
+      dataset(
+        '2023-01-01T00:00:00.000Z',
+        [
+          example({ customerId: 1, features: { ...example().features, daysSinceLastOrder: 20 }, labels: { futureRevenueTaxIncl: '250000.000000', futureValidOrderCount: 1 } }),
+          example({ customerId: 2, features: { ...example().features, historicalValidOrderCount: 1, daysSinceLastOrder: 820, revenue365d: '0.000000', orders365d: 0 }, observationMetadata: { ...example().observationMetadata, historicalValidOrderCount: 1 }, labels: { futureRevenueTaxIncl: '100000.000000', futureValidOrderCount: 1 } }),
+          example({ customerId: 3, features: { ...example().features, historicalValidOrderCount: 4, daysSinceLastOrder: 820, revenue365d: '0.000000', orders365d: 0 }, observationMetadata: { ...example().observationMetadata, historicalValidOrderCount: 4 }, labels: { futureRevenueTaxIncl: '0.000000', futureValidOrderCount: 0 } }),
+        ],
+        '2024-01-01T00:00:00.000Z',
+      ),
+      dataset(
+        '2023-07-01T00:00:00.000Z',
+        [
+          example({ customerId: 11, cutoffTime: '2023-07-01T00:00:00.000Z', features: { ...example().features, daysSinceLastOrder: 25 }, labels: { futureRevenueTaxIncl: '200000.000000', futureValidOrderCount: 1 } }),
+          example({ customerId: 12, cutoffTime: '2023-07-01T00:00:00.000Z', features: { ...example().features, historicalValidOrderCount: 1, daysSinceLastOrder: 840, revenue365d: '0.000000', orders365d: 0 }, observationMetadata: { ...example().observationMetadata, historicalValidOrderCount: 1 }, labels: { futureRevenueTaxIncl: '0.000000', futureValidOrderCount: 0 } }),
+          example({ customerId: 13, cutoffTime: '2023-07-01T00:00:00.000Z', features: { ...example().features, historicalValidOrderCount: 4, daysSinceLastOrder: 860, revenue365d: '0.000000', orders365d: 0 }, observationMetadata: { ...example().observationMetadata, historicalValidOrderCount: 4 }, labels: { futureRevenueTaxIncl: '0.000000', futureValidOrderCount: 0 } }),
+        ],
+        '2024-07-01T00:00:00.000Z',
+      ),
+      dataset(
+        '2024-01-01T00:00:00.000Z',
+        [
+          example({ customerId: 20, features: { ...example().features, daysSinceLastOrder: 20 } }),
+          example({ customerId: 21, features: { ...example().features, historicalValidOrderCount: 1, daysSinceLastOrder: 840, revenue365d: '0.000000', orders365d: 0 }, observationMetadata: { ...example().observationMetadata, historicalValidOrderCount: 1 } }),
+          example({ customerId: 22, features: { ...example().features, historicalValidOrderCount: 4, daysSinceLastOrder: 840, revenue365d: '0.000000', orders365d: 0 }, observationMetadata: { ...example().observationMetadata, historicalValidOrderCount: 4 } }),
+        ],
+        '2025-01-01T00:00:00.000Z',
+      ),
+    ]);
+
+    const staleAuditKeys = new Set(report.selectedCandidate.staleOrderDepthAudit.map((row) => `${row.recencyBucket}|${row.orderDepthBucket}`));
+    expect(staleAuditKeys.has('731-1095d|1')).toBe(true);
+    expect(staleAuditKeys.has('731-1095d|2+')).toBe(true);
+
+    const recentA042 = report.a042Candidate.topCustomerSanityCheck.find((entry) => entry.customerId === 20)!;
+    const recentA043 = report.selectedCandidate.topCustomerSanityCheck.find((entry) => entry.customerId === 20)!;
+    expect(recentA043.activityProbability).toBe(recentA042.activityProbability);
+    expect(recentA043.expectedRevenueTaxIncl).toBe(recentA042.expectedRevenueTaxIncl);
+  });
+
+  it('keeps Stage B frozen between A04.2 and A04.3 candidates', () => {
+    const report = hardeningEvaluationWithDatasets([
+      dataset(
+        '2023-01-01T00:00:00.000Z',
+        [
+          example({ customerId: 1, labels: { futureRevenueTaxIncl: '400000.000000', futureValidOrderCount: 1 } }),
+          example({ customerId: 2, labels: { futureRevenueTaxIncl: '0.000000', futureValidOrderCount: 0 } }),
+          example({ customerId: 3, features: { ...example().features, daysSinceLastOrder: 820, revenue365d: '0.000000', orders365d: 0 }, labels: { futureRevenueTaxIncl: '120000.000000', futureValidOrderCount: 1 } }),
+        ],
+        '2024-01-01T00:00:00.000Z',
+      ),
+      dataset(
+        '2023-07-01T00:00:00.000Z',
+        [
+          example({ customerId: 11, cutoffTime: '2023-07-01T00:00:00.000Z', labels: { futureRevenueTaxIncl: '250000.000000', futureValidOrderCount: 1 } }),
+          example({ customerId: 12, cutoffTime: '2023-07-01T00:00:00.000Z', labels: { futureRevenueTaxIncl: '0.000000', futureValidOrderCount: 0 } }),
+          example({ customerId: 13, cutoffTime: '2023-07-01T00:00:00.000Z', features: { ...example().features, daysSinceLastOrder: 840, revenue365d: '0.000000', orders365d: 0 }, labels: { futureRevenueTaxIncl: '0.000000', futureValidOrderCount: 0 } }),
+        ],
+        '2024-07-01T00:00:00.000Z',
+      ),
+      dataset('2024-01-01T00:00:00.000Z', [example({ customerId: 20 })], '2025-01-01T00:00:00.000Z'),
+    ]);
+
+    expect(report.a042Candidate.conditionalValueRankRefinement).toEqual(report.selectedCandidate.conditionalValueRankRefinement);
+    expect(report.a042Candidate.driftPolicy.valueCohortStrategy).toBe(report.selectedCandidate.driftPolicy.valueCohortStrategy);
   });
 
   it('emits a deterministic frozen candidate descriptor', () => {

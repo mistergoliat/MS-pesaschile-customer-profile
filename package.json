@@ -37,7 +37,11 @@
     "intelligence:copilot:benchmark": "tsx scripts/intelligence/copilot-benchmark.ts",
     "clv:backtest:dry-run": "tsx scripts/clv/backtest-dry-run.ts",
     "clv:baselines:evaluate": "tsx scripts/clv/baselines-evaluate.ts",
-    "clv:model:evaluate": "tsx scripts/clv/model-evaluate.ts"
+    "clv:model:evaluate": "tsx scripts/clv/model-evaluate.ts",
+    "clv:acceptance:evaluate": "tsx scripts/clv/acceptance-evaluate.ts",
+    "clv:snapshot:build": "tsx scripts/clv/snapshot-build.ts",
+    "clv:migrate": "tsx scripts/clv/apply-migration.ts",
+    "clv:snapshot:read-check": "tsx scripts/clv/snapshot-read-check.ts"
   },
   "keywords": [],
   "author": "",

@@ -4,14 +4,14 @@ import { describe, expect, it } from 'vitest';
 import {
   buildCustomerClvSnapshotKey,
   CUSTOMER_CLV_CURRENCY_ISO_CODE,
+  CUSTOMER_CLV_ESTIMATE_SUPPORT_LEVELS,
   CUSTOMER_CLV_HORIZON_MONTHS,
   CUSTOMER_CLV_IDENTITY_AUTHORITY,
   CUSTOMER_CLV_MODEL_VERSION,
   CUSTOMER_CLV_MONETARY_POLICY_VERSION,
   CUSTOMER_CLV_POPULATION_POLICY_VERSION,
-  CUSTOMER_CLV_RELIABILITY_BUCKETS,
   type CustomerClvRecord,
-  type CustomerClvReliabilityBucket,
+  type CustomerClvEstimateSupportLevel,
   type CustomerClvSnapshotHeader,
   type CustomerClvSnapshotRow,
   type CustomerIntelligenceClv,
@@ -33,7 +33,7 @@ function baseRecord(overrides: Partial<CustomerClvRecord> = {}): CustomerClvReco
     referenceTime,
     populationPolicyVersion: CUSTOMER_CLV_POPULATION_POLICY_VERSION,
     monetaryPolicyVersion: CUSTOMER_CLV_MONETARY_POLICY_VERSION,
-    reliabilityBucket: 'MEDIUM',
+    estimateSupportLevel: 'SUPPORTED',
     ...overrides,
   };
 }
@@ -124,16 +124,16 @@ describe('CustomerClvRecord', () => {
     );
   });
 
-  it('accepts LOW, MEDIUM and HIGH reliability buckets', () => {
-    for (const reliabilityBucket of CUSTOMER_CLV_RELIABILITY_BUCKETS) {
-      expect(() => assertValidCustomerClvRecord(baseRecord({ reliabilityBucket }))).not.toThrow();
+  it('accepts SPARSE and SUPPORTED estimate support levels', () => {
+    for (const estimateSupportLevel of CUSTOMER_CLV_ESTIMATE_SUPPORT_LEVELS) {
+      expect(() => assertValidCustomerClvRecord(baseRecord({ estimateSupportLevel }))).not.toThrow();
     }
   });
 
-  it('rejects invalid reliability bucket', () => {
+  it('rejects invalid estimate support level', () => {
     expect(() =>
-      assertValidCustomerClvRecord(baseRecord({ reliabilityBucket: 'CONFIDENT' as CustomerClvReliabilityBucket })),
-    ).toThrow(/reliabilityBucket/);
+      assertValidCustomerClvRecord(baseRecord({ estimateSupportLevel: 'CONFIDENT' as CustomerClvEstimateSupportLevel })),
+    ).toThrow(/estimateSupportLevel/);
   });
 
   it('does not expose RFM, cluster, affinity or budget fields', () => {
@@ -169,7 +169,7 @@ describe('CustomerClvSnapshotHeader and row', () => {
     const row: CustomerClvSnapshotRow = {
       customerId: 123,
       expectedRevenueTaxIncl: '1000.000000',
-      reliabilityBucket: 'LOW',
+      estimateSupportLevel: 'SPARSE',
     };
 
     expect(() => assertValidCustomerClvSnapshotRow(row)).not.toThrow();
@@ -180,7 +180,7 @@ describe('CustomerClvSnapshotHeader and row', () => {
       customerId: 123,
       expectedRevenueTaxIncl: '1000.000000',
       expectedOrders: '0.500000',
-      reliabilityBucket: 'HIGH',
+      estimateSupportLevel: 'SUPPORTED',
     };
 
     expect(() => assertValidCustomerClvSnapshotRow(row)).not.toThrow();
@@ -192,7 +192,7 @@ describe('CustomerClvSnapshotHeader and row', () => {
         customerId: 123,
         expectedRevenueTaxIncl: '1000.000000',
         expectedOrders: '-0.500000',
-        reliabilityBucket: 'HIGH',
+        estimateSupportLevel: 'SUPPORTED',
       }),
     ).toThrow(/expectedOrders/);
   });
@@ -274,12 +274,16 @@ describe('future Customer Intelligence CLV shape', () => {
       },
       expectedRevenueTaxIncl: '0.000000',
       currencyIsoCode: CUSTOMER_CLV_CURRENCY_ISO_CODE,
-      reliabilityBucket: 'LOW',
+      estimateSupportLevel: 'SPARSE',
     };
 
     expect(missing).toBeNull();
     expect(zeroValue).not.toBeNull();
     expect(zeroValue.expectedRevenueTaxIncl).toBe('0.000000');
+  });
+
+  it('does not expose legacy reliabilityBucket semantics on the public record shape', () => {
+    expect('reliabilityBucket' in baseRecord()).toBe(false);
   });
 });
 

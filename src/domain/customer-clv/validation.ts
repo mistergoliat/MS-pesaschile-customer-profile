@@ -1,8 +1,8 @@
 import { compareDecimalAsc, formatDecimal } from '../../shared/decimal.js';
 import {
   CUSTOMER_CLV_CURRENCY_ISO_CODE,
+  CUSTOMER_CLV_ESTIMATE_SUPPORT_LEVELS,
   CUSTOMER_CLV_IDENTITY_AUTHORITY,
-  CUSTOMER_CLV_RELIABILITY_BUCKETS,
   CUSTOMER_CLV_SNAPSHOT_STATUSES,
   type CustomerClvRecord,
   type CustomerClvSnapshotHeader,
@@ -23,7 +23,7 @@ export function assertValidCustomerClvRecord(record: CustomerClvRecord): void {
   assertIsoTimestamp(record.referenceTime, 'referenceTime');
   assertNonEmptyString(record.populationPolicyVersion, 'populationPolicyVersion');
   assertNonEmptyString(record.monetaryPolicyVersion, 'monetaryPolicyVersion');
-  assertReliabilityBucket(record.reliabilityBucket);
+  assertEstimateSupportLevel(record.estimateSupportLevel);
   if (record.expectedOrders !== undefined) {
     assertNonNegativeDecimalString(record.expectedOrders, 'expectedOrders');
   }
@@ -32,7 +32,7 @@ export function assertValidCustomerClvRecord(record: CustomerClvRecord): void {
 export function assertValidCustomerClvSnapshotRow(row: CustomerClvSnapshotRow): void {
   assertPositiveInteger(row.customerId, 'customerId');
   assertNonNegativeDecimalString(row.expectedRevenueTaxIncl, 'expectedRevenueTaxIncl');
-  assertReliabilityBucket(row.reliabilityBucket);
+  assertEstimateSupportLevel(row.estimateSupportLevel);
   if (row.expectedOrders !== undefined) {
     assertNonNegativeDecimalString(row.expectedOrders, 'expectedOrders');
   }
@@ -93,9 +93,9 @@ export function assertIdentityAuthority(value: string): void {
   }
 }
 
-export function assertReliabilityBucket(value: string): void {
-  if (!CUSTOMER_CLV_RELIABILITY_BUCKETS.includes(value as never)) {
-    throw new Error(`Invalid reliabilityBucket: ${value}`);
+export function assertEstimateSupportLevel(value: string): void {
+  if (!CUSTOMER_CLV_ESTIMATE_SUPPORT_LEVELS.includes(value as never)) {
+    throw new Error(`Invalid estimateSupportLevel: ${value}`);
   }
 }
 

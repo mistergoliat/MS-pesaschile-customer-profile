@@ -1,5 +1,11 @@
 # CUSTOMER-INTELLIGENCE-CLV-A04.1 Ranking & Calibration Correction
 
+Supersession note from A04.3 on Monday, August 31, 2026:
+
+- A04.1 references to reliability are preserved as historical context only
+- the public contract field is now `estimateSupportLevel`
+- A04.3 replaces reliability semantics with observable evidence-support semantics
+
 Status: **NEEDS FIXES**.
 
 Type: targeted deterministic correction on top of the A04 two-stage CLV family. No production CLV snapshot, no Customer Intelligence integration, no migrations, and no production DB writes.

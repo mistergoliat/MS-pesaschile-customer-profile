@@ -6,6 +6,12 @@ Type: pure domain contracts, versioning, snapshot primitives, and validators. No
 
 Baseline: `docs/audits/CUSTOMER-INTELLIGENCE-CLV-A00-existing-capability-and-readiness.md`, decision `CLV_TRACK_READY_WITH_PREREQUISITES`.
 
+Supersession note from A04.3 on Monday, August 31, 2026:
+
+- the public CLV contract no longer exposes `reliabilityBucket`
+- A04.3 replaces it with `estimateSupportLevel`
+- `estimateSupportLevel` means observable history/model support only, not forecast confidence or expected accuracy
+
 ## 1. CLV Definition
 
 CLV v1 is explicitly defined as:
@@ -38,12 +44,12 @@ src/domain/customer-clv/
 - `CustomerClvSnapshotRow`
 - `CustomerIntelligenceClvSnapshotRef`
 - `CustomerIntelligenceClv`
-- reliability bucket and snapshot status unions
+- estimate support level and snapshot status unions
 - v1 lineage constants
 
 `snapshot.ts` defines deterministic snapshot-key construction and the v1 horizon guard.
 
-`validation.ts` defines pure assertion helpers for records, snapshot headers, rows, ids, timestamps, policies, checksums, CLP currency, v1 horizon, decimal strings, and reliability buckets.
+`validation.ts` defines pure assertion helpers for records, snapshot headers, rows, ids, timestamps, policies, checksums, CLP currency, v1 horizon, decimal strings, and estimate support levels.
 
 ## 3. Horizon And Currency
 
@@ -90,7 +96,7 @@ Initial model version:
 CUSTOMER_CLV_MODEL_VERSION = 'customer-clv-cohort-v1'
 ```
 
-This names the intended methodology family from A00: cohort-based expected value with shrinkage and reliability buckets. It does not encode model math yet, and no model is implemented in A01.
+This names the intended methodology family from A00: cohort-based expected value with shrinkage. A04.3 later standardized the public evidence label as `estimateSupportLevel`, not `reliabilityBucket`. A01 itself does not encode model math.
 
 ## 6. Population Policy
 
@@ -110,23 +116,23 @@ Semantics reserved by the contract:
 
 No population query is implemented in this slice.
 
-## 7. Reliability Bucket
+## 7. Estimate Support Level
 
-Reliability values:
+The original A01 `reliabilityBucket` concept is superseded by A04.3.
+
+Current public values:
 
 ```text
-LOW
-MEDIUM
-HIGH
+SPARSE
+SUPPORTED
 ```
 
 Semantics:
 
-- `LOW`: sparse history, weak cohort support, or immature observation history.
-- `MEDIUM`: moderate historical/cohort support.
-- `HIGH`: strong historical support and well-supported cohort/model estimate.
+- `SPARSE`: limited observable history or deeper fallback/model support.
+- `SUPPORTED`: adequate observable purchase history and shallower cohort/model support.
 
-This is not statistical confidence, not a confidence interval, and not purchase probability.
+This is not statistical confidence, not a confidence interval, not expected error, and not purchase probability.
 
 ## 8. Snapshot Lineage
 
@@ -170,7 +176,7 @@ Training metadata is deliberately small: cutoff range, window count, and model-f
   customerId;
   expectedRevenueTaxIncl;
   expectedOrders?;
-  reliabilityBucket;
+  estimateSupportLevel;
 }
 ```
 
@@ -214,7 +220,7 @@ type CustomerIntelligenceClv = {
   readonly snapshot: CustomerIntelligenceClvSnapshotRef;
   readonly expectedRevenueTaxIncl: string;
   readonly currencyIsoCode: 'CLP';
-  readonly reliabilityBucket: 'LOW' | 'MEDIUM' | 'HIGH';
+  readonly estimateSupportLevel: 'SPARSE' | 'SUPPORTED';
   readonly expectedOrders?: string;
 };
 ```
@@ -249,8 +255,8 @@ Coverage:
 - negative expected revenue rejected;
 - invalid customer id rejected;
 - invalid currency rejected;
-- LOW/MEDIUM/HIGH accepted;
-- invalid reliability rejected;
+- SPARSE/SUPPORTED accepted;
+- invalid estimate support rejected;
 - snapshot row/header validation;
 - snapshot key determinism;
 - key changes on model, horizon, population policy, monetary policy, and reference time changes;

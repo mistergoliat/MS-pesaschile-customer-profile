@@ -270,7 +270,7 @@ describe('customer CLV two-stage cohort model', () => {
     expect(left.selectedCandidate.cutoffResults[0]!.modelChecksum).toBe(right.selectedCandidate.cutoffResults[0]!.modelChecksum);
   });
 
-  it('keeps strong support customers out of LOW and still marks stale weak-support customers as LOW', () => {
+  it('keeps strong evidence customers SUPPORTED and still marks stale weak-support customers SPARSE', () => {
     const repeatTemplate = example({
       features: { ...example().features, historicalValidOrderCount: 5, historicalRevenueTaxIncl: '600.000000', historicalAovTaxIncl: '120.000000', revenue365d: '600.000000', orders365d: 5, daysSinceLastOrder: 20, customerTenureDays: 900 },
       observationMetadata: { ...example().observationMetadata, historicalValidOrderCount: 5, historyDays: 900 },
@@ -327,7 +327,7 @@ describe('customer CLV two-stage cohort model', () => {
     ]);
 
     const byCustomer = new Map(report.selectedCandidate.topCustomerSanityCheck.map((row) => [row.customerId, row]));
-    expect(byCustomer.get(10000)?.reliabilityBucket).toBe('MEDIUM');
-    expect(byCustomer.get(10001)?.reliabilityBucket).toBe('LOW');
+    expect(byCustomer.get(10000)?.estimateSupportLevel).toBe('SUPPORTED');
+    expect(byCustomer.get(10001)?.estimateSupportLevel).toBe('SPARSE');
   });
 });

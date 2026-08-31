@@ -141,6 +141,7 @@ export type BuildCustomerClvBacktestDatasetInput = {
   readonly availableDataThrough: string;
   readonly generatedAt?: string;
   readonly sourceOrders: readonly CustomerClvBacktestSourceOrder[];
+  readonly allowUnmaturedLabels?: boolean;
 };
 
 export function buildCustomerClvBacktestDataset(input: BuildCustomerClvBacktestDatasetInput): CustomerClvBacktestDataset {
@@ -149,7 +150,7 @@ export function buildCustomerClvBacktestDataset(input: BuildCustomerClvBacktestD
   const cutoffTime = normalizeIsoTimestamp(input.cutoffTime, 'cutoffTime');
   const availableDataThrough = normalizeIsoTimestamp(input.availableDataThrough, 'availableDataThrough');
   const labelWindowEndExclusive = addUtcMonths(cutoffTime, CUSTOMER_CLV_HORIZON_MONTHS);
-  if (Date.parse(labelWindowEndExclusive) > Date.parse(availableDataThrough)) {
+  if (!input.allowUnmaturedLabels && Date.parse(labelWindowEndExclusive) > Date.parse(availableDataThrough)) {
     throw new Error('CLV backtest dataset requires a mature 12-month label window');
   }
 
@@ -187,11 +188,14 @@ export function buildCustomerClvBacktestDataset(input: BuildCustomerClvBacktestD
     }
     const row = buildCustomerExample(customerId, customerOrders, cutoffTime, labelWindowEndExclusive);
     if (!row) continue;
-    rows.push(row);
-    historyOrderCount += row.features.historicalValidOrderCount;
-    labelOrderCount += row.labels.futureValidOrderCount;
-    if (row.labels.futureValidOrderCount === 0) zeroFutureOrderCustomerCount += 1;
-    if (row.features.historicalValidOrderCount === 1) singleHistoricalOrderCustomerCount += 1;
+    const outputRow = input.allowUnmaturedLabels
+      ? { ...row, labels: { futureRevenueTaxIncl: '0.000000', futureValidOrderCount: 0 } }
+      : row;
+    rows.push(outputRow);
+    historyOrderCount += outputRow.features.historicalValidOrderCount;
+    labelOrderCount += outputRow.labels.futureValidOrderCount;
+    if (outputRow.labels.futureValidOrderCount === 0) zeroFutureOrderCustomerCount += 1;
+    if (outputRow.features.historicalValidOrderCount === 1) singleHistoricalOrderCustomerCount += 1;
   }
 
   const sortedRows = [...rows].sort((left, right) => left.customerId - right.customerId);
@@ -263,6 +267,19 @@ export function buildCustomerClvBacktestDataset(input: BuildCustomerClvBacktestD
     },
     rows: sortedRows,
   };
+}
+
+export function buildCustomerClvProductionDataset(input: {
+  readonly referenceTime: string;
+  readonly availableDataThrough: string;
+  readonly sourceOrders: readonly CustomerClvBacktestSourceOrder[];
+}): CustomerClvBacktestDataset {
+  return buildCustomerClvBacktestDataset({
+    cutoffTime: input.referenceTime,
+    availableDataThrough: input.availableDataThrough,
+    sourceOrders: input.sourceOrders,
+    allowUnmaturedLabels: true,
+  });
 }
 
 export function serializeCustomerClvBacktestDataset(dataset: CustomerClvBacktestDataset): string {
