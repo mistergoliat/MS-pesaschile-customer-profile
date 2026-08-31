@@ -61,3 +61,7 @@ scripts/clustering/python/.venv/
 scripts/clustering/python/__pycache__/
 scripts/clustering/python/**/__pycache__/
 scripts/clustering/python/.pytest_cache/
+
+# CUSTOMER-INTELLIGENCE-CLV offline research artifacts are deterministic local outputs from
+# read-only evaluation runs and should not be versioned.
+artifacts/clv/*.json
