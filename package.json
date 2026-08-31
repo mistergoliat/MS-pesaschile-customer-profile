@@ -34,7 +34,10 @@
     "intelligence:query": "tsx scripts/intelligence/query.ts",
     "intelligence:copilot:schema": "tsx scripts/intelligence/copilot-schema.ts",
     "intelligence:copilot": "tsx scripts/intelligence/copilot.ts",
-    "intelligence:copilot:benchmark": "tsx scripts/intelligence/copilot-benchmark.ts"
+    "intelligence:copilot:benchmark": "tsx scripts/intelligence/copilot-benchmark.ts",
+    "clv:backtest:dry-run": "tsx scripts/clv/backtest-dry-run.ts",
+    "clv:baselines:evaluate": "tsx scripts/clv/baselines-evaluate.ts",
+    "clv:model:evaluate": "tsx scripts/clv/model-evaluate.ts"
   },
   "keywords": [],
   "author": "",
