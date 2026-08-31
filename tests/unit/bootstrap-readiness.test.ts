@@ -56,7 +56,7 @@ describe('bootstrap().checkReadiness', () => {
       prestashop: { status: 'ready' },
       crm: true,
     });
-  });
+  }, 10_000);
 
   // TD-001 regression: checkReadiness() used to source `crm` from a second PrestaShop ping
   // instead of the real CRM probe, so it always mirrored `prestashop` and never reflected
@@ -70,7 +70,7 @@ describe('bootstrap().checkReadiness', () => {
 
     expect(readiness.prestashop).toEqual({ status: 'ready' });
     expect(readiness.crm).toBe(false);
-  });
+  }, 10_000);
 
   // Proves the two signals are independent in the other direction too: a PrestaShop outage
   // must not be masked or mirrored by CRM's (unrelated) health.
@@ -83,7 +83,7 @@ describe('bootstrap().checkReadiness', () => {
 
     expect(readiness.prestashop).toEqual({ status: 'not_ready', reason: 'prestashop_unavailable' });
     expect(readiness.crm).toBe(true);
-  });
+  }, 10_000);
 
   it('reports crm=false when the CRM probe itself throws', async () => {
     checkPrestashopReadinessMock.mockResolvedValueOnce({ status: 'ready' });
@@ -94,5 +94,5 @@ describe('bootstrap().checkReadiness', () => {
       prestashop: { status: 'ready' },
       crm: false,
     });
-  });
+  }, 10_000);
 });

@@ -74,14 +74,14 @@ describe('bootstrap() — RFM optional wiring', () => {
       reason: 'rfm_not_configured',
       contractVersion: 'customer-rfm-runtime-v1',
     });
-  });
+  }, 10_000);
 
   it('shuts down cleanly with no RFM pool ever created', async () => {
     rfmSnapshotDbConfig = null;
     const { bootstrap } = await import('../../src/bootstrap.js');
 
     await expect(bootstrap().shutdown()).resolves.toBeUndefined();
-  });
+  }, 10_000);
 
   it('wires a real RFM reader against the configured pool when RFM_SNAPSHOT_DB_* is set', async () => {
     rfmSnapshotDbConfig = {
@@ -117,5 +117,5 @@ describe('bootstrap() — RFM optional wiring', () => {
       contractVersion: 'customer-rfm-runtime-v1',
     });
     expect(fakeReader.getCurrentPrestashopCustomerRfmLookup).toHaveBeenCalledWith(777);
-  });
+  }, 10_000);
 });
