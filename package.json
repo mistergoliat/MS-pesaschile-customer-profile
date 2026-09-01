@@ -44,7 +44,9 @@
     "clv:snapshot:read-check": "tsx scripts/clv/snapshot-read-check.ts",
     "product:semantic:compatibility-read": "tsx scripts/product-semantic-snapshot/compatibility-read.ts",
     "customer:affinity:population": "tsx scripts/customer-commercial-affinity/a01-4-population.ts",
-    "customer:affinity:query-plan": "tsx scripts/customer-commercial-affinity/a01-4-1-query-plan.ts"
+    "customer:affinity:query-plan": "tsx scripts/customer-commercial-affinity/a01-4-1-query-plan.ts",
+    "customer:affinity:migrate": "tsx scripts/customer-commercial-affinity/apply-migration.ts",
+    "customer:affinity:snapshot:build": "tsx scripts/customer-commercial-affinity/a01-5-snapshot-build.ts"
   },
   "keywords": [],
   "author": "",

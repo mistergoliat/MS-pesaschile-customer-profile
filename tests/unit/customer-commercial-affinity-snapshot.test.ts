@@ -70,6 +70,18 @@ describe('buildCustomerCommercialAffinitySnapshotKey', () => {
     expect(a).not.toBe(b);
   });
 
+  it('includes persisted semantic identity and population checksum when supplied', () => {
+    const key = buildCustomerCommercialAffinitySnapshotKey(baseInput({
+      productSemanticSnapshotId: `sha256:${'a'.repeat(64)}`,
+      consumerSemanticChecksum: 'b'.repeat(64),
+      datasetChecksum: 'c'.repeat(64),
+    }));
+
+    expect(key).toContain(`sha256:${'a'.repeat(64)}`);
+    expect(key).toContain('b'.repeat(64));
+    expect(key).toContain('c'.repeat(64));
+  });
+
   it('sanitizes referenceTime the same way RFM/clustering/analytics snapshot keys do', () => {
     const key = buildCustomerCommercialAffinitySnapshotKey(baseInput({ referenceTime: '2026-08-28T00:00:00.000Z' }));
 

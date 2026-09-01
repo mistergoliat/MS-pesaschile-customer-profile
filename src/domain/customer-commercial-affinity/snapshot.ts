@@ -19,6 +19,12 @@ export type CustomerCommercialAffinitySnapshotKeyInput = {
   readonly ontologyHash: string;
   readonly populationPolicyVersion: string;
   readonly referenceTime: string;
+  /** Persisted snapshots include the immutable semantic snapshot identity. */
+  readonly productSemanticSnapshotId?: string;
+  /** Persisted snapshots include the exact normalized consumer checksum. */
+  readonly consumerSemanticChecksum?: string;
+  /** Include the source population checksum when resolving a persisted snapshot key. */
+  readonly datasetChecksum?: string;
 };
 
 // Mirrors the exact canonical join convention already running in production for RFM
@@ -32,9 +38,12 @@ export type CustomerCommercialAffinitySnapshotKeyInput = {
 export function buildCustomerCommercialAffinitySnapshotKey(input: CustomerCommercialAffinitySnapshotKeyInput): string {
   return [
     input.calculationVersion,
+    ...(input.productSemanticSnapshotId === undefined ? [] : [input.productSemanticSnapshotId]),
     input.productSemanticSnapshotVersion,
     input.ontologyHash,
     input.populationPolicyVersion,
     input.referenceTime.replace(/[:.]/g, '-'),
+    ...(input.consumerSemanticChecksum === undefined ? [] : [input.consumerSemanticChecksum]),
+    ...(input.datasetChecksum === undefined ? [] : [input.datasetChecksum]),
   ].join('__');
 }

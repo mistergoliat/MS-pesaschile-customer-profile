@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS customer_commercial_affinity_snapshot_row;
+DROP TABLE IF EXISTS customer_commercial_affinity_snapshot;
