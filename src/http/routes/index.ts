@@ -2,6 +2,13 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import type { GetCustomerCommercialSummary } from '../../application/customer-commercial-summary/get-customer-commercial-summary.js';
+import {
+  CUSTOMER_COMMERCIAL_AFFINITY_RUNTIME_CONTRACT_VERSION,
+  type GetCustomerCommercialAffinity,
+  type GetCustomerCommercialAffinitySnapshot,
+  type CustomerCommercialAffinityLookupResult,
+  type CustomerCommercialAffinitySnapshotResult,
+} from '../../application/customer-commercial-affinity/index.js';
 import type { GetCustomerPurchaseBehavior } from '../../application/customer-purchase-behavior/get-customer-purchase-behavior.js';
 import type { GetCustomerPurchasedProducts } from '../../application/customer-purchased-products/get-customer-purchased-products.js';
 import type { GetCustomerRfm } from '../../application/customer-rfm/get-customer-rfm.js';
@@ -177,6 +184,8 @@ export type RouteDependencies = {
   readonly getCustomerClvSnapshot?: GetCustomerClvSnapshot;
   readonly getCustomerIntelligenceRow?: GetCustomerIntelligenceRow;
   readonly customerCommercialProfileService?: CustomerCommercialProfileService;
+  readonly getCustomerCommercialAffinity?: GetCustomerCommercialAffinity;
+  readonly getCustomerCommercialAffinitySnapshot?: GetCustomerCommercialAffinitySnapshot;
   // Clustering analytics/observability (CP-R2-T03): read-only assembly over already-published
   // snapshots/profiles, local MariaDB only — never recomputes, never touches PrestaShop. See
   // docs/releases/CP-R2-T03-clustering-analytics-observability.md.
@@ -756,6 +765,59 @@ export function buildRoutes(deps: RouteDependencies): Router {
     } catch (error) {
       console.error({ event: 'customer_clv_request_failed', customerId, endpoint: 'clv', contractVersion: CUSTOMER_CLV_RUNTIME_CONTRACT_VERSION, durationMs: Date.now() - startedAt, errorType: classifyErrorForLog(error) });
       response.status(500).json({ error: 'internal_error' });
+    }
+  });
+
+  router.get('/v1/customers/:customerId/affinity', async (request: Request, response: Response) => {
+    const customerId = parseCustomerIdFromParams(request.params);
+    if (customerId === null) {
+      response.status(400).json({ error: 'invalid_customer_id' });
+      return;
+    }
+    if (Object.keys(request.query).length > 0) {
+      response.status(400).json({ error: 'unsupported_query_params' });
+      return;
+    }
+    if (request.body !== undefined) {
+      response.status(400).json({ error: 'unsupported_body' });
+      return;
+    }
+    if (!deps.getCustomerCommercialAffinity) {
+      response.status(503).json({ error: 'customer_commercial_affinity_not_configured' });
+      return;
+    }
+    const startedAt = Date.now();
+    try {
+      const result = await deps.getCustomerCommercialAffinity({ customerId });
+      console.info({ endpoint: 'customer-affinity', contractVersion: CUSTOMER_COMMERCIAL_AFFINITY_RUNTIME_CONTRACT_VERSION, customerId, availability: result.availability, durationMs: Date.now() - startedAt }, 'customer commercial affinity lookup');
+      response.status(statusForCustomerCommercialAffinityResult(result)).json(result);
+    } catch (error) {
+      console.error({ event: 'customer_commercial_affinity_request_failed', endpoint: 'customer-affinity', customerId, contractVersion: CUSTOMER_COMMERCIAL_AFFINITY_RUNTIME_CONTRACT_VERSION, durationMs: Date.now() - startedAt, errorType: classifyErrorForLog(error) });
+      response.status(503).json({ error: 'customer_commercial_affinity_unavailable' });
+    }
+  });
+
+  router.get('/v1/customer-commercial-affinity/snapshot', async (request: Request, response: Response) => {
+    if (Object.keys(request.query).length > 0) {
+      response.status(400).json({ error: 'unsupported_query_params' });
+      return;
+    }
+    if (request.body !== undefined) {
+      response.status(400).json({ error: 'unsupported_body' });
+      return;
+    }
+    if (!deps.getCustomerCommercialAffinitySnapshot) {
+      response.status(503).json({ error: 'customer_commercial_affinity_not_configured' });
+      return;
+    }
+    const startedAt = Date.now();
+    try {
+      const result = await deps.getCustomerCommercialAffinitySnapshot();
+      console.info({ endpoint: 'customer-commercial-affinity-snapshot', contractVersion: CUSTOMER_COMMERCIAL_AFFINITY_RUNTIME_CONTRACT_VERSION, availability: result.availability, snapshotId: result.snapshot?.snapshotId ?? null, durationMs: Date.now() - startedAt }, 'customer commercial affinity snapshot metadata lookup');
+      response.status(statusForCustomerCommercialAffinitySnapshotResult(result)).json(result);
+    } catch (error) {
+      console.error({ event: 'customer_commercial_affinity_snapshot_request_failed', endpoint: 'customer-commercial-affinity-snapshot', contractVersion: CUSTOMER_COMMERCIAL_AFFINITY_RUNTIME_CONTRACT_VERSION, durationMs: Date.now() - startedAt, errorType: classifyErrorForLog(error) });
+      response.status(503).json({ error: 'customer_commercial_affinity_unavailable' });
     }
   });
 
@@ -1348,6 +1410,20 @@ function statusForCustomerCommercialProfileResult(result: GetCustomerCommercialP
     case 'degraded':
       return 503;
   }
+}
+
+function statusForCustomerCommercialAffinityResult(result: CustomerCommercialAffinityLookupResult): number {
+  switch (result.status) {
+    case 'available':
+    case 'not_in_population':
+      return 200;
+    case 'unavailable':
+      return 503;
+  }
+}
+
+function statusForCustomerCommercialAffinitySnapshotResult(result: CustomerCommercialAffinitySnapshotResult): number {
+  return result.status === 'available' ? 200 : 503;
 }
 
 function statusForClusterSnapshotSummaryResult(result: GetClusterSnapshotSummaryResult): number {

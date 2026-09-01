@@ -55,24 +55,40 @@ const clv = {
   contractVersion: 'customer-clv-runtime-v1' as const,
 };
 
+const affinity = {
+  status: 'available' as const,
+  customerId: 42,
+  availability: 'AVAILABLE' as const,
+  affinity: {
+    snapshot: {
+      snapshotId: '3', calculationVersion: 'customer-commercial-affinity-v1', referenceTime: '2026-08-01T00:00:00.000Z',
+      productSemanticSnapshotId: 'semantic-1', productSemanticSchemaVersion: '1', ontologyVersion: 'ontology-v3',
+      ontologyHash: 'a'.repeat(64), sourceSemanticChecksum: 'b'.repeat(64), consumerSemanticChecksum: 'c'.repeat(64), affinityDatasetChecksum: 'd'.repeat(64),
+    },
+    affinities: [{ affinityAxis: 'PRODUCT_FAMILY' as const, affinityCode: 'BARBELL', score: 0.8, supportingOrderCount: 2, supportingProductCount: 1, supportingSpend: '100.000000', lastEvidenceAt: '2026-08-03T00:00:00.000Z', explicitEvidenceCoverage: null }],
+  },
+  contractVersion: 'customer-commercial-affinity-runtime-v1' as const,
+};
+
 function service(overrides: Record<string, unknown> = {}) {
   return createCustomerCommercialProfileService({
     resolveCustomerIdentity: identity,
     getCustomerRfm: vi.fn(async () => rfm),
     getCustomerCluster: vi.fn(async () => cluster),
     getCustomerClv: vi.fn(async () => clv),
+    getCustomerCommercialAffinity: vi.fn(async () => affinity),
+    getCustomerCommercialAffinities: vi.fn(async ({ customerIds }: { customerIds: readonly number[] }) => customerIds.map((customerId) => ({ ...affinity, customerId }))),
     clock: { now: () => new Date('2026-08-04T00:00:00.000Z') },
     ...overrides,
   } as never);
 }
 
 describe('Customer Commercial Profile contract and composition', () => {
-  it('defines the bounded availability vocabulary including the explicit affinity placeholder state', () => {
+  it('defines the bounded availability vocabulary without the former affinity placeholder state', () => {
     expect(CUSTOMER_COMMERCIAL_PROFILE_AVAILABILITY_STATES).toEqual([
       'AVAILABLE',
       'NOT_IN_POPULATION',
       'UNAVAILABLE',
-      'NOT_IMPLEMENTED',
     ]);
   });
 
@@ -88,8 +104,8 @@ describe('Customer Commercial Profile contract and composition', () => {
       rfm: { recency: 2, frequency: 3, monetary: '123456789012345678.123456' },
       behavioralCluster: { clusterId: 3, label: 'NEW_BURST_THEN_LAPSED_BUYERS', modelVersion: 'behavioral-kmeans-k4-v1' },
       clv: { expectedRevenueTaxIncl: '987654321098765432.654321', expectedOrders: '2.500000' },
-      commercialAffinity: null,
-      availability: { rfm: 'AVAILABLE', behavioralCluster: 'AVAILABLE', clv: 'AVAILABLE', commercialAffinity: 'NOT_IMPLEMENTED' },
+      commercialAffinity: { snapshot: { snapshotId: '3' }, affinities: [{ affinityAxis: 'PRODUCT_FAMILY', affinityCode: 'BARBELL' }] },
+      availability: { rfm: 'AVAILABLE', behavioralCluster: 'AVAILABLE', clv: 'AVAILABLE', commercialAffinity: 'AVAILABLE' },
     });
     expect(result.profile.provenance).toMatchObject({
       generatedAt: '2026-08-04T00:00:00.000Z',
@@ -98,7 +114,7 @@ describe('Customer Commercial Profile contract and composition', () => {
       rfm: { snapshotId: 'rfm-1', calculationVersion: 'rfm-v1' },
       behavioralCluster: { snapshotId: 'cluster-1', modelVersion: 'behavioral-kmeans-k4-v1' },
       clv: { snapshotId: 'clv-1', modelVersion: 'customer-clv-two-stage-cohort-v1' },
-      commercialAffinity: null,
+      commercialAffinity: { snapshotId: '3', calculationVersion: 'customer-commercial-affinity-v1' },
     });
     expect(JSON.stringify(result)).not.toContain('reliabilityBucket');
   });
@@ -114,6 +130,7 @@ describe('Customer Commercial Profile contract and composition', () => {
     expect(result.profile.behavioralCluster).toBeNull();
     expect(result.profile.clv).toBeNull();
     expect(result.profile.availability).toMatchObject({ behavioralCluster: 'NOT_IN_POPULATION', clv: 'UNAVAILABLE' });
+    expect(result.profile.availability.commercialAffinity).toBe('AVAILABLE');
   });
 
   it('returns an empty but valid profile when all analytical inputs are unavailable', async () => {
@@ -121,6 +138,7 @@ describe('Customer Commercial Profile contract and composition', () => {
       getCustomerRfm: vi.fn(async () => ({ status: 'degraded', customerId: 42, reason: 'rfm_unavailable', contractVersion: 'customer-rfm-runtime-v1' as const })),
       getCustomerCluster: vi.fn(async () => ({ status: 'degraded', customerId: 42, reason: 'cluster_unavailable', contractVersion: 'customer-cluster-runtime-v1' as const })),
       getCustomerClv: vi.fn(async () => ({ status: 'no_active_clv_snapshot', customerId: 42, error: 'NO_ACTIVE_CLV_SNAPSHOT' as const, contractVersion: 'customer-clv-runtime-v1' as const })),
+      getCustomerCommercialAffinity: vi.fn(async () => ({ status: 'unavailable', customerId: 42, availability: 'UNAVAILABLE' as const, affinity: null, reason: 'affinity_unavailable' as const, contractVersion: 'customer-commercial-affinity-runtime-v1' as const })),
     }).getByCustomerId({ customerId: 42 });
     expect(result.status).toBe('available');
     if (result.status !== 'available') return;
@@ -128,6 +146,17 @@ describe('Customer Commercial Profile contract and composition', () => {
     expect(result.profile.behavioralCluster).toBeNull();
     expect(result.profile.clv).toBeNull();
     expect(result.profile.availability).toMatchObject({ rfm: 'UNAVAILABLE', behavioralCluster: 'UNAVAILABLE', clv: 'UNAVAILABLE' });
+    expect(result.profile.availability.commercialAffinity).toBe('UNAVAILABLE');
+  });
+
+  it('maps a published snapshot with no customer rows to NOT_IN_POPULATION without synthetic affinities', async () => {
+    const result = await service({
+      getCustomerCommercialAffinity: vi.fn(async () => ({ status: 'not_in_population', customerId: 42, availability: 'NOT_IN_POPULATION' as const, affinity: null, contractVersion: 'customer-commercial-affinity-runtime-v1' as const })),
+    }).getByCustomerId({ customerId: 42 });
+    expect(result.status).toBe('available');
+    if (result.status !== 'available') return;
+    expect(result.profile.commercialAffinity).toBeNull();
+    expect(result.profile.availability.commercialAffinity).toBe('NOT_IN_POPULATION');
   });
 
   it('distinguishes a missing customer and bounds/deduplicates batch composition', async () => {

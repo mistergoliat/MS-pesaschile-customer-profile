@@ -15,7 +15,7 @@ const profileService = {
       behavioralCluster: null,
       clv: { expectedRevenueTaxIncl: '123456789012345678.123456', horizonMonths: 12, currencyIsoCode: 'CLP', estimateSupportLevel: 'SPARSE' as const },
       commercialAffinity: null,
-      availability: { rfm: 'NOT_IN_POPULATION' as const, behavioralCluster: 'UNAVAILABLE' as const, clv: 'AVAILABLE' as const, commercialAffinity: 'NOT_IMPLEMENTED' as const },
+      availability: { rfm: 'NOT_IN_POPULATION' as const, behavioralCluster: 'UNAVAILABLE' as const, clv: 'AVAILABLE' as const, commercialAffinity: 'UNAVAILABLE' as const },
       provenance: { generatedAt: '2026-08-04T00:00:00.000Z', oldestReferenceTime: '2026-08-03T00:00:00.000Z', newestReferenceTime: '2026-08-03T00:00:00.000Z', rfm: null, behavioralCluster: null, clv: { snapshotId: 'clv-1', referenceTime: '2026-08-03T00:00:00.000Z', modelVersion: 'customer-clv-two-stage-cohort-v1' }, commercialAffinity: null },
     },
   }),

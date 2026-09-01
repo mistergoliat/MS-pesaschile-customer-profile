@@ -73,6 +73,15 @@ import { createCustomerIntelligenceContextResolvers } from './application/custom
 import { createGetCustomerIntelligenceRow, type GetCustomerIntelligenceRow } from './application/customer-intelligence/get-customer-intelligence-row.js';
 import { createGetCustomerClv, getCustomerClvNotConfigured, type GetCustomerClv } from './application/customer-clv/get-customer-clv.js';
 import { createGetCustomerClvSnapshot, getCustomerClvSnapshotNotConfigured, type GetCustomerClvSnapshot } from './application/customer-clv/get-customer-clv-snapshot.js';
+import {
+  createGetCustomerCommercialAffinity,
+  getCustomerCommercialAffinityNotConfigured,
+  getCustomerCommercialAffinitySnapshotNotConfigured,
+  getCustomerCommercialAffinitiesNotConfigured,
+  type GetCustomerCommercialAffinity,
+  type GetCustomerCommercialAffinities,
+  type GetCustomerCommercialAffinitySnapshot,
+} from './application/customer-commercial-affinity/index.js';
 import { config } from './config.js';
 import {
   checkCrmReadiness,
@@ -108,6 +117,7 @@ import { createMysqlCustomerFeatureSnapshotReader } from './infrastructure/custo
 import { createMysqlSnapshotHeaderReader } from './infrastructure/customer-intelligence/mysql-snapshot-header-reader.js';
 import { createMysqlCustomerIntelligenceReader } from './infrastructure/customer-intelligence/mysql-customer-intelligence-reader.js';
 import { createMysqlCustomerClvSnapshotStore } from './infrastructure/clv/mysql-customer-clv-snapshot-store.js';
+import { createMysqlCustomerCommercialAffinitySnapshotStore } from './infrastructure/clv/mysql-customer-commercial-affinity-snapshot-store.js';
 import type { CustomerClvActiveSnapshotReader } from './application/customer-intelligence/ports.js';
 import { createMysqlAnalyticalQueryExecutor } from './infrastructure/customer-intelligence-query/mysql-analytical-query-executor.js';
 import { createConfiguredCustomerIntelligenceCopilotModel } from './infrastructure/customer-intelligence-copilot/index.js';
@@ -141,6 +151,9 @@ export type Bootstrap = {
   readonly getDashboardIntersection: GetDashboardIntersection;
   readonly getCustomerClv: GetCustomerClv;
   readonly getCustomerClvSnapshot: GetCustomerClvSnapshot;
+  readonly getCustomerCommercialAffinity: GetCustomerCommercialAffinity;
+  readonly getCustomerCommercialAffinities: GetCustomerCommercialAffinities;
+  readonly getCustomerCommercialAffinitySnapshot: GetCustomerCommercialAffinitySnapshot;
   readonly getCustomerIntelligenceRow: GetCustomerIntelligenceRow;
   readonly customerCommercialProfileService: CustomerCommercialProfileService;
   readonly answerCustomerIntelligenceQuestion: AnswerCustomerIntelligenceQuestion;
@@ -283,6 +296,9 @@ export function bootstrap(): Bootstrap {
   let getDashboardIntersection: GetDashboardIntersection = getDashboardIntersectionNotConfigured;
   let getCustomerClv: GetCustomerClv = getCustomerClvNotConfigured;
   let getCustomerClvSnapshot: GetCustomerClvSnapshot = getCustomerClvSnapshotNotConfigured;
+  let getCustomerCommercialAffinity: GetCustomerCommercialAffinity = getCustomerCommercialAffinityNotConfigured;
+  let getCustomerCommercialAffinities: GetCustomerCommercialAffinities = getCustomerCommercialAffinitiesNotConfigured;
+  let getCustomerCommercialAffinitySnapshot: GetCustomerCommercialAffinitySnapshot = getCustomerCommercialAffinitySnapshotNotConfigured;
   let getCustomerIntelligenceRow: GetCustomerIntelligenceRow = async () => ({
     status: 'degraded', reason: 'analytics_not_configured', contractVersion: 'customer-intelligence-read-model-v1',
   });
@@ -291,6 +307,10 @@ export function bootstrap(): Bootstrap {
     clvSnapshotReader = createMysqlCustomerClvSnapshotStore(getRfmSnapshotPool());
     getCustomerClv = createGetCustomerClv({ reader: clvSnapshotReader });
     getCustomerClvSnapshot = createGetCustomerClvSnapshot({ reader: clvSnapshotReader });
+    const affinityRuntime = createGetCustomerCommercialAffinity({ reader: createMysqlCustomerCommercialAffinitySnapshotStore(getRfmSnapshotPool()) });
+    getCustomerCommercialAffinity = affinityRuntime.getCustomerAffinity;
+    getCustomerCommercialAffinities = affinityRuntime.getCustomerAffinities;
+    getCustomerCommercialAffinitySnapshot = affinityRuntime.getSnapshot;
   }
 
   let answerCustomerIntelligenceQuestion: AnswerCustomerIntelligenceQuestion = async () => ({
@@ -422,6 +442,8 @@ export function bootstrap(): Bootstrap {
     getCustomerRfm: getCustomerRfmByCustomerId,
     getCustomerCluster,
     getCustomerClv,
+    getCustomerCommercialAffinity,
+    getCustomerCommercialAffinities,
     clock: systemClock,
   });
 
@@ -444,6 +466,9 @@ export function bootstrap(): Bootstrap {
     getDashboardIntersection,
     getCustomerClv,
     getCustomerClvSnapshot,
+    getCustomerCommercialAffinity,
+    getCustomerCommercialAffinities,
+    getCustomerCommercialAffinitySnapshot,
     getCustomerIntelligenceRow,
     customerCommercialProfileService,
     answerCustomerIntelligenceQuestion,

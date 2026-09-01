@@ -183,7 +183,14 @@ const SELECT_ACTIVE_ROWS_SQL = `
          r.last_evidence_at AS lastEvidenceAt, r.explicit_evidence_coverage AS explicitEvidenceCoverage
     FROM customer_commercial_affinity_snapshot_row r
     INNER JOIN customer_commercial_affinity_snapshot s ON s.id = r.snapshot_id
-   WHERE s.status = 'published'`;
+   WHERE s.status = 'published'
+     AND s.id = (
+       SELECT active.id
+         FROM customer_commercial_affinity_snapshot active
+        WHERE active.status = 'published'
+        ORDER BY active.published_at DESC, active.id DESC
+        LIMIT 1
+     )`;
 
 async function insertBuildingSnapshot(connection: PoolConnection, header: CustomerCommercialAffinitySnapshotHeader): Promise<number> {
   const statement = buildBuildingSnapshotInsertStatement(header);

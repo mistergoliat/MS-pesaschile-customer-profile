@@ -1,17 +1,17 @@
+import type { CustomerCommercialAffinityReadModel } from '../customer-commercial-affinity/index.js';
+
 export const CUSTOMER_COMMERCIAL_PROFILE_VERSION = 'customer-commercial-profile-v1';
 export const CUSTOMER_COMMERCIAL_PROFILE_IDENTITY_AUTHORITY = 'prestashop_customer';
 
 export type CustomerCommercialProfileAvailabilityState =
   | 'AVAILABLE'
   | 'NOT_IN_POPULATION'
-  | 'UNAVAILABLE'
-  | 'NOT_IMPLEMENTED';
+  | 'UNAVAILABLE';
 
 export const CUSTOMER_COMMERCIAL_PROFILE_AVAILABILITY_STATES: readonly CustomerCommercialProfileAvailabilityState[] = [
   'AVAILABLE',
   'NOT_IN_POPULATION',
   'UNAVAILABLE',
-  'NOT_IMPLEMENTED',
 ];
 
 export type CustomerCommercialProfileRfm = {
@@ -58,6 +58,12 @@ export type CustomerCommercialProfileClvProvenance = {
   readonly modelVersion: string;
 };
 
+export type CustomerCommercialProfileCommercialAffinityProvenance = {
+  readonly snapshotId: string;
+  readonly referenceTime: string;
+  readonly calculationVersion: string;
+};
+
 export type CustomerCommercialProfileProvenance = {
   readonly generatedAt: string;
   readonly oldestReferenceTime: string | null;
@@ -65,14 +71,14 @@ export type CustomerCommercialProfileProvenance = {
   readonly rfm: CustomerCommercialProfileRfmProvenance | null;
   readonly behavioralCluster: CustomerCommercialProfileClusterProvenance | null;
   readonly clv: CustomerCommercialProfileClvProvenance | null;
-  readonly commercialAffinity: null;
+  readonly commercialAffinity: CustomerCommercialProfileCommercialAffinityProvenance | null;
 };
 
 export type CustomerCommercialProfileAvailability = {
   readonly rfm: CustomerCommercialProfileAvailabilityState;
   readonly behavioralCluster: CustomerCommercialProfileAvailabilityState;
   readonly clv: CustomerCommercialProfileAvailabilityState;
-  readonly commercialAffinity: 'NOT_IMPLEMENTED';
+  readonly commercialAffinity: CustomerCommercialProfileAvailabilityState;
 };
 
 export type CustomerCommercialProfile = {
@@ -81,8 +87,7 @@ export type CustomerCommercialProfile = {
   readonly rfm: CustomerCommercialProfileRfm | null;
   readonly behavioralCluster: CustomerCommercialProfileCluster | null;
   readonly clv: CustomerCommercialProfileClv | null;
-  readonly commercialAffinity: null;
+  readonly commercialAffinity: CustomerCommercialAffinityReadModel | null;
   readonly availability: CustomerCommercialProfileAvailability;
   readonly provenance: CustomerCommercialProfileProvenance;
 };
-

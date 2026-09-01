@@ -4,6 +4,7 @@ import type { GetCustomerRfmByCustomerIdResult } from '../../domain/customer-rfm
 import type { GetCustomerCluster } from '../customer-clustering/get-customer-cluster.js';
 import type { GetCustomerClusterResult } from '../../domain/customer-clustering/index.js';
 import type { GetCustomerClv, GetCustomerClvResult } from '../customer-clv/get-customer-clv.js';
+import type { GetCustomerCommercialAffinity, GetCustomerCommercialAffinities, CustomerCommercialAffinityLookupResult } from '../customer-commercial-affinity/index.js';
 import {
   CUSTOMER_COMMERCIAL_PROFILE_IDENTITY_AUTHORITY,
   CUSTOMER_COMMERCIAL_PROFILE_VERSION,
@@ -12,6 +13,7 @@ import {
   type CustomerCommercialProfileClusterProvenance,
   type CustomerCommercialProfileClvProvenance,
   type CustomerCommercialProfileRfmProvenance,
+  type CustomerCommercialProfileCommercialAffinityProvenance,
 } from '../../domain/customer-commercial-profile/index.js';
 
 export const CUSTOMER_COMMERCIAL_PROFILE_MAX_BATCH_SIZE = 100;
@@ -55,9 +57,11 @@ export function createCustomerCommercialProfileService(deps: {
   readonly getCustomerRfm: GetCustomerRfmByCustomerId;
   readonly getCustomerCluster: GetCustomerCluster;
   readonly getCustomerClv: GetCustomerClv;
+  readonly getCustomerCommercialAffinity?: GetCustomerCommercialAffinity;
+  readonly getCustomerCommercialAffinities?: GetCustomerCommercialAffinities;
   readonly clock?: { now(): Date };
 }): CustomerCommercialProfileService {
-  const getByCustomerId: GetCustomerCommercialProfile = async ({ customerId }) => {
+  const compose = async (customerId: number, affinityOverride?: CustomerCommercialAffinityLookupResult): Promise<GetCustomerCommercialProfileResult> => {
     let identityResult: Awaited<ReturnType<ResolveCustomerIdentity>>;
     try {
       identityResult = await deps.resolveCustomerIdentity(customerId);
@@ -69,17 +73,21 @@ export function createCustomerCommercialProfileService(deps: {
       return { status: 'customer_not_found', customerId, contractVersion: CUSTOMER_COMMERCIAL_PROFILE_VERSION };
     }
 
-    const [rfmSettled, clusterSettled, clvSettled] = await Promise.allSettled([
+    const [rfmSettled, clusterSettled, clvSettled, affinitySettled] = await Promise.allSettled([
       deps.getCustomerRfm({ customerId }),
       deps.getCustomerCluster({ customerId }),
       deps.getCustomerClv({ customerId }),
+      affinityOverride === undefined
+        ? (deps.getCustomerCommercialAffinity?.({ customerId }) ?? Promise.resolve(unavailableAffinityResult(customerId)))
+        : Promise.resolve(affinityOverride),
     ]);
 
     const rfm = rfmSettled.status === 'fulfilled' ? mapRfm(rfmSettled.value) : unavailableRfm();
     const cluster = clusterSettled.status === 'fulfilled' ? mapCluster(clusterSettled.value) : unavailableCluster();
     const clv = clvSettled.status === 'fulfilled' ? mapClv(clvSettled.value) : unavailableClv();
+    const affinity = affinitySettled.status === 'fulfilled' ? mapAffinity(affinitySettled.value) : unavailableAffinity();
     const generatedAt = (deps.clock?.now() ?? new Date()).toISOString();
-    const referenceTimes = [rfm.provenance?.referenceTime, cluster.provenance?.referenceTime, clv.provenance?.referenceTime]
+    const referenceTimes = [rfm.provenance?.referenceTime, cluster.provenance?.referenceTime, clv.provenance?.referenceTime, affinity.provenance?.referenceTime]
       .filter((value): value is string => value !== null && value !== undefined)
       .sort();
 
@@ -89,12 +97,12 @@ export function createCustomerCommercialProfileService(deps: {
       rfm: rfm.value,
       behavioralCluster: cluster.value,
       clv: clv.value,
-      commercialAffinity: null,
+      commercialAffinity: affinity.value,
       availability: {
         rfm: rfm.availability,
         behavioralCluster: cluster.availability,
         clv: clv.availability,
-        commercialAffinity: 'NOT_IMPLEMENTED',
+        commercialAffinity: affinity.availability,
       },
       provenance: {
         generatedAt,
@@ -103,19 +111,25 @@ export function createCustomerCommercialProfileService(deps: {
         rfm: rfm.provenance,
         behavioralCluster: cluster.provenance,
         clv: clv.provenance,
-        commercialAffinity: null,
+        commercialAffinity: affinity.provenance,
       },
     };
 
     return { status: 'available', customerId, profile, contractVersion: CUSTOMER_COMMERCIAL_PROFILE_VERSION };
   };
 
+  const getByCustomerId: GetCustomerCommercialProfile = ({ customerId }) => compose(customerId);
+
   const getByCustomerIds: GetCustomerCommercialProfileBatch = async ({ customerIds }) => {
     if (customerIds.length > CUSTOMER_COMMERCIAL_PROFILE_MAX_BATCH_SIZE) {
       throw new Error(`Customer Commercial Profile batch exceeds maximum size of ${CUSTOMER_COMMERCIAL_PROFILE_MAX_BATCH_SIZE}`);
     }
     const uniqueCustomerIds = [...new Set(customerIds)];
-    return Promise.all(uniqueCustomerIds.map((customerId) => getByCustomerId({ customerId })));
+    const affinityResults = deps.getCustomerCommercialAffinities
+      ? await deps.getCustomerCommercialAffinities({ customerIds: uniqueCustomerIds })
+      : [];
+    const affinityByCustomerId = new Map(affinityResults.map((result) => [result.customerId, result]));
+    return Promise.all(uniqueCustomerIds.map((customerId) => compose(customerId, deps.getCustomerCommercialAffinities ? affinityByCustomerId.get(customerId) : undefined)));
   };
 
   return { getByCustomerId, getByCustomerIds };
@@ -187,4 +201,28 @@ function unavailableCluster(): MappedComponent<CustomerCommercialProfile['behavi
 }
 function unavailableClv(): MappedComponent<CustomerCommercialProfile['clv'], CustomerCommercialProfileClvProvenance> {
   return { value: null, availability: 'UNAVAILABLE', provenance: null };
+}
+
+function mapAffinity(result: CustomerCommercialAffinityLookupResult): MappedComponent<CustomerCommercialProfile['commercialAffinity'], CustomerCommercialProfileCommercialAffinityProvenance> {
+  if (result.status === 'available') {
+    return {
+      value: result.affinity,
+      availability: 'AVAILABLE',
+      provenance: {
+        snapshotId: result.affinity.snapshot.snapshotId,
+        referenceTime: result.affinity.snapshot.referenceTime,
+        calculationVersion: result.affinity.snapshot.calculationVersion,
+      },
+    };
+  }
+  if (result.status === 'not_in_population') return { value: null, availability: 'NOT_IN_POPULATION', provenance: null };
+  return unavailableAffinity();
+}
+
+function unavailableAffinity(): MappedComponent<CustomerCommercialProfile['commercialAffinity'], CustomerCommercialProfileCommercialAffinityProvenance> {
+  return { value: null, availability: 'UNAVAILABLE', provenance: null };
+}
+
+function unavailableAffinityResult(customerId: number): CustomerCommercialAffinityLookupResult {
+  return { status: 'unavailable', customerId, availability: 'UNAVAILABLE', affinity: null, reason: 'affinity_unavailable', contractVersion: 'customer-commercial-affinity-runtime-v1' };
 }
