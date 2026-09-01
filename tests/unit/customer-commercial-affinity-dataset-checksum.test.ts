@@ -13,6 +13,7 @@ const semanticLineage: CustomerCommercialAffinitySemanticSnapshotInput = {
   schemaVersion: '1',
   ontologyVersion: 'commercial-product-ontology-v3',
   ontologyHash: 'b'.repeat(64),
+  classifierVersion: 'product-semantic-classifier-v1',
   sourceSemanticChecksum: 'c'.repeat(64),
   consumerNormalizedChecksum: 'd'.repeat(64),
 };
@@ -66,10 +67,10 @@ describe('customer commercial affinity canonical dataset checksum', () => {
       referenceTime: artifact.manifest.referenceTime,
       semanticSnapshot: historicalMetadata,
       rows: artifact.rows,
-    })).toBe('9fa39ad2655c368c0515067cea522aeef18a516c64d206211691d30414d73c4e');
+    })).toBe('e2d82e000357c9d9c25c9e8014e8219af5f7db49d8ad9d757d2fe353828cbd55');
   });
 
-  it('ignores metadata fields outside the frozen historical contract', () => {
+  it('ignores materialization metadata outside the portable semantic lineage', () => {
     const minimalChecksum = calculateCustomerCommercialAffinityDatasetChecksum({
       referenceTime,
       semanticSnapshot: semanticLineage,
@@ -79,6 +80,10 @@ describe('customer commercial affinity canonical dataset checksum', () => {
       referenceTime,
       semanticSnapshot: {
         ...semanticLineage,
+        generatedAt: '2026-08-31T16:51:22.563Z',
+        sourceProductCount: 2011,
+        recordCount: 2011,
+        classificationCounts: { CLASSIFIED: 1281, PARTIALLY_CLASSIFIED: 400, OTHER: 317, EXCLUDED_NON_PRODUCT: 13, NEEDS_REVIEW: 0 },
         futureMetadataField: 'must-not-affect-checksum',
       },
       rows,
@@ -87,7 +92,7 @@ describe('customer commercial affinity canonical dataset checksum', () => {
     expect(extendedChecksum).toBe(minimalChecksum);
   });
 
-  it('changes when a frozen historical metadata field changes', () => {
+  it('ignores generatedAt, sourceProductCount, recordCount, and classificationCounts changes', () => {
     const baseline = calculateCustomerCommercialAffinityDatasetChecksum({ referenceTime, semanticSnapshot: {
       ...semanticLineage,
       generatedAt: '2026-08-29T20:36:33.148Z',
@@ -96,15 +101,45 @@ describe('customer commercial affinity canonical dataset checksum', () => {
       recordCount: 2011,
       classificationCounts: { CLASSIFIED: 1, PARTIALLY_CLASSIFIED: 0, OTHER: 0, EXCLUDED_NON_PRODUCT: 0, NEEDS_REVIEW: 0 },
     }, rows });
-    const changed = calculateCustomerCommercialAffinityDatasetChecksum({ referenceTime, semanticSnapshot: {
+
+    expect(calculateCustomerCommercialAffinityDatasetChecksum({ referenceTime, semanticSnapshot: {
+      ...semanticLineage,
+      generatedAt: '2026-09-01T12:00:00.000Z',
+      classifierVersion: 'product-semantic-classifier-v1',
+      sourceProductCount: 9999,
+      recordCount: 9998,
+      classificationCounts: { CLASSIFIED: 0, PARTIALLY_CLASSIFIED: 1, OTHER: 2, EXCLUDED_NON_PRODUCT: 3, NEEDS_REVIEW: 4 },
+    }, rows })).toBe(baseline);
+  });
+
+  it('changes when any canonical semantic lineage field changes', () => {
+    const baseline = calculateCustomerCommercialAffinityDatasetChecksum({ referenceTime, semanticSnapshot: {
       ...semanticLineage,
       generatedAt: '2026-08-29T20:36:33.148Z',
       classifierVersion: 'product-semantic-classifier-v2',
-      sourceProductCount: 2011,
-      recordCount: 2011,
-      classificationCounts: { CLASSIFIED: 1, PARTIALLY_CLASSIFIED: 0, OTHER: 0, EXCLUDED_NON_PRODUCT: 0, NEEDS_REVIEW: 0 },
     }, rows });
 
-    expect(changed).not.toBe(baseline);
+    expect(calculateCustomerCommercialAffinityDatasetChecksum({ referenceTime, semanticSnapshot: {
+      ...semanticLineage,
+      classifierVersion: 'product-semantic-classifier-v3',
+    }, rows })).not.toBe(baseline);
+    expect(calculateCustomerCommercialAffinityDatasetChecksum({ referenceTime, semanticSnapshot: {
+      ...semanticLineage,
+      ontologyHash: 'e'.repeat(64),
+    }, rows })).not.toBe(baseline);
+    expect(calculateCustomerCommercialAffinityDatasetChecksum({ referenceTime, semanticSnapshot: {
+      ...semanticLineage,
+      sourceSemanticChecksum: 'f'.repeat(64),
+    }, rows })).not.toBe(baseline);
+    expect(calculateCustomerCommercialAffinityDatasetChecksum({ referenceTime, semanticSnapshot: {
+      ...semanticLineage,
+      consumerNormalizedChecksum: '1'.repeat(64),
+    }, rows })).not.toBe(baseline);
+  });
+
+  it('changes when an affinity row changes and ignores row input order', () => {
+    const baseline = calculateCustomerCommercialAffinityDatasetChecksum({ referenceTime, semanticSnapshot: semanticLineage, rows });
+    expect(calculateCustomerCommercialAffinityDatasetChecksum({ referenceTime, semanticSnapshot: semanticLineage, rows: [...rows].reverse() })).toBe(baseline);
+    expect(calculateCustomerCommercialAffinityDatasetChecksum({ referenceTime, semanticSnapshot: semanticLineage, rows: [{ ...rows[0]!, score: 0.51 }, rows[1]!] })).not.toBe(baseline);
   });
 });

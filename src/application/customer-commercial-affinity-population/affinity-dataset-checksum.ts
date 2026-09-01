@@ -6,37 +6,26 @@ export type CustomerCommercialAffinityCanonicalSemanticMetadata = Pick<
   ProductSemanticSnapshotConsumerMetadata,
   | 'snapshotId'
   | 'schemaVersion'
-  | 'generatedAt'
   | 'ontologyVersion'
   | 'ontologyHash'
   | 'classifierVersion'
-  | 'sourceProductCount'
-  | 'recordCount'
-  | 'classificationCounts'
   | 'sourceSemanticChecksum'
   | 'consumerNormalizedChecksum'
 >;
 
-export type CustomerCommercialAffinitySemanticSnapshotInput = Pick<
-  CustomerCommercialAffinityCanonicalSemanticMetadata,
-  'snapshotId' | 'schemaVersion' | 'ontologyVersion' | 'ontologyHash' | 'sourceSemanticChecksum' | 'consumerNormalizedChecksum'
-> & Partial<Omit<CustomerCommercialAffinityCanonicalSemanticMetadata, 'snapshotId' | 'schemaVersion' | 'ontologyVersion' | 'ontologyHash' | 'sourceSemanticChecksum' | 'consumerNormalizedChecksum'>>;
+export type CustomerCommercialAffinitySemanticSnapshotInput = CustomerCommercialAffinityCanonicalSemanticMetadata;
 
 export function calculateCustomerCommercialAffinityDatasetChecksum<TSemanticSnapshot extends CustomerCommercialAffinitySemanticSnapshotInput>(input: {
   readonly referenceTime: string;
   readonly semanticSnapshot: TSemanticSnapshot;
   readonly rows: readonly CustomerCommercialAffinityRow[];
 }): string {
-  const canonicalSemanticMetadata: CustomerCommercialAffinitySemanticSnapshotInput = {
+  const canonicalSemanticMetadata: CustomerCommercialAffinityCanonicalSemanticMetadata = {
     snapshotId: input.semanticSnapshot.snapshotId,
     schemaVersion: input.semanticSnapshot.schemaVersion,
-    generatedAt: input.semanticSnapshot.generatedAt,
     ontologyVersion: input.semanticSnapshot.ontologyVersion,
     ontologyHash: input.semanticSnapshot.ontologyHash,
     classifierVersion: input.semanticSnapshot.classifierVersion,
-    sourceProductCount: input.semanticSnapshot.sourceProductCount,
-    recordCount: input.semanticSnapshot.recordCount,
-    classificationCounts: input.semanticSnapshot.classificationCounts,
     sourceSemanticChecksum: input.semanticSnapshot.sourceSemanticChecksum,
     consumerNormalizedChecksum: input.semanticSnapshot.consumerNormalizedChecksum,
   };

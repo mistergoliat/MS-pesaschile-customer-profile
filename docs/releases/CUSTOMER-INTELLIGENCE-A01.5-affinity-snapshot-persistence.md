@@ -110,7 +110,7 @@ customers with affinity = 43,284
 customers without affinity = 1,913
 PRODUCT_FAMILY / DISCIPLINE / USE_CONTEXT = 81,853 / 7,841 / 13,277
 datasetChecksum = 6cb645ea5c78890f433943c8e4f2f7505579295b7388326939bb502b962e1520
-affinityDatasetChecksum = 9fa39ad2655c368c0515067cea522aeef18a516c64d206211691d30414d73c4e
+affinityDatasetChecksum = e2d82e000357c9d9c25c9e8014e8219af5f7db49d8ad9d757d2fe353828cbd55
 ```
 
 The dry run also reproduced source watermark `id_order=81685`, 133 source queries, 66 batches,
@@ -147,14 +147,15 @@ semantics:
   `status` is the literal `'building'`; the statement now has 25 placeholders and 26 SQL values.
   The surplus placeholder was removed. The transaction rollback therefore prevents partial
   snapshot headers or rows after a failed build.
-- Hotfix 2 restored the canonical A01.4 affinity checksum
-  `9fa39ad2655c368c0515067cea522aeef18a516c64d206211691d30414d73c4e`. A01.5 had incorrectly
-  produced `00e75a1fd6b39a2a5486116907b95faba00fcc866cb65cbea16177e0512b7513` after exposing an
-  implicit runtime contract. A01.4's compile-time metadata type was a reduced TypeScript `Pick`,
-  but the runtime metadata object retained additional properties, and those properties participated
-  in the validated historical checksum. A01.5.1 freezes that exact historical metadata payload
-  explicitly in one shared checksum function, so future unrelated metadata additions cannot cause
-  accidental drift. The canonical rows remain sorted by customer, axis, and code.
+- Hotfix 2 isolated a portability defect in the historical checksum. The original A01.4.1 value
+  `9fa39ad2655c368c0515067cea522aeef18a516c64d206211691d30414d73c4e` became
+  `00e75a1fd6b39a2a5486116907b95faba00fcc866cb65cbea16177e0512b7513` on EC2, while the
+  row-only checksum and every per-field row checksum were identical across environments. The
+  cause was `generatedAt` entering dataset identity through runtime materialization metadata.
+  A01.5.2 now hashes only deterministic semantic lineage: `snapshotId`, `schemaVersion`,
+  `ontologyVersion`, `ontologyHash`, `classifierVersion`, `sourceSemanticChecksum`, and
+  `consumerNormalizedChecksum`, plus rows sorted by customer, axis, and code. The historical
+  hashes remain forensic provenance, not canonical identities.
 
 The dataset checksum, scoring, affinity rows, population counts, purchase extraction, and semantic
 classification remain unchanged. No production runtime behavior changed.

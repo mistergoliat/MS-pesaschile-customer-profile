@@ -44,6 +44,7 @@ function input(purchases: readonly CustomerAffinityPurchaseEvidence[], facts: re
         schemaVersion: '1',
         ontologyVersion: 'commercial-product-ontology-v3',
         ontologyHash: 'f'.repeat(64),
+        classifierVersion: 'product-semantic-classifier-v1',
         sourceSemanticChecksum: 'b'.repeat(64),
         consumerNormalizedChecksum: 'c'.repeat(64),
       },

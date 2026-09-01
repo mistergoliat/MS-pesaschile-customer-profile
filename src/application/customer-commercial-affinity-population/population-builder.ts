@@ -27,7 +27,7 @@ export const CUSTOMER_COMMERCIAL_AFFINITY_ORDER_POLICY_VERSION = 'valid-positive
 
 type SnapshotLineage = Pick<
   ProductSemanticSnapshotConsumerMetadata,
-  'snapshotId' | 'schemaVersion' | 'ontologyVersion' | 'ontologyHash' | 'sourceSemanticChecksum' | 'consumerNormalizedChecksum'
+  'snapshotId' | 'schemaVersion' | 'ontologyVersion' | 'ontologyHash' | 'classifierVersion' | 'sourceSemanticChecksum' | 'consumerNormalizedChecksum'
 >;
 
 export type CustomerCommercialAffinityPopulationInput = {
