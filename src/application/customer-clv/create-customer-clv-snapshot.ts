@@ -62,6 +62,7 @@ export interface CustomerClvSnapshotStore {
   publishSnapshot(input: CustomerClvProductionSnapshotInput): Promise<CustomerClvPersistedSnapshotResult>;
   getActiveSnapshotMetadata(): Promise<CustomerClvProductionSnapshotHeader | null>;
   getCustomerClv(snapshotId: string, customerId: number): Promise<CustomerClvSnapshotRow | null>;
+  getCustomerClvBatch?(snapshotId: string, customerIds: readonly number[]): Promise<readonly CustomerClvSnapshotRow[]>;
   hasCustomer(snapshotId: string, customerId: number): Promise<boolean>;
   getRows(snapshotId: string, limit: number, offset: number): Promise<readonly CustomerClvSnapshotRow[]>;
 }

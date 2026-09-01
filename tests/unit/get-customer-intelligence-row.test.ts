@@ -91,6 +91,33 @@ describe('createGetCustomerIntelligenceRow — task Section 47 five cases', () =
     }
   });
 
+  it('composes a CLV row independently and preserves its decimal/lineage fields', async () => {
+    const resolved = {
+      ...AVAILABLE_CONTEXT,
+      resolvedIds: {
+        ...AVAILABLE_CONTEXT.resolvedIds,
+        clvSnapshotId: '1', clvSnapshotKey: 'clv-snapshot-1', clvReferenceTime: '2026-08-17T00:00:00.000Z',
+        clvGeneratedAt: '2026-08-17T01:00:00.000Z', clvModelVersion: 'customer-clv-two-stage-cohort-v1',
+        clvEstimatorPolicyVersion: 'estimator-v1', clvSourceAvailableDataThrough: '2026-08-16T23:59:59.000Z',
+        clvHorizonMonths: 12, clvCurrencyIsoCode: 'CLP',
+      },
+    };
+    const clvSnapshotReader = {
+      getActiveSnapshotMetadata: vi.fn(),
+      getCustomerClv: vi.fn(async () => ({ customerId: 22066, expectedRevenueTaxIncl: '999999999999.123456', expectedOrders: '2.500000', estimateSupportLevel: 'SPARSE' as const })),
+    };
+    const intelligenceReader: CustomerIntelligenceReader = { getRow: vi.fn(async () => rowFixture()), listRows: vi.fn(), getCoverageCounts: vi.fn() };
+    const getRow = createGetCustomerIntelligenceRow({ resolveCurrent: async () => resolved, resolveForFeatureSnapshot: vi.fn(), intelligenceReader, clvSnapshotReader });
+    const result = await getRow({ featureSnapshotId: null, prestashopCustomerId: 22066 });
+    expect(result.status).toBe('available');
+    if (result.status === 'available') {
+      expect(result.row.clv?.expectedRevenueTaxIncl).toBe('999999999999.123456');
+      expect(result.row.clv?.estimateSupportLevel).toBe('SPARSE');
+      expect(result.row.clv?.snapshot.snapshotId).toBe('1');
+      expect(result.row.clv?.snapshot.referenceTime).toBe('2026-08-17T00:00:00.000Z');
+    }
+  });
+
   it('commercial + RFM only (not in clustering population)', async () => {
     const intelligenceReader: CustomerIntelligenceReader = {
       getRow: vi.fn(async () => rowFixture({ cluster: null })),

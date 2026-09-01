@@ -7,6 +7,8 @@ import {
 import { AnalyticsSchemaIncompatibleError, AnalyticsTimeoutError, AnalyticsUnavailableError } from '../customer-profile/errors.js';
 import type { CustomerFeatureSnapshotReader, StoredCustomerFeatureSnapshot } from '../customer-analytics/ports.js';
 import type { CustomerIntelligenceReader, ResolvedCustomerIntelligenceSnapshotIds, SnapshotHeaderReader } from './ports.js';
+import type { CustomerClvActiveSnapshotReader } from './ports.js';
+import { isCustomerClvMalformedSnapshotError, isCustomerClvReadInfrastructureError } from '../customer-clv/errors.js';
 
 export type ResolveCustomerIntelligenceContextResult =
   | { readonly status: 'available'; readonly context: CustomerIntelligenceSnapshotContext; readonly resolvedIds: ResolvedCustomerIntelligenceSnapshotIds }
@@ -29,6 +31,7 @@ export function createCustomerIntelligenceContextResolvers(deps: {
   readonly featureSnapshotReader: CustomerFeatureSnapshotReader;
   readonly snapshotHeaderReader: SnapshotHeaderReader;
   readonly intelligenceReader: CustomerIntelligenceReader;
+  readonly clvSnapshotReader?: CustomerClvActiveSnapshotReader;
 }): {
   readonly resolveCurrent: ResolveCurrentCustomerIntelligenceContext;
   readonly resolveForFeatureSnapshot: ResolveCustomerIntelligenceContextForFeatureSnapshot;
@@ -40,6 +43,15 @@ export function createCustomerIntelligenceContextResolvers(deps: {
       deps.snapshotHeaderReader.getPublishedRfmSnapshotHeaders(),
       deps.snapshotHeaderReader.getPublishedClusterSnapshotHeaders(),
     ]);
+    // CLV is independent from the feature/RFM/cluster coverage universe. A missing or
+    // unavailable CLV snapshot therefore degrades only the CLV block, never the existing
+    // Customer Intelligence response.
+    const clvHeader = deps.clvSnapshotReader === undefined
+      ? undefined
+      : await deps.clvSnapshotReader.getActiveSnapshotMetadata().catch((error) => {
+          if (isCustomerClvMalformedSnapshotError(error) || isCustomerClvReadInfrastructureError(error)) return null;
+          throw error;
+        });
     const rfmHeader = selectLatestSnapshotAtOrBefore(rfmHeaders, featureReferenceTime);
     const clusterHeader = selectLatestSnapshotAtOrBefore(clusterHeaders, featureReferenceTime);
 
@@ -55,6 +67,19 @@ export function createCustomerIntelligenceContextResolvers(deps: {
       clusterReferenceTime: clusterHeader?.referenceTime ?? null,
       clusterModelId: clusterHeader?.modelId ?? null,
       clusterModelVersion: clusterHeader?.modelVersion ?? null,
+      ...(deps.clvSnapshotReader === undefined
+        ? {}
+        : {
+            clvSnapshotId: clvHeader?.snapshotId ?? null,
+            clvSnapshotKey: clvHeader?.snapshotKey ?? null,
+            clvReferenceTime: clvHeader?.referenceTime ?? null,
+            clvGeneratedAt: clvHeader?.generatedAt ?? null,
+            clvModelVersion: clvHeader?.modelVersion ?? null,
+            clvEstimatorPolicyVersion: clvHeader?.estimatorPolicyVersion ?? null,
+            clvSourceAvailableDataThrough: clvHeader?.sourceAvailableDataThrough ?? null,
+            clvHorizonMonths: clvHeader?.horizonMonths ?? null,
+            clvCurrencyIsoCode: clvHeader?.currencyIsoCode ?? null,
+          }),
     };
 
     const counts = await deps.intelligenceReader.getCoverageCounts(resolvedIds);
@@ -78,6 +103,22 @@ export function createCustomerIntelligenceContextResolvers(deps: {
             modelVersion: clusterHeader.modelVersion,
           }
         : null,
+      ...(deps.clvSnapshotReader === undefined
+        ? {}
+        : {
+            clvSnapshot: clvHeader
+              ? {
+                  snapshotId: clvHeader.snapshotId!,
+                  snapshotKey: clvHeader.snapshotKey,
+                  referenceTime: clvHeader.referenceTime,
+                  generatedAt: clvHeader.generatedAt,
+                  modelVersion: clvHeader.modelVersion,
+                  estimatorPolicyVersion: clvHeader.estimatorPolicyVersion,
+                  sourceAvailableDataThrough: clvHeader.sourceAvailableDataThrough,
+                  horizonMonths: clvHeader.horizonMonths,
+                }
+              : null,
+          }),
       population,
       contractVersion: CUSTOMER_INTELLIGENCE_READ_MODEL_VERSION,
     };

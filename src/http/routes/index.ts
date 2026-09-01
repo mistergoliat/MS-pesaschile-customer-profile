@@ -7,6 +7,12 @@ import type { GetCustomerPurchasedProducts } from '../../application/customer-pu
 import type { GetCustomerRfm } from '../../application/customer-rfm/get-customer-rfm.js';
 import type { GetCustomerRfmByCustomerId } from '../../application/customer-rfm/get-customer-rfm-by-customer-id.js';
 import type { GetCustomerCluster } from '../../application/customer-clustering/get-customer-cluster.js';
+import type { GetCustomerClv, GetCustomerClvResult } from '../../application/customer-clv/get-customer-clv.js';
+import {
+  CUSTOMER_CLV_RUNTIME_CONTRACT_VERSION,
+} from '../../application/customer-clv/get-customer-clv.js';
+import type { GetCustomerClvSnapshot, GetCustomerClvSnapshotResult } from '../../application/customer-clv/get-customer-clv-snapshot.js';
+import type { GetCustomerIntelligenceRow, GetCustomerIntelligenceRowResult } from '../../application/customer-intelligence/get-customer-intelligence-row.js';
 import type { GetClusterSnapshotSummary } from '../../application/customer-clustering/get-cluster-snapshot-summary.js';
 import type { GetRfmClusterCrossTab } from '../../application/customer-clustering/get-rfm-cluster-cross-tab.js';
 import type { GetDashboardContext } from '../../application/customer-intelligence-dashboard/get-dashboard-context.js';
@@ -163,6 +169,9 @@ export type RouteDependencies = {
   // (customerId = ps_customer.id_customer), latest-published-snapshot only. See
   // docs/releases/CP-R2-T02-behavioral-clustering-productionization.md.
   readonly getCustomerCluster: GetCustomerCluster;
+  readonly getCustomerClv?: GetCustomerClv;
+  readonly getCustomerClvSnapshot?: GetCustomerClvSnapshot;
+  readonly getCustomerIntelligenceRow?: GetCustomerIntelligenceRow;
   // Clustering analytics/observability (CP-R2-T03): read-only assembly over already-published
   // snapshots/profiles, local MariaDB only — never recomputes, never touches PrestaShop. See
   // docs/releases/CP-R2-T03-clustering-analytics-observability.md.
@@ -715,6 +724,89 @@ export function buildRoutes(deps: RouteDependencies): Router {
     }
   });
 
+  router.get('/v1/customers/:customerId/clv', async (request: Request, response: Response) => {
+    const customerId = parseCustomerIdFromParams(request.params);
+    if (customerId === null) {
+      response.status(400).json({ error: 'invalid_customer_id' });
+      return;
+    }
+    if (Object.keys(request.query).length > 0) {
+      response.status(400).json({ error: 'unsupported_query_params' });
+      return;
+    }
+    if (request.body !== undefined) {
+      response.status(400).json({ error: 'unsupported_body' });
+      return;
+    }
+    if (!deps.getCustomerClv) {
+      response.status(503).json({ error: 'clv_not_configured' });
+      return;
+    }
+
+    const startedAt = Date.now();
+    try {
+      const result = await deps.getCustomerClv({ customerId });
+      logCustomerClvLookup(customerId, result, Date.now() - startedAt);
+      response.status(statusForCustomerClvResult(result)).json(result);
+    } catch (error) {
+      console.error({ event: 'customer_clv_request_failed', customerId, endpoint: 'clv', contractVersion: CUSTOMER_CLV_RUNTIME_CONTRACT_VERSION, durationMs: Date.now() - startedAt, errorType: classifyErrorForLog(error) });
+      response.status(500).json({ error: 'internal_error' });
+    }
+  });
+
+  router.get('/v1/clv/snapshot', async (request: Request, response: Response) => {
+    if (Object.keys(request.query).length > 0) {
+      response.status(400).json({ error: 'unsupported_query_params' });
+      return;
+    }
+    if (request.body !== undefined) {
+      response.status(400).json({ error: 'unsupported_body' });
+      return;
+    }
+    if (!deps.getCustomerClvSnapshot) {
+      response.status(503).json({ error: 'clv_not_configured' });
+      return;
+    }
+    const startedAt = Date.now();
+    try {
+      const result = await deps.getCustomerClvSnapshot();
+      console.info({ endpoint: 'clv-snapshot', contractVersion: CUSTOMER_CLV_RUNTIME_CONTRACT_VERSION, status: result.status, snapshotId: result.status === 'available' ? result.snapshot.snapshotId : null, durationMs: Date.now() - startedAt }, 'CLV snapshot metadata lookup');
+      response.status(statusForCustomerClvSnapshotResult(result)).json(result);
+    } catch (error) {
+      console.error({ event: 'customer_clv_snapshot_request_failed', endpoint: 'clv-snapshot', contractVersion: CUSTOMER_CLV_RUNTIME_CONTRACT_VERSION, durationMs: Date.now() - startedAt, errorType: classifyErrorForLog(error) });
+      response.status(500).json({ error: 'internal_error' });
+    }
+  });
+
+  router.get('/v1/customers/:customerId/intelligence', async (request: Request, response: Response) => {
+    const customerId = parseCustomerIdFromParams(request.params);
+    if (customerId === null) {
+      response.status(400).json({ error: 'invalid_customer_id' });
+      return;
+    }
+    if (Object.keys(request.query).length > 0) {
+      response.status(400).json({ error: 'unsupported_query_params' });
+      return;
+    }
+    if (request.body !== undefined) {
+      response.status(400).json({ error: 'unsupported_body' });
+      return;
+    }
+    if (!deps.getCustomerIntelligenceRow) {
+      response.status(503).json({ error: 'customer_intelligence_not_configured' });
+      return;
+    }
+    const startedAt = Date.now();
+    try {
+      const result = await deps.getCustomerIntelligenceRow({ featureSnapshotId: null, prestashopCustomerId: customerId });
+      console.info({ endpoint: 'customer-intelligence', contractVersion: 'customer-intelligence-read-model-v1', customerId, status: result.status, hasClv: result.status === 'available' ? result.row.clv !== null && result.row.clv !== undefined : null, durationMs: Date.now() - startedAt }, 'customer intelligence lookup');
+      response.status(statusForCustomerIntelligenceResult(result)).json(result);
+    } catch (error) {
+      console.error({ event: 'customer_intelligence_request_failed', customerId, endpoint: 'customer-intelligence', contractVersion: 'customer-intelligence-read-model-v1', durationMs: Date.now() - startedAt, errorType: classifyErrorForLog(error) });
+      response.status(500).json({ error: 'internal_error' });
+    }
+  });
+
   // Clustering analytics/observability (CP-R2-T03) — latest published snapshot summary:
   // population distribution, per-cluster feature/commercial/distance profiles, model
   // provenance. Local reads only, never recomputes (task Section 19).
@@ -1153,6 +1245,46 @@ function statusForCustomerClusterResult(result: GetCustomerClusterResult): numbe
       return 200;
     case 'customer_not_found':
     case 'cluster_not_available':
+      return 404;
+    case 'degraded':
+      return 503;
+  }
+}
+
+function statusForCustomerClvResult(result: GetCustomerClvResult): number {
+  switch (result.status) {
+    case 'available':
+      return 200;
+    case 'no_active_clv_snapshot':
+    case 'customer_clv_not_found':
+      return 404;
+    case 'degraded':
+      return result.reason === 'clv_timeout' ? 504 : 503;
+    case 'malformed_clv_snapshot':
+      return 500;
+  }
+}
+
+function statusForCustomerClvSnapshotResult(result: GetCustomerClvSnapshotResult): number {
+  switch (result.status) {
+    case 'available':
+      return 200;
+    case 'no_active_clv_snapshot':
+      return 404;
+    case 'degraded':
+      return result.reason === 'clv_timeout' ? 504 : 503;
+    case 'malformed_clv_snapshot':
+      return 500;
+  }
+}
+
+function statusForCustomerIntelligenceResult(result: GetCustomerIntelligenceRowResult): number {
+  switch (result.status) {
+    case 'available':
+      return 200;
+    case 'customer_not_in_feature_snapshot':
+    case 'no_published_feature_snapshot':
+    case 'feature_snapshot_not_found':
       return 404;
     case 'degraded':
       return 503;
@@ -1720,6 +1852,22 @@ function logCustomerClusterLookup(customerId: number, result: GetCustomerCluster
       durationMs,
     },
     'customer cluster lookup',
+  );
+}
+
+function logCustomerClvLookup(customerId: number, result: GetCustomerClvResult, durationMs: number): void {
+  console.info(
+    {
+      customerId,
+      endpoint: 'clv',
+      contractVersion: CUSTOMER_CLV_RUNTIME_CONTRACT_VERSION,
+      status: result.status,
+      snapshotId: result.status === 'available' ? result.clv.snapshotId : null,
+      estimateSupportLevel: result.status === 'available' ? result.clv.estimateSupportLevel : null,
+      degradedReason: result.status === 'degraded' ? result.reason : null,
+      durationMs,
+    },
+    'customer CLV lookup',
   );
 }
 
