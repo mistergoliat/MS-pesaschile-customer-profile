@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Pool, PoolConnection, RowDataPacket } from 'mysql2/promise';
 import { buildCustomerCommercialAffinityPopulation } from '../../src/application/customer-commercial-affinity-population/index.js';
 import { buildCustomerCommercialAffinitySnapshotHeader } from '../../src/application/customer-commercial-affinity-snapshot/index.js';
-import { createMysqlCustomerCommercialAffinitySnapshotStore } from '../../src/infrastructure/clv/mysql-customer-commercial-affinity-snapshot-store.js';
+import {
+  buildBuildingSnapshotInsertStatement,
+  createMysqlCustomerCommercialAffinitySnapshotStore,
+} from '../../src/infrastructure/clv/mysql-customer-commercial-affinity-snapshot-store.js';
 import type { CustomerCommercialAffinitySnapshotInput } from '../../src/application/customer-commercial-affinity-snapshot/index.js';
 
 function input(): CustomerCommercialAffinitySnapshotInput {
@@ -92,6 +95,21 @@ function fakePool(options: { readonly corrupted?: boolean } = {}) {
 }
 
 describe('MySQL Customer Commercial Affinity snapshot store', () => {
+  it('keeps building header INSERT columns, SQL values, and bound parameters aligned', () => {
+    const statement = buildBuildingSnapshotInsertStatement(input().header);
+    const match = statement.sql.match(/customer_commercial_affinity_snapshot \(([^]+)\) VALUES \(([^]+)\)$/u);
+    expect(match).not.toBeNull();
+    const columnCount = match![1]!.split(',').length;
+    const valueExpressions = match![2]!.split(',');
+
+    expect(columnCount).toBe(26);
+    expect(statement.columnCount).toBe(columnCount);
+    expect(valueExpressions).toHaveLength(columnCount);
+    expect((match![2]!.match(/\?/g) ?? [])).toHaveLength(statement.values.length);
+    expect(statement.values).toHaveLength(columnCount - 1);
+    expect(match![2]).toContain("'building'");
+  });
+
   it('persists, validates, supersedes, and publishes atomically', async () => {
     const { pool, connection, calls, snapshotInput } = fakePool();
     const result = await createMysqlCustomerCommercialAffinitySnapshotStore(pool).publishSnapshot(snapshotInput);

@@ -18,6 +18,7 @@ import {
 import { addDecimals } from '../../shared/decimal.js';
 import { sha256Stable } from '../../shared/stable-checksum.js';
 import { divideDecimalToBehaviorDecimal, divideIntegerToBehaviorDecimal } from '../customer-purchase-behavior/behavior-decimal.js';
+import { calculateCustomerCommercialAffinityDatasetChecksum } from './affinity-dataset-checksum.js';
 import type { ProductSemanticSnapshotConsumerMetadata } from '../product-semantic-snapshot/consumer.js';
 import type { CustomerAffinityPurchaseEvidence } from './ports.js';
 
@@ -220,7 +221,7 @@ export function buildCustomerCommercialAffinityPopulation(
     rowsByCustomer,
   });
   const datasetChecksum = sha256Stable({ referenceTime, purchases: lines.map(toChecksumPurchase) });
-  const affinityDatasetChecksum = sha256Stable({
+  const affinityDatasetChecksum = calculateCustomerCommercialAffinityDatasetChecksum({
     referenceTime,
     semanticSnapshot: input.semanticSnapshot.metadata,
     rows,

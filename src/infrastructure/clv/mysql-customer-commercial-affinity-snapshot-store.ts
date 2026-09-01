@@ -1,3 +1,4 @@
+import type { ExecuteValues } from 'mysql2';
 import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import {
   calculateAffinityDatasetChecksum,
@@ -185,27 +186,41 @@ const SELECT_ACTIVE_ROWS_SQL = `
    WHERE s.status = 'published'`;
 
 async function insertBuildingSnapshot(connection: PoolConnection, header: CustomerCommercialAffinitySnapshotHeader): Promise<number> {
-  const [result] = await connection.execute<ResultSetHeader>(
-    `INSERT INTO customer_commercial_affinity_snapshot (
-      snapshot_key, status, calculation_version, reference_time, generated_at,
-      population_policy_version, order_eligibility_policy_version, product_semantic_snapshot_id,
-      product_semantic_schema_version, ontology_version, ontology_hash, source_semantic_checksum,
-      consumer_semantic_checksum, source_customer_count, eligible_customer_count, eligible_order_count,
-      eligible_order_line_count, customers_with_affinity, customers_without_affinity, affinity_row_count,
-      dataset_checksum, affinity_dataset_checksum, identity_authority, source_watermark_order_id,
-      performance_metadata_json, manifest_json
-    ) VALUES (?, 'building', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      header.snapshotKey, header.calculationVersion, toMysqlDateTime6(header.referenceTime), toMysqlDateTime6(header.generatedAt),
-      header.populationPolicyVersion, header.orderEligibilityPolicyVersion, header.productSemanticSnapshotId,
-      header.productSemanticSchemaVersion, header.ontologyVersion, header.ontologyHash, header.sourceSemanticChecksum,
-      header.consumerSemanticChecksum, header.sourceCustomerCount, header.eligibleCustomerCount, header.eligibleOrderCount,
-      header.eligibleOrderLineCount, header.customersWithAffinity, header.customersWithoutAffinity, header.affinityRowCount,
-      header.datasetChecksum, header.affinityDatasetChecksum, header.identityAuthority, header.sourceWatermarkOrderId,
-      header.performanceMetadata === undefined ? null : JSON.stringify(header.performanceMetadata), JSON.stringify(header),
-    ],
-  );
+  const statement = buildBuildingSnapshotInsertStatement(header);
+  const [result] = await connection.execute<ResultSetHeader>(statement.sql, statement.values);
   return result.insertId;
+}
+
+const buildingSnapshotColumns = [
+  'snapshot_key', 'status', 'calculation_version', 'reference_time', 'generated_at',
+  'population_policy_version', 'order_eligibility_policy_version', 'product_semantic_snapshot_id',
+  'product_semantic_schema_version', 'ontology_version', 'ontology_hash', 'source_semantic_checksum',
+  'consumer_semantic_checksum', 'source_customer_count', 'eligible_customer_count', 'eligible_order_count',
+  'eligible_order_line_count', 'customers_with_affinity', 'customers_without_affinity', 'affinity_row_count',
+  'dataset_checksum', 'affinity_dataset_checksum', 'identity_authority', 'source_watermark_order_id',
+  'performance_metadata_json', 'manifest_json',
+] as const;
+
+export function buildBuildingSnapshotInsertStatement(header: CustomerCommercialAffinitySnapshotHeader): {
+  readonly sql: string;
+  readonly values: ExecuteValues[];
+  readonly columnCount: number;
+} {
+  const values: ExecuteValues[] = [
+    header.snapshotKey, header.calculationVersion, toMysqlDateTime6(header.referenceTime), toMysqlDateTime6(header.generatedAt),
+    header.populationPolicyVersion, header.orderEligibilityPolicyVersion, header.productSemanticSnapshotId,
+    header.productSemanticSchemaVersion, header.ontologyVersion, header.ontologyHash, header.sourceSemanticChecksum,
+    header.consumerSemanticChecksum, header.sourceCustomerCount, header.eligibleCustomerCount, header.eligibleOrderCount,
+    header.eligibleOrderLineCount, header.customersWithAffinity, header.customersWithoutAffinity, header.affinityRowCount,
+    header.datasetChecksum, header.affinityDatasetChecksum, header.identityAuthority, header.sourceWatermarkOrderId,
+    header.performanceMetadata === undefined ? null : JSON.stringify(header.performanceMetadata), JSON.stringify(header),
+  ];
+  const valueExpressions = buildingSnapshotColumns.map((column) => column === 'status' ? "'building'" : '?');
+  return {
+    sql: `INSERT INTO customer_commercial_affinity_snapshot (\n      ${buildingSnapshotColumns.join(', ')}\n    ) VALUES (${valueExpressions.join(', ')})`,
+    values,
+    columnCount: buildingSnapshotColumns.length,
+  };
 }
 
 async function insertRows(connection: PoolConnection, snapshotId: number, rows: readonly CustomerCommercialAffinityRow[]): Promise<void> {

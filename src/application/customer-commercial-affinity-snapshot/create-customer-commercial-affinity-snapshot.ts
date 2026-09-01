@@ -12,11 +12,11 @@ import {
   customerCommercialAffinityIdentityAuthority,
   buildCustomerCommercialAffinitySnapshotKey,
 } from '../../domain/customer-commercial-affinity/index.js';
-import { sha256Stable } from '../../shared/stable-checksum.js';
 import type {
   CustomerCommercialAffinityPopulation,
   CustomerCommercialAffinityPopulationManifest,
 } from '../customer-commercial-affinity-population/index.js';
+import { calculateCustomerCommercialAffinityDatasetChecksum } from '../customer-commercial-affinity-population/index.js';
 import type { ProductSemanticSnapshotConsumerMetadata } from '../product-semantic-snapshot/consumer.js';
 
 export type CustomerCommercialAffinitySnapshotStatus = 'building' | 'validated' | 'published' | 'failed' | 'superseded';
@@ -202,10 +202,10 @@ export function calculateAffinityDatasetChecksum(
   header: CustomerCommercialAffinitySnapshotHeader,
   rows: readonly CustomerCommercialAffinityRow[],
 ): string {
-  return sha256Stable({
+  return calculateCustomerCommercialAffinityDatasetChecksum({
     referenceTime: header.referenceTime,
     semanticSnapshot: header.semanticSnapshotMetadata,
-    rows: [...rows].sort(compareRows),
+    rows,
   });
 }
 
@@ -299,8 +299,4 @@ function assertFixedPointRoundTrip(value: number, name: string, scale: number): 
 
 function isAllowedAxis(value: string): value is CustomerCommercialAffinityAxis {
   return value === 'PRODUCT_FAMILY' || value === 'DISCIPLINE' || value === 'USE_CONTEXT';
-}
-
-function compareRows(left: CustomerCommercialAffinityRow, right: CustomerCommercialAffinityRow): number {
-  return left.customerId - right.customerId || left.affinityAxis.localeCompare(right.affinityAxis) || left.affinityCode.localeCompare(right.affinityCode);
 }

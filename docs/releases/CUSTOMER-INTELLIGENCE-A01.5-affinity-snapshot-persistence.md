@@ -138,6 +138,27 @@ The first persisted run must verify active metadata, all three axis counts, boun
 customers with each axis and multiple axes, a no-row lookup for a customer without affinity, and
 the same-key idempotent second run. Any checksum or row-count mismatch must stop publication.
 
+## EC2 validation hotfixes
+
+Two persistence defects found during EC2 validation were consolidated without changing affinity
+semantics:
+
+- Hotfix 1 corrected the building-header `INSERT`: the table declares 26 columns, while
+  `status` is the literal `'building'`; the statement now has 25 placeholders and 26 SQL values.
+  The surplus placeholder was removed. The transaction rollback therefore prevents partial
+  snapshot headers or rows after a failed build.
+- Hotfix 2 restored the canonical A01.4 affinity checksum
+  `9fa39ad2655c368c0515067cea522aeef18a516c64d206211691d30414d73c4e`. A01.5 had incorrectly
+  produced `00e75a1fd6b39a2a5486116907b95faba00fcc866cb65cbea16177e0512b7513` after exposing an
+  implicit runtime contract. A01.4's compile-time metadata type was a reduced TypeScript `Pick`,
+  but the runtime metadata object retained additional properties, and those properties participated
+  in the validated historical checksum. A01.5.1 freezes that exact historical metadata payload
+  explicitly in one shared checksum function, so future unrelated metadata additions cannot cause
+  accidental drift. The canonical rows remain sorted by customer, axis, and code.
+
+The dataset checksum, scoring, affinity rows, population counts, purchase extraction, and semantic
+classification remain unchanged. No production runtime behavior changed.
+
 ## A01.6 handoff
 
 A01.6 may consume the active reader and snapshot metadata, then integrate the read model with
