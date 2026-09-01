@@ -22,11 +22,11 @@ export function isProductFamilyEligible(fact: ProductSemanticFact): boolean {
 }
 
 export function isDisciplineEligible(fact: ProductSemanticFact): boolean {
-  return isSemanticAxisEligible(fact) && fact.disciplines.length > 0;
+  return isSemanticNonFamilyAxisEligible(fact) && fact.disciplines.length > 0;
 }
 
 export function isUseContextEligible(fact: ProductSemanticFact): boolean {
-  return isSemanticAxisEligible(fact) && fact.useContexts.length > 0;
+  return isSemanticNonFamilyAxisEligible(fact) && fact.useContexts.length > 0;
 }
 
 function isSemanticAxisEligible(fact: ProductSemanticFact): boolean {
@@ -39,4 +39,12 @@ function isSemanticAxisEligible(fact: ProductSemanticFact): boolean {
     case 'NEEDS_REVIEW':
       return false;
   }
+}
+
+// OTHER only means that the catalog could not assign a product family. Any discipline or use
+// context tags that the catalog did establish remain valid evidence (A01.4 population policy).
+function isSemanticNonFamilyAxisEligible(fact: ProductSemanticFact): boolean {
+  return fact.classificationStatus === 'CLASSIFIED' ||
+    fact.classificationStatus === 'PARTIALLY_CLASSIFIED' ||
+    fact.classificationStatus === 'OTHER';
 }

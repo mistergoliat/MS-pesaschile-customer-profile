@@ -38,6 +38,7 @@ vi.mock('../../src/infrastructure/crm/index.js', () => ({
 
 vi.mock('../../src/infrastructure/rfm/rfm-snapshot-pool.js', () => ({
   closeRfmSnapshotPool: vi.fn(async () => undefined),
+  getRfmSnapshotPool: vi.fn(() => dummyExecutor),
   getRfmSnapshotQueryExecutor: getRfmSnapshotQueryExecutorMock,
 }));
 

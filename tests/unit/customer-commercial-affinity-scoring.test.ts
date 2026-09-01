@@ -126,7 +126,7 @@ describe('frequency is deferred, not fabricated (task Section 5/22 CASE 1 & 2)',
     expect(scenarioB).toEqual(scenarioA);
   });
 
-  it('approximateSupportingOrderCount is still surfaced descriptively, but plays no role in the score', () => {
+  it('supportingOrderCount is surfaced by the product-grain scorer, but plays no role in the score', () => {
     const rows = score({
       customerId: 1,
       purchases: [
@@ -135,8 +135,8 @@ describe('frequency is deferred, not fabricated (task Section 5/22 CASE 1 & 2)',
       ],
     });
 
-    // Approximate/aggregated, not a claim of exact distinct-order uniqueness (task Section 29).
-    expect(findRow(rows, 'PRODUCT_FAMILY', 'BENCH').approximateSupportingOrderCount).toBe(5);
+    // A01.4 replaces this product-grain provisional value with exact order IDs.
+    expect(findRow(rows, 'PRODUCT_FAMILY', 'BENCH').supportingOrderCount).toBe(5);
   });
 });
 

@@ -9,6 +9,7 @@ export { createMysqlCommercialProductsSummaryReader } from './mysql-commercial-p
 export { createMysqlPurchasedProductsReader } from './mysql-purchased-products-reader.js';
 export { createMysqlCustomerProductBehaviorReader } from './mysql-customer-product-behavior-reader.js';
 export { createMysqlCustomerClvHistoricalReader } from './mysql-customer-clv-historical-reader.js';
+export { createMysqlCustomerAffinityPurchaseReader } from './mysql-customer-affinity-purchase-reader.js';
 export { createMysqlRfmPopulationReader } from './mysql-rfm-population-reader.js';
 export type { RfmPopulationReader } from './mysql-rfm-population-reader.js';
 export {

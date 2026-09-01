@@ -13,6 +13,10 @@ import {
 } from '../../application/customer-clv/get-customer-clv.js';
 import type { GetCustomerClvSnapshot, GetCustomerClvSnapshotResult } from '../../application/customer-clv/get-customer-clv-snapshot.js';
 import type { GetCustomerIntelligenceRow, GetCustomerIntelligenceRowResult } from '../../application/customer-intelligence/get-customer-intelligence-row.js';
+import type {
+  CustomerCommercialProfileService,
+  GetCustomerCommercialProfileResult,
+} from '../../application/customer-commercial-profile/customer-commercial-profile-service.js';
 import type { GetClusterSnapshotSummary } from '../../application/customer-clustering/get-cluster-snapshot-summary.js';
 import type { GetRfmClusterCrossTab } from '../../application/customer-clustering/get-rfm-cluster-cross-tab.js';
 import type { GetDashboardContext } from '../../application/customer-intelligence-dashboard/get-dashboard-context.js';
@@ -172,6 +176,7 @@ export type RouteDependencies = {
   readonly getCustomerClv?: GetCustomerClv;
   readonly getCustomerClvSnapshot?: GetCustomerClvSnapshot;
   readonly getCustomerIntelligenceRow?: GetCustomerIntelligenceRow;
+  readonly customerCommercialProfileService?: CustomerCommercialProfileService;
   // Clustering analytics/observability (CP-R2-T03): read-only assembly over already-published
   // snapshots/profiles, local MariaDB only — never recomputes, never touches PrestaShop. See
   // docs/releases/CP-R2-T03-clustering-analytics-observability.md.
@@ -807,6 +812,49 @@ export function buildRoutes(deps: RouteDependencies): Router {
     }
   });
 
+  router.get('/v1/customers/:customerId/commercial-profile', async (request: Request, response: Response) => {
+    const customerId = parseCustomerIdFromParams(request.params);
+    if (customerId === null) {
+      response.status(400).json({ error: 'invalid_customer_id' });
+      return;
+    }
+    if (Object.keys(request.query).length > 0) {
+      response.status(400).json({ error: 'unsupported_query_params' });
+      return;
+    }
+    if (request.body !== undefined) {
+      response.status(400).json({ error: 'unsupported_body' });
+      return;
+    }
+    if (!deps.customerCommercialProfileService) {
+      response.status(503).json({ error: 'customer_commercial_profile_not_configured' });
+      return;
+    }
+
+    const startedAt = Date.now();
+    try {
+      const result = await deps.customerCommercialProfileService.getByCustomerId({ customerId });
+      console.info({
+        endpoint: 'customer-commercial-profile',
+        contractVersion: 'customer-commercial-profile-v1',
+        customerId,
+        status: result.status,
+        durationMs: Date.now() - startedAt,
+      }, 'customer commercial profile lookup');
+      response.status(statusForCustomerCommercialProfileResult(result)).json(result);
+    } catch (error) {
+      console.error({
+        event: 'customer_commercial_profile_request_failed',
+        endpoint: 'customer-commercial-profile',
+        customerId,
+        contractVersion: 'customer-commercial-profile-v1',
+        durationMs: Date.now() - startedAt,
+        errorType: classifyErrorForLog(error),
+      });
+      response.status(500).json({ error: 'internal_error' });
+    }
+  });
+
   // Clustering analytics/observability (CP-R2-T03) — latest published snapshot summary:
   // population distribution, per-cluster feature/commercial/distance profiles, model
   // provenance. Local reads only, never recomputes (task Section 19).
@@ -1285,6 +1333,17 @@ function statusForCustomerIntelligenceResult(result: GetCustomerIntelligenceRowR
     case 'customer_not_in_feature_snapshot':
     case 'no_published_feature_snapshot':
     case 'feature_snapshot_not_found':
+      return 404;
+    case 'degraded':
+      return 503;
+  }
+}
+
+function statusForCustomerCommercialProfileResult(result: GetCustomerCommercialProfileResult): number {
+  switch (result.status) {
+    case 'available':
+      return 200;
+    case 'customer_not_found':
       return 404;
     case 'degraded':
       return 503;

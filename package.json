@@ -41,7 +41,10 @@
     "clv:acceptance:evaluate": "tsx scripts/clv/acceptance-evaluate.ts",
     "clv:snapshot:build": "tsx scripts/clv/snapshot-build.ts",
     "clv:migrate": "tsx scripts/clv/apply-migration.ts",
-    "clv:snapshot:read-check": "tsx scripts/clv/snapshot-read-check.ts"
+    "clv:snapshot:read-check": "tsx scripts/clv/snapshot-read-check.ts",
+    "product:semantic:compatibility-read": "tsx scripts/product-semantic-snapshot/compatibility-read.ts",
+    "customer:affinity:population": "tsx scripts/customer-commercial-affinity/a01-4-population.ts",
+    "customer:affinity:query-plan": "tsx scripts/customer-commercial-affinity/a01-4-1-query-plan.ts"
   },
   "keywords": [],
   "author": "",

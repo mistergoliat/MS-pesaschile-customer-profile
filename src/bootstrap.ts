@@ -113,6 +113,10 @@ import { createMysqlAnalyticalQueryExecutor } from './infrastructure/customer-in
 import { createConfiguredCustomerIntelligenceCopilotModel } from './infrastructure/customer-intelligence-copilot/index.js';
 import { createMysqlCopilotSessionStore } from './infrastructure/customer-intelligence-copilot/mysql-copilot-session-store.js';
 import { SystemClock } from './infrastructure/shared/system-clock.js';
+import {
+  createCustomerCommercialProfileService,
+  type CustomerCommercialProfileService,
+} from './application/customer-commercial-profile/customer-commercial-profile-service.js';
 import type { ReadinessCheck } from './http/routes/index.js';
 import { CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION } from './domain/customer-intelligence-copilot/index.js';
 
@@ -138,6 +142,7 @@ export type Bootstrap = {
   readonly getCustomerClv: GetCustomerClv;
   readonly getCustomerClvSnapshot: GetCustomerClvSnapshot;
   readonly getCustomerIntelligenceRow: GetCustomerIntelligenceRow;
+  readonly customerCommercialProfileService: CustomerCommercialProfileService;
   readonly answerCustomerIntelligenceQuestion: AnswerCustomerIntelligenceQuestion;
   readonly customerIntelligenceCopilotSessionService?: CustomerIntelligenceCopilotSessionService;
   readonly checkReadiness: ReadinessCheck;
@@ -412,6 +417,14 @@ export function bootstrap(): Bootstrap {
     return { prestashop, crm: crmResult.status === 'ready' };
   };
 
+  const customerCommercialProfileService = createCustomerCommercialProfileService({
+    resolveCustomerIdentity,
+    getCustomerRfm: getCustomerRfmByCustomerId,
+    getCustomerCluster,
+    getCustomerClv,
+    clock: systemClock,
+  });
+
   return {
     resolveCustomerIdentity,
     getCustomerProfile,
@@ -432,6 +445,7 @@ export function bootstrap(): Bootstrap {
     getCustomerClv,
     getCustomerClvSnapshot,
     getCustomerIntelligenceRow,
+    customerCommercialProfileService,
     answerCustomerIntelligenceQuestion,
     customerIntelligenceCopilotSessionService,
     checkReadiness,

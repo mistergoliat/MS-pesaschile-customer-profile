@@ -62,7 +62,8 @@ export type CustomerCommercialAffinityRow = {
   // code were bought in the same physical order. Named explicitly so it never reads as exact.
   // Not used for scoring (see scoring-policy.ts — frequency is deferred to A01.4, which can join
   // exact order-line data).
-  readonly approximateSupportingOrderCount: number;
+  /** Exact distinct orders supporting this customer/axis/code combination. */
+  readonly supportingOrderCount: number;
   readonly supportingProductCount: number;
   readonly supportingSpend: string; // decimal string, never a JS float
   readonly lastEvidenceAt: string; // ISO timestamp

@@ -157,7 +157,7 @@ export type CustomerCommercialAffinityAggregate = {
   readonly recencyContribution: number;
   readonly aggregateSpendShare: number;
   readonly supportingProductCount: number;
-  readonly approximateSupportingOrderCount: number;
+  readonly supportingOrderCount: number;
   readonly supportingSpend: string;
   readonly lastEvidenceAt: string;
   readonly explicitEvidenceMass: number;
@@ -212,7 +212,7 @@ function aggregateGroup(items: readonly SemanticEvidenceItem[]): CustomerCommerc
     // that order is counted once per product here. Exact distinct-order counting is deferred to
     // A01.4, which can join against AnalyticalOrder line data. Never used for scoring (frequency
     // is deferred entirely — see scoring-policy.ts).
-    approximateSupportingOrderCount: sortedItems.reduce((sum, item) => sum + item.orderCount, 0),
+    supportingOrderCount: sortedItems.reduce((sum, item) => sum + item.orderCount, 0),
     supportingSpend: addDecimals(sortedItems.map((item) => item.totalSpentTaxIncl)),
     lastEvidenceAt: sortedItems.reduce(
       (latest, item) => (Date.parse(item.lastPurchasedAt) > Date.parse(latest) ? item.lastPurchasedAt : latest),
@@ -253,7 +253,7 @@ export function scoreAffinityEvidence(aggregate: CustomerCommercialAffinityAggre
     affinityAxis: aggregate.axis,
     affinityCode: aggregate.code,
     score,
-    approximateSupportingOrderCount: aggregate.approximateSupportingOrderCount,
+    supportingOrderCount: aggregate.supportingOrderCount,
     supportingProductCount: aggregate.supportingProductCount,
     supportingSpend: aggregate.supportingSpend,
     lastEvidenceAt: aggregate.lastEvidenceAt,

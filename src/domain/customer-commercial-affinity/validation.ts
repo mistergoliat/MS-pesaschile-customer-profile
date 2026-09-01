@@ -82,7 +82,7 @@ export function assertValidDecimalString(value: string, name: string): void {
 export function assertValidAffinityRow(row: CustomerCommercialAffinityRow): void {
   assertNonEmptyIdentifier(row.affinityCode, 'affinityCode');
   assertValidAffinityScore(row.score);
-  assertNonNegativeCount(row.approximateSupportingOrderCount, 'approximateSupportingOrderCount');
+  assertNonNegativeCount(row.supportingOrderCount, 'supportingOrderCount');
   assertNonNegativeCount(row.supportingProductCount, 'supportingProductCount');
   assertValidDecimalString(row.supportingSpend, 'supportingSpend');
   assertValidIsoTimestamp(row.lastEvidenceAt, 'lastEvidenceAt');

@@ -65,3 +65,7 @@ scripts/clustering/python/.pytest_cache/
 # CUSTOMER-INTELLIGENCE-CLV offline research artifacts are deterministic local outputs from
 # read-only evaluation runs and should not be versioned.
 artifacts/clv/*.json
+
+# CUSTOMER-INTELLIGENCE-A01.4 offline population artifacts contain real aggregate customer
+# identifiers and are reproducible research outputs, not production persistence.
+artifacts/customer-commercial-affinity/*.json
