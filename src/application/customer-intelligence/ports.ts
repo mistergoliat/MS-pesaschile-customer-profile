@@ -1,6 +1,8 @@
 import type { CustomerIntelligenceRow } from '../../domain/customer-intelligence/contracts.js';
 import type { SnapshotHeaderCandidate } from '../../domain/customer-intelligence/snapshot-selection.js';
 import type { CoverageCounts } from '../../domain/customer-intelligence/coverage.js';
+import type { CustomerClvSnapshotRow } from '../../domain/customer-clv/contracts.js';
+import type { CustomerClvProductionSnapshotHeader } from '../customer-clv/create-customer-clv-snapshot.js';
 
 export type RfmSnapshotHeader = SnapshotHeaderCandidate & { readonly calculationVersion: string };
 export type ClusterSnapshotHeader = SnapshotHeaderCandidate & { readonly modelId: string; readonly modelVersion: string };
@@ -36,6 +38,22 @@ export type ResolvedCustomerIntelligenceSnapshotIds = {
   readonly clusterReferenceTime: string | null;
   readonly clusterModelId: string | null;
   readonly clusterModelVersion: string | null;
+  // Optional because the pre-A07 port remains usable when CLV is not configured.
+  readonly clvSnapshotId?: string | null;
+  readonly clvSnapshotKey?: string | null;
+  readonly clvReferenceTime?: string | null;
+  readonly clvGeneratedAt?: string | null;
+  readonly clvModelVersion?: string | null;
+  readonly clvEstimatorPolicyVersion?: string | null;
+  readonly clvSourceAvailableDataThrough?: string | null;
+  readonly clvHorizonMonths?: number | null;
+  readonly clvCurrencyIsoCode?: string | null;
+};
+
+export type CustomerClvActiveSnapshotReader = {
+  getActiveSnapshotMetadata(): Promise<CustomerClvProductionSnapshotHeader | null>;
+  getCustomerClv(snapshotId: string, customerId: number): Promise<CustomerClvSnapshotRow | null>;
+  getCustomerClvBatch?(snapshotId: string, customerIds: readonly number[]): Promise<readonly CustomerClvSnapshotRow[]>;
 };
 
 export type ListCustomerIntelligenceRowsOptions = {

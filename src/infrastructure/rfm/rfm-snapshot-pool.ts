@@ -34,6 +34,16 @@ export function getRfmSnapshotQueryExecutor(): QueryExecutor {
   return createQueryExecutor(getPool(), config.rfmSnapshotDb.queryTimeoutMs);
 }
 
+// A06 CLV snapshots are stored in the same service-owned local analytics schema as RFM,
+// configured by RFM_SNAPSHOT_DB_*. Expose the pool seam for read-only A06 consumers without
+// creating a second connection family.
+export function getRfmSnapshotPool(): mysql.Pool {
+  if (!config.rfmSnapshotDb) {
+    throw new Error('RFM snapshot DB pool requested but RFM_SNAPSHOT_DB_* is not configured');
+  }
+  return getPool();
+}
+
 export async function closeRfmSnapshotPool(): Promise<void> {
   if (pool) {
     const current = pool;

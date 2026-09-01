@@ -5,8 +5,10 @@ import type {
   CustomerClvPersistedSnapshotResult,
 } from '../../application/customer-clv/create-customer-clv-snapshot.js';
 import { CustomerClvSnapshotKeyConflictError } from '../../application/customer-clv/create-customer-clv-snapshot.js';
-import { assertValidCustomerClvSnapshotRow, type CustomerClvSnapshotRow, type CustomerClvSnapshotStatus } from '../../domain/customer-clv/index.js';
+import { assertValidCustomerClvSnapshotHeader, assertValidCustomerClvSnapshotRow, type CustomerClvSnapshotRow, type CustomerClvSnapshotStatus } from '../../domain/customer-clv/index.js';
 import { sha256Stable } from '../../domain/customer-rfm/checksum.js';
+import { CustomerClvMalformedSnapshotError } from '../../application/customer-clv/errors.js';
+import { mapAnalyticsReadError } from '../customer-analytics/analytics-read-error.js';
 
 const ROW_BATCH_SIZE = 500;
 
@@ -65,20 +67,45 @@ export function createMysqlCustomerClvSnapshotStore(pool: Pool): CustomerClvSnap
     },
 
     async getActiveSnapshotMetadata() {
-      const [rows] = await pool.execute<RowDataPacket[]>(
-        `SELECT * FROM customer_clv_snapshot WHERE status = 'published' ORDER BY published_at DESC, id DESC LIMIT 1`,
-      );
-      return rows[0] ? parseHeader(rows[0]) : null;
+      try {
+        const [rows] = await pool.execute<RowDataPacket[]>(
+          `SELECT * FROM customer_clv_snapshot WHERE status = 'published' ORDER BY published_at DESC, id DESC LIMIT 1`,
+        );
+        return rows[0] ? parseHeader(rows[0]) : null;
+      } catch (error) {
+        throw mapAnalyticsReadError(error);
+      }
     },
 
     async getCustomerClv(snapshotId, customerId) {
-      const [rows] = await pool.execute<RowDataPacket[]>(
-        `SELECT customer_id AS customerId, expected_revenue_tax_incl AS expectedRevenueTaxIncl,
-                expected_orders AS expectedOrders, estimate_support_level AS estimateSupportLevel
-           FROM customer_clv_snapshot_row WHERE snapshot_id = ? AND customer_id = ? LIMIT 1`,
-        [snapshotId, customerId],
-      );
-      return rows[0] ? parseRow(rows[0]) : null;
+      try {
+        const [rows] = await pool.execute<RowDataPacket[]>(
+          `SELECT customer_id AS customerId, expected_revenue_tax_incl AS expectedRevenueTaxIncl,
+                  expected_orders AS expectedOrders, estimate_support_level AS estimateSupportLevel
+             FROM customer_clv_snapshot_row WHERE snapshot_id = ? AND customer_id = ? LIMIT 1`,
+          [snapshotId, customerId],
+        );
+        return rows[0] ? parseRow(rows[0]) : null;
+      } catch (error) {
+        throw mapAnalyticsReadError(error);
+      }
+    },
+
+    async getCustomerClvBatch(snapshotId, customerIds) {
+      if (customerIds.length > 5000) throw new Error('CLV batch lookup is bounded to 5000 customers');
+      if (customerIds.length === 0) return [];
+      try {
+        const placeholders = customerIds.map(() => '?').join(', ');
+        const [rows] = await pool.execute<RowDataPacket[]>(
+          `SELECT customer_id AS customerId, expected_revenue_tax_incl AS expectedRevenueTaxIncl,
+                  expected_orders AS expectedOrders, estimate_support_level AS estimateSupportLevel
+             FROM customer_clv_snapshot_row WHERE snapshot_id = ? AND customer_id IN (${placeholders})`,
+          [snapshotId, ...customerIds],
+        );
+        return rows.map(parseRow);
+      } catch (error) {
+        throw mapAnalyticsReadError(error);
+      }
     },
 
     async hasCustomer(snapshotId, customerId) {
@@ -155,14 +182,24 @@ async function calculateOutputChecksum(connection: PoolConnection, snapshotId: n
 }
 
 function parseRow(row: RowDataPacket): CustomerClvSnapshotRow {
-  const parsed = { customerId: Number(row.customerId), expectedRevenueTaxIncl: String(row.expectedRevenueTaxIncl), ...(row.expectedOrders === null ? {} : { expectedOrders: String(row.expectedOrders) }), estimateSupportLevel: String(row.estimateSupportLevel) as CustomerClvSnapshotRow['estimateSupportLevel'] };
-  assertValidCustomerClvSnapshotRow(parsed);
-  return parsed;
+  try {
+    const parsed = { customerId: Number(row.customerId), expectedRevenueTaxIncl: String(row.expectedRevenueTaxIncl), ...(row.expectedOrders === null ? {} : { expectedOrders: String(row.expectedOrders) }), estimateSupportLevel: String(row.estimateSupportLevel) as CustomerClvSnapshotRow['estimateSupportLevel'] };
+    assertValidCustomerClvSnapshotRow(parsed);
+    return parsed;
+  } catch (error) {
+    throw new CustomerClvMalformedSnapshotError('Malformed CLV snapshot row', { cause: error });
+  }
 }
 
 function parseHeader(row: RowDataPacket): CustomerClvProductionSnapshotHeader {
-  const manifest = (typeof row.manifest_json === 'string' ? JSON.parse(row.manifest_json) : row.manifest_json) as CustomerClvProductionSnapshotHeader;
-  return { ...manifest, snapshotId: String(row.id), status: String(row.status) as CustomerClvSnapshotStatus };
+  try {
+    const manifest = (typeof row.manifest_json === 'string' ? JSON.parse(row.manifest_json) : row.manifest_json) as CustomerClvProductionSnapshotHeader;
+    const header = { ...manifest, snapshotId: String(row.id), status: String(row.status) as CustomerClvSnapshotStatus };
+    assertValidCustomerClvSnapshotHeader(header);
+    return header;
+  } catch (error) {
+    throw new CustomerClvMalformedSnapshotError('Malformed CLV snapshot header', { cause: error });
+  }
 }
 
 function toMysqlDateTime6(value: string): string {

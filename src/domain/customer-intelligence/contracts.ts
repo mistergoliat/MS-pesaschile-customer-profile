@@ -1,4 +1,9 @@
 import type { CustomerFeatureRow } from '../customer-analytics/contracts.js';
+import type {
+  CustomerClvCurrencyIsoCode,
+  CustomerClvEstimateSupportLevel,
+  CustomerClvHorizonMonths,
+} from '../customer-clv/contracts.js';
 
 export const CUSTOMER_INTELLIGENCE_READ_MODEL_VERSION = 'customer-intelligence-read-model-v1';
 
@@ -53,6 +58,30 @@ export type CustomerIntelligenceCluster = {
   readonly description: string | null;
 };
 
+export type CustomerIntelligenceClvSnapshotRef = {
+  readonly snapshotId: string;
+  readonly snapshotKey: string;
+  readonly referenceTime: string;
+  readonly generatedAt: string;
+  readonly modelVersion: string;
+  readonly estimatorPolicyVersion: string;
+  readonly sourceAvailableDataThrough?: string;
+  readonly horizonMonths: CustomerClvHorizonMonths;
+};
+
+export type CustomerIntelligenceClv = {
+  readonly snapshot: CustomerIntelligenceClvSnapshotRef;
+  readonly expectedRevenueTaxIncl: string;
+  readonly expectedOrders?: string;
+  readonly horizonMonths: CustomerClvHorizonMonths;
+  readonly currencyIsoCode: CustomerClvCurrencyIsoCode;
+  readonly estimateSupportLevel: CustomerClvEstimateSupportLevel;
+  readonly model: {
+    readonly modelVersion: string;
+    readonly estimatorPolicyVersion: string;
+  };
+};
+
 export type CustomerIntelligenceRow = {
   readonly prestashopCustomerId: number;
   readonly featureSnapshot: CustomerIntelligenceFeatureSnapshotRef;
@@ -61,6 +90,9 @@ export type CustomerIntelligenceRow = {
   // simply absent from that snapshot (task Section 13) — never an error either way.
   readonly rfm: CustomerIntelligenceRfm | null;
   readonly cluster: CustomerIntelligenceCluster | null;
+  // Independent CLV population coverage. It is null when there is no active published
+  // snapshot or when this customer is absent from that snapshot.
+  readonly clv?: CustomerIntelligenceClv | null;
   readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_READ_MODEL_VERSION;
 };
 
@@ -81,6 +113,8 @@ export type CustomerIntelligenceSnapshotContext = {
   readonly featureSnapshot: CustomerIntelligenceFeatureSnapshotRef;
   readonly rfmSnapshot: CustomerIntelligenceRfmSnapshotRef | null;
   readonly clusterSnapshot: CustomerIntelligenceClusterSnapshotRef | null;
+  // Additive field kept optional for existing v1 consumers that do not know about A07.
+  readonly clvSnapshot?: CustomerIntelligenceClvSnapshotRef | null;
   readonly population: CustomerIntelligencePopulationCoverage;
   readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_READ_MODEL_VERSION;
 };

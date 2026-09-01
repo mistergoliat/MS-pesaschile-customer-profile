@@ -70,6 +70,9 @@ import {
   type CustomerIntelligenceCopilotSessionService,
 } from './application/customer-intelligence-copilot-session/index.js';
 import { createCustomerIntelligenceContextResolvers } from './application/customer-intelligence/resolve-customer-intelligence-context.js';
+import { createGetCustomerIntelligenceRow, type GetCustomerIntelligenceRow } from './application/customer-intelligence/get-customer-intelligence-row.js';
+import { createGetCustomerClv, getCustomerClvNotConfigured, type GetCustomerClv } from './application/customer-clv/get-customer-clv.js';
+import { createGetCustomerClvSnapshot, getCustomerClvSnapshotNotConfigured, type GetCustomerClvSnapshot } from './application/customer-clv/get-customer-clv-snapshot.js';
 import { config } from './config.js';
 import {
   checkCrmReadiness,
@@ -95,7 +98,7 @@ import { createMysqlPurchasedProductsReader } from './infrastructure/prestashop/
 import { createMysqlCustomerProductBehaviorReader } from './infrastructure/prestashop/mysql-customer-product-behavior-reader.js';
 import { createMysqlRfmSnapshotReader } from './infrastructure/rfm/mysql-rfm-snapshot-reader.js';
 import { createMysqlRfmSegmentBulkReader } from './infrastructure/rfm/mysql-rfm-segment-bulk-reader.js';
-import { closeRfmSnapshotPool, getRfmSnapshotQueryExecutor } from './infrastructure/rfm/rfm-snapshot-pool.js';
+import { closeRfmSnapshotPool, getRfmSnapshotPool, getRfmSnapshotQueryExecutor } from './infrastructure/rfm/rfm-snapshot-pool.js';
 import { createMysqlClusterSnapshotReader } from './infrastructure/clustering/mysql-cluster-snapshot-reader.js';
 import { createMysqlClusterAnalyticsReader } from './infrastructure/clustering/mysql-cluster-analytics-reader.js';
 import { createMysqlClusterSnapshotProfileRepository } from './infrastructure/clustering/mysql-cluster-snapshot-profile-repository.js';
@@ -104,6 +107,8 @@ import { closeAnalyticsPool, getAnalyticsPool, getAnalyticsQueryExecutor } from 
 import { createMysqlCustomerFeatureSnapshotReader } from './infrastructure/customer-analytics/mysql-customer-feature-snapshot-reader.js';
 import { createMysqlSnapshotHeaderReader } from './infrastructure/customer-intelligence/mysql-snapshot-header-reader.js';
 import { createMysqlCustomerIntelligenceReader } from './infrastructure/customer-intelligence/mysql-customer-intelligence-reader.js';
+import { createMysqlCustomerClvSnapshotStore } from './infrastructure/clv/mysql-customer-clv-snapshot-store.js';
+import type { CustomerClvActiveSnapshotReader } from './application/customer-intelligence/ports.js';
 import { createMysqlAnalyticalQueryExecutor } from './infrastructure/customer-intelligence-query/mysql-analytical-query-executor.js';
 import { createConfiguredCustomerIntelligenceCopilotModel } from './infrastructure/customer-intelligence-copilot/index.js';
 import { createMysqlCopilotSessionStore } from './infrastructure/customer-intelligence-copilot/mysql-copilot-session-store.js';
@@ -130,6 +135,9 @@ export type Bootstrap = {
   readonly getDashboardRfm: GetDashboardRfm;
   readonly getDashboardClusters: GetDashboardClusters;
   readonly getDashboardIntersection: GetDashboardIntersection;
+  readonly getCustomerClv: GetCustomerClv;
+  readonly getCustomerClvSnapshot: GetCustomerClvSnapshot;
+  readonly getCustomerIntelligenceRow: GetCustomerIntelligenceRow;
   readonly answerCustomerIntelligenceQuestion: AnswerCustomerIntelligenceQuestion;
   readonly customerIntelligenceCopilotSessionService?: CustomerIntelligenceCopilotSessionService;
   readonly checkReadiness: ReadinessCheck;
@@ -268,6 +276,17 @@ export function bootstrap(): Bootstrap {
   let getDashboardRfm: GetDashboardRfm = getDashboardRfmNotConfigured;
   let getDashboardClusters: GetDashboardClusters = getDashboardClustersNotConfigured;
   let getDashboardIntersection: GetDashboardIntersection = getDashboardIntersectionNotConfigured;
+  let getCustomerClv: GetCustomerClv = getCustomerClvNotConfigured;
+  let getCustomerClvSnapshot: GetCustomerClvSnapshot = getCustomerClvSnapshotNotConfigured;
+  let getCustomerIntelligenceRow: GetCustomerIntelligenceRow = async () => ({
+    status: 'degraded', reason: 'analytics_not_configured', contractVersion: 'customer-intelligence-read-model-v1',
+  });
+  let clvSnapshotReader: CustomerClvActiveSnapshotReader | undefined;
+  if (config.rfmSnapshotDb) {
+    clvSnapshotReader = createMysqlCustomerClvSnapshotStore(getRfmSnapshotPool());
+    getCustomerClv = createGetCustomerClv({ reader: clvSnapshotReader });
+    getCustomerClvSnapshot = createGetCustomerClvSnapshot({ reader: clvSnapshotReader });
+  }
 
   let answerCustomerIntelligenceQuestion: AnswerCustomerIntelligenceQuestion = async () => ({
     status: 'analytics_unavailable',
@@ -284,6 +303,13 @@ export function bootstrap(): Bootstrap {
       featureSnapshotReader: createMysqlCustomerFeatureSnapshotReader(analyticsPool),
       snapshotHeaderReader: createMysqlSnapshotHeaderReader(analyticsPool),
       intelligenceReader,
+      clvSnapshotReader,
+    });
+    getCustomerIntelligenceRow = createGetCustomerIntelligenceRow({
+      resolveCurrent: resolvers.resolveCurrent,
+      resolveForFeatureSnapshot: resolvers.resolveForFeatureSnapshot,
+      intelligenceReader,
+      clvSnapshotReader,
     });
 
     // Customer Intelligence Dashboard core readers (MARKETING-R1-T06.2) - gated purely on
@@ -403,6 +429,9 @@ export function bootstrap(): Bootstrap {
     getDashboardRfm,
     getDashboardClusters,
     getDashboardIntersection,
+    getCustomerClv,
+    getCustomerClvSnapshot,
+    getCustomerIntelligenceRow,
     answerCustomerIntelligenceQuestion,
     customerIntelligenceCopilotSessionService,
     checkReadiness,

@@ -1,7 +1,8 @@
 import { CUSTOMER_INTELLIGENCE_READ_MODEL_VERSION, type CustomerIntelligenceRow, type CustomerIntelligenceSnapshotContext } from '../../domain/customer-intelligence/index.js';
 import { AnalyticsSchemaIncompatibleError, AnalyticsTimeoutError, AnalyticsUnavailableError } from '../customer-profile/errors.js';
 import type { ResolveCustomerIntelligenceContextResult } from './resolve-customer-intelligence-context.js';
-import type { CustomerIntelligenceReader, ResolvedCustomerIntelligenceSnapshotIds } from './ports.js';
+import type { CustomerClvActiveSnapshotReader, CustomerIntelligenceReader, ResolvedCustomerIntelligenceSnapshotIds } from './ports.js';
+import { toCustomerIntelligenceClv } from './get-customer-intelligence-row.js';
 
 const MAX_BATCH_SIZE = 5000;
 const DEFAULT_BATCH_SIZE = 1000;
@@ -30,6 +31,7 @@ export function createListCustomerIntelligenceRows(deps: {
   readonly resolveCurrent: () => Promise<ResolveCustomerIntelligenceContextResult>;
   readonly resolveForFeatureSnapshot: (featureSnapshotId: string) => Promise<ResolveCustomerIntelligenceContextResult>;
   readonly intelligenceReader: CustomerIntelligenceReader;
+  readonly clvSnapshotReader?: CustomerClvActiveSnapshotReader;
 }): ListCustomerIntelligenceRows {
   return async function listCustomerIntelligenceRows(input) {
     if (!Number.isSafeInteger(input.limit) || input.limit <= 0 || input.limit > MAX_BATCH_SIZE) {
@@ -48,7 +50,8 @@ export function createListCustomerIntelligenceRows(deps: {
         limit: input.limit,
         afterCustomerId: input.afterCustomerId,
       });
-      return { status: 'available', context: contextResult.context, rows: page.rows, hasMore: page.hasMore };
+      const rows = await enrichClvRows(page.rows, contextResult.resolvedIds, deps.clvSnapshotReader);
+      return { status: 'available', context: contextResult.context, rows, hasMore: page.hasMore };
     } catch (error) {
       if (error instanceof AnalyticsUnavailableError || error instanceof AnalyticsTimeoutError || error instanceof AnalyticsSchemaIncompatibleError) {
         return { status: 'degraded', reason: 'analytics_unavailable', contractVersion: CUSTOMER_INTELLIGENCE_READ_MODEL_VERSION };
@@ -56,6 +59,29 @@ export function createListCustomerIntelligenceRows(deps: {
       throw error;
     }
   };
+}
+
+async function enrichClvRows(
+  rows: readonly CustomerIntelligenceRow[],
+  ids: ResolvedCustomerIntelligenceSnapshotIds,
+  reader: CustomerClvActiveSnapshotReader | undefined,
+): Promise<readonly CustomerIntelligenceRow[]> {
+  if (reader === undefined || ids.clvSnapshotId === undefined) return rows.map((row) => Object.prototype.hasOwnProperty.call(row, 'clv') ? row : { ...row, clv: null });
+  if (ids.clvSnapshotId === null || rows.length === 0) return rows.map((row) => ({ ...row, clv: null }));
+  if (rows.every((row) => Object.prototype.hasOwnProperty.call(row, 'clv'))) return rows;
+  if (reader.getCustomerClvBatch) {
+    const clvRows = await reader.getCustomerClvBatch(ids.clvSnapshotId, rows.map((row) => row.prestashopCustomerId));
+    const byCustomerId = new Map(clvRows.map((row) => [row.customerId, row]));
+    return rows.map((row) => {
+      const clvRow = byCustomerId.get(row.prestashopCustomerId);
+      return clvRow === undefined ? { ...row, clv: null } : { ...row, clv: toCustomerIntelligenceClv(ids, clvRow) };
+    });
+  }
+  return Promise.all(rows.map(async (row) => {
+    if (Object.prototype.hasOwnProperty.call(row, 'clv')) return row;
+    const clvRow = await reader.getCustomerClv(ids.clvSnapshotId!, row.prestashopCustomerId);
+    return clvRow === null ? { ...row, clv: null } : { ...row, clv: toCustomerIntelligenceClv(ids, clvRow) };
+  }));
 }
 
 export const listCustomerIntelligenceRowsNotConfigured: ListCustomerIntelligenceRows = async () => ({
