@@ -19,6 +19,7 @@ import { addDecimals } from '../../shared/decimal.js';
 import { sha256Stable } from '../../shared/stable-checksum.js';
 import { divideDecimalToBehaviorDecimal, divideIntegerToBehaviorDecimal } from '../customer-purchase-behavior/behavior-decimal.js';
 import { calculateCustomerCommercialAffinityDatasetChecksum } from './affinity-dataset-checksum.js';
+import { calculateEligibleCustomerPopulationChecksum } from './eligible-population-checksum.js';
 import type { ProductSemanticSnapshotConsumerMetadata } from '../product-semantic-snapshot/consumer.js';
 import type { CustomerAffinityPurchaseEvidence } from './ports.js';
 
@@ -89,6 +90,7 @@ export type CustomerCommercialAffinityPopulationManifest = {
   readonly purchasedProductsWithSemanticFact: number;
   readonly purchasedProductsWithoutSemanticFact: number;
   readonly affinityRowCount: number;
+  readonly eligiblePopulationChecksum: string;
   readonly datasetChecksum: string;
   readonly affinityDatasetChecksum: string;
   readonly checksum: string;
@@ -132,6 +134,8 @@ export type ScoreDistribution = {
 
 export type CustomerCommercialAffinityPopulation = {
   readonly manifest: CustomerCommercialAffinityPopulationManifest;
+  /** Complete eligible identity set, including customers with no affinity rows. */
+  readonly eligibleCustomerIds: readonly number[];
   readonly rows: readonly CustomerCommercialAffinityRow[];
 };
 
@@ -232,7 +236,7 @@ export function buildCustomerCommercialAffinityPopulation(
     affinityDatasetChecksum,
     checksum: affinityDatasetChecksum,
   };
-  return { manifest, rows };
+  return { manifest, eligibleCustomerIds: [...customerIds].sort((left, right) => left - right), rows };
 }
 
 function buildManifestWithoutChecksums(input: {
@@ -281,6 +285,7 @@ function buildManifestWithoutChecksums(input: {
     purchasedProductsWithSemanticFact: input.productsWithFact,
     purchasedProductsWithoutSemanticFact: productIds.size - input.productsWithFact,
     affinityRowCount: input.rows.length,
+    eligiblePopulationChecksum: calculateEligibleCustomerPopulationChecksum([...input.customerIds]),
     coverage: {
       customer: percentage(input.customersWithRows.size, input.customerIds.size),
       orderLine: percentage(input.contributingLines.length, input.lines.length),

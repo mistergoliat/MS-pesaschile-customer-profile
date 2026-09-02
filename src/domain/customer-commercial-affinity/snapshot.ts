@@ -25,6 +25,8 @@ export type CustomerCommercialAffinitySnapshotKeyInput = {
   readonly consumerSemanticChecksum?: string;
   /** Include the source population checksum when resolving a persisted snapshot key. */
   readonly datasetChecksum?: string;
+  /** Complete eligible-customer identity checksum for audience-compatible snapshots. */
+  readonly eligiblePopulationChecksum?: string;
 };
 
 // Mirrors the exact canonical join convention already running in production for RFM
@@ -43,6 +45,7 @@ export function buildCustomerCommercialAffinitySnapshotKey(input: CustomerCommer
     input.ontologyHash,
     input.populationPolicyVersion,
     input.referenceTime.replace(/[:.]/g, '-'),
+    ...(input.eligiblePopulationChecksum === undefined ? [] : [input.eligiblePopulationChecksum]),
     ...(input.consumerSemanticChecksum === undefined ? [] : [input.consumerSemanticChecksum]),
     ...(input.datasetChecksum === undefined ? [] : [input.datasetChecksum]),
   ].join('__');

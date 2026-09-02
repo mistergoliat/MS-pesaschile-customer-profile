@@ -73,11 +73,13 @@ describe('buildCustomerCommercialAffinitySnapshotKey', () => {
   it('includes persisted semantic identity and population checksum when supplied', () => {
     const key = buildCustomerCommercialAffinitySnapshotKey(baseInput({
       productSemanticSnapshotId: `sha256:${'a'.repeat(64)}`,
+      eligiblePopulationChecksum: 'd'.repeat(64),
       consumerSemanticChecksum: 'b'.repeat(64),
       datasetChecksum: 'c'.repeat(64),
     }));
 
     expect(key).toContain(`sha256:${'a'.repeat(64)}`);
+    expect(key).toContain('d'.repeat(64));
     expect(key).toContain('b'.repeat(64));
     expect(key).toContain('c'.repeat(64));
   });

@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS customer_commercial_affinity_snapshot_population;
+
+ALTER TABLE customer_commercial_affinity_snapshot
+  DROP COLUMN eligible_population_checksum;

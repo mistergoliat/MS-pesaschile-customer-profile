@@ -46,6 +46,7 @@ function input(): CustomerCommercialAffinitySnapshotInput {
       generatedAt: '2026-09-01T00:01:00.000Z',
       sourceWatermarkOrderId: 100,
     }),
+    eligibleCustomerIds: population.eligibleCustomerIds,
     rows: population.rows,
   };
 }
@@ -64,13 +65,18 @@ function persistedRow(row: CustomerCommercialAffinitySnapshotInput['rows'][numbe
   } as unknown as RowDataPacket;
 }
 
-function fakePool(options: { readonly corrupted?: boolean } = {}) {
+function fakePool(options: { readonly corrupted?: boolean; readonly failPopulationInsert?: boolean } = {}) {
   const snapshotInput = input();
   const calls: string[] = [];
   const execute = vi.fn(async (sql: string) => {
     calls.push(sql);
+    if (options.failPopulationInsert && sql.includes('INSERT INTO customer_commercial_affinity_snapshot_population')) throw new Error('population insert failed');
     if (sql.includes('INSERT INTO customer_commercial_affinity_snapshot (')) return [{ insertId: 7 }, []];
+    if (sql.includes('COUNT(*) AS populationCount')) return [[{ populationCount: 1 }], []];
     if (sql.includes('COUNT(*) AS rowCount')) return [[{ rowCount: 1 }], []];
+    if (sql.includes('COUNT(DISTINCT customer_id)')) return [[{ customerCount: 1 }], []];
+    if (sql.includes('FROM customer_commercial_affinity_snapshot_population')) return [[{ customerId: 10 }], []];
+    if (sql.includes('missingCount')) return [[{ missingCount: 0 }], []];
     if (sql.includes('FROM customer_commercial_affinity_snapshot_row')) {
       const row = options.corrupted ? { ...snapshotInput.rows[0]!, supportingSpend: '1.000000' } : snapshotInput.rows[0]!;
       return [[persistedRow(row)], []];
@@ -102,7 +108,7 @@ describe('MySQL Customer Commercial Affinity snapshot store', () => {
     const columnCount = match![1]!.split(',').length;
     const valueExpressions = match![2]!.split(',');
 
-    expect(columnCount).toBe(26);
+    expect(columnCount).toBe(27);
     expect(statement.columnCount).toBe(columnCount);
     expect(valueExpressions).toHaveLength(columnCount);
     expect((match![2]!.match(/\?/g) ?? [])).toHaveLength(statement.values.length);
@@ -114,7 +120,10 @@ describe('MySQL Customer Commercial Affinity snapshot store', () => {
     const { pool, connection, calls, snapshotInput } = fakePool();
     const result = await createMysqlCustomerCommercialAffinitySnapshotStore(pool).publishSnapshot(snapshotInput);
 
-    expect(result).toEqual({ snapshotId: '7', persistedRowCount: 1, affinityDatasetChecksum: snapshotInput.header.affinityDatasetChecksum });
+    expect(result).toMatchObject({ snapshotId: '7', persistedRowCount: 1, populationRowCount: 1, affinityDatasetChecksum: snapshotInput.header.affinityDatasetChecksum });
+    expect(result.populationInsertDurationMs).toBeGreaterThanOrEqual(0);
+    expect(result.populationChecksumDurationMs).toBeGreaterThanOrEqual(0);
+    expect(result.persistenceDurationMs).toBeGreaterThanOrEqual(0);
     expect(connection.beginTransaction).toHaveBeenCalledTimes(1);
     expect(connection.commit).toHaveBeenCalledTimes(1);
     expect(connection.rollback).not.toHaveBeenCalled();
@@ -129,6 +138,21 @@ describe('MySQL Customer Commercial Affinity snapshot store', () => {
     expect(connection.rollback).toHaveBeenCalledTimes(1);
     expect(connection.commit).not.toHaveBeenCalled();
     expect(calls.join('\n')).toContain("status = 'failed'");
+  });
+
+  it('rolls back the header when population insertion fails', async () => {
+    const { pool, connection, calls } = fakePool({ failPopulationInsert: true });
+    await expect(createMysqlCustomerCommercialAffinitySnapshotStore(pool).publishSnapshot(input())).rejects.toThrow(/population insert failed/);
+    expect(connection.rollback).toHaveBeenCalledTimes(1);
+    expect(connection.commit).not.toHaveBeenCalled();
+    expect(calls.join('\n')).toContain("status = 'failed'");
+  });
+
+  it('does not open a persistence transaction for an invalid eligible identity set', async () => {
+    const { pool, connection } = fakePool();
+    await expect(createMysqlCustomerCommercialAffinitySnapshotStore(pool).publishSnapshot({ ...input(), eligibleCustomerIds: [10, 10] })).rejects.toThrow(/Duplicate/);
+    expect(pool.getConnection).not.toHaveBeenCalled();
+    expect(connection.beginTransaction).not.toHaveBeenCalled();
   });
 
   it('reads only published rows and bounds customer batch lookups', async () => {
@@ -146,5 +170,22 @@ describe('MySQL Customer Commercial Affinity snapshot store', () => {
     await expect(store.getCustomerAffinities([10])).resolves.toHaveLength(1);
     await expect(store.getCustomerAffinities(Array.from({ length: 5001 }, (_, index) => index + 1))).rejects.toThrow(/bounded/);
     expect((pool.execute as ReturnType<typeof vi.fn>).mock.calls.filter(([sql]) => String(sql).includes('customer_commercial_affinity_snapshot_row')).every(([sql]) => String(sql).includes("s.status = 'published'"))).toBe(true);
+  });
+
+  it('reads published population membership with single and bounded batch queries', async () => {
+    const execute = vi.fn(async (sql: string, values: readonly unknown[] = []) => {
+      if (sql.includes('LIMIT 1')) return [values[1] === 10 ? [{ present: 1 }] : [], []];
+      if (sql.includes('customer_commercial_affinity_snapshot_population')) return [[{ customerId: 10 }], []];
+      return [[], []];
+    });
+    const pool = { execute } as unknown as Pool;
+    const store = createMysqlCustomerCommercialAffinitySnapshotStore(pool);
+
+    await expect(store.isCustomerInAffinityPopulation('7', 10)).resolves.toBe(true);
+    await expect(store.isCustomerInAffinityPopulation('7', 11)).resolves.toBe(false);
+    await expect(store.getAffinityPopulationMembershipBatch('7', [11, 10, 10])).resolves.toEqual([10]);
+    expect(execute).toHaveBeenCalledTimes(3);
+    expect(execute.mock.calls[2]![0]).toContain("s.status = 'published'");
+    await expect(store.getAffinityPopulationMembershipBatch('7', Array.from({ length: 5001 }, (_, index) => index + 1))).rejects.toThrow(/bounded/);
   });
 });

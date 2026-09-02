@@ -3,6 +3,7 @@ import {
   buildCustomerCommercialAffinityPopulation,
   type CustomerCommercialAffinityPopulationInput,
 } from '../../src/application/customer-commercial-affinity-population/population-builder.js';
+import { calculateEligibleCustomerPopulationChecksum } from '../../src/application/customer-commercial-affinity-population/eligible-population-checksum.js';
 import type { CustomerAffinityPurchaseEvidence } from '../../src/application/customer-commercial-affinity-population/ports.js';
 import type { ProductSemanticFact } from '../../src/domain/customer-commercial-affinity/index.js';
 
@@ -111,6 +112,21 @@ describe('Customer Commercial Affinity A01.4 population builder', () => {
     expect(result.manifest.customersWithoutSemanticEvidence).toBe(1);
     expect(result.manifest.purchasedProductsWithoutSemanticFact).toBe(1);
     expect(result.manifest.unknownProducts[0]).toMatchObject({ productId: 999, orderLineCount: 1, spend: '50.050000' });
+  });
+
+  it('returns the sorted eligible identity set and a separate stable population checksum', () => {
+    const result = buildCustomerCommercialAffinityPopulation(input([
+      line({ customerId: 20, productId: 999, lineRevenueTaxIncl: '50.05' }),
+      line({ customerId: 10, productId: 1 }),
+    ], [fact(1)]));
+
+    expect(result.eligibleCustomerIds).toEqual([10, 20]);
+    expect(result.manifest.eligibleCustomerCount).toBe(2);
+    expect(result.manifest.customersWithAffinityRows).toBe(1);
+    expect(result.manifest.customersWithoutAffinityRows).toBe(1);
+    expect(result.manifest.eligiblePopulationChecksum).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.manifest.affinityDatasetChecksum).not.toBe(result.manifest.eligiblePopulationChecksum);
+    expect(calculateEligibleCustomerPopulationChecksum([20, 10])).toBe(calculateEligibleCustomerPopulationChecksum([10, 20]));
   });
 
   it('preserves OTHER discipline and use-context evidence but never creates PRODUCT_FAMILY/OTHER', () => {

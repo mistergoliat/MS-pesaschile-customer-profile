@@ -65,10 +65,10 @@ try {
     performanceMetadata,
   });
   const validationStartedAt = performance.now();
-  let validation = validateCustomerCommercialAffinitySnapshot({ header, rows: population.rows });
+  let validation = validateCustomerCommercialAffinitySnapshot({ header, eligibleCustomerIds: population.eligibleCustomerIds, rows: population.rows });
   const validationDurationMs = performance.now() - validationStartedAt;
   header = { ...header, performanceMetadata: { ...performanceMetadata, validationDurationMs: round(validationDurationMs) } };
-  validation = validateCustomerCommercialAffinitySnapshot({ header, rows: population.rows });
+  validation = validateCustomerCommercialAffinitySnapshot({ header, eligibleCustomerIds: population.eligibleCustomerIds, rows: population.rows });
   const sourceCustomerIds = new Set(purchases.map((purchase) => purchase.customerId));
   const affinityCustomerIds = new Set(population.rows.map((row) => row.customerId));
   const customerWithoutAffinity = [...sourceCustomerIds].filter((customerId) => !affinityCustomerIds.has(customerId))[0] ?? null;
@@ -101,7 +101,7 @@ try {
       const store = createMysqlCustomerCommercialAffinitySnapshotStore(analyticsPool);
       const existing = await store.findSnapshotByKey(header.snapshotKey);
       if (existing) {
-        if ((existing.status === 'validated' || existing.status === 'published') && existing.datasetChecksum === header.datasetChecksum && existing.affinityDatasetChecksum === header.affinityDatasetChecksum) {
+        if ((existing.status === 'validated' || existing.status === 'published') && existing.datasetChecksum === header.datasetChecksum && existing.affinityDatasetChecksum === header.affinityDatasetChecksum && existing.eligiblePopulationChecksum === header.eligiblePopulationChecksum) {
           const result = { ...summary, mode: 'skipped_existing', snapshotId: existing.snapshotId, persistedRowCount: header.affinityRowCount, persistenceDurationMs: 0, idempotent: true };
           await writeReport(result);
           console.log(JSON.stringify(result, null, 2));
@@ -110,7 +110,7 @@ try {
         }
       } else {
         const persistenceStartedAt = performance.now();
-        const persisted = await store.publishSnapshot({ header, rows: population.rows });
+        const persisted = await store.publishSnapshot({ header, eligibleCustomerIds: population.eligibleCustomerIds, rows: population.rows });
         const persistenceDurationMs = performance.now() - persistenceStartedAt;
         const activeMetadata = await store.getActiveSnapshotMetadata();
         const fixtureWithAffinity = population.rows[0]?.customerId ?? null;
@@ -123,12 +123,15 @@ try {
           mode: 'persisted',
           snapshotId: persisted.snapshotId,
           persistedRowCount: persisted.persistedRowCount,
+          populationRowCount: persisted.populationRowCount,
+          populationInsertDurationMs: persisted.populationInsertDurationMs,
+          populationChecksumDurationMs: persisted.populationChecksumDurationMs,
           activeSnapshotId: activeMetadata?.snapshotId ?? null,
           customerLookupRowCount: fixtureRows.length,
           batchLookupRowCount: fixtureBatch.length,
           customerWithoutAffinityRowCount: fixtureWithoutRows.length,
           idempotentLookup,
-          idempotent: idempotentLookup?.snapshotId === persisted.snapshotId && idempotentLookup.affinityDatasetChecksum === header.affinityDatasetChecksum,
+          idempotent: idempotentLookup?.snapshotId === persisted.snapshotId && idempotentLookup.affinityDatasetChecksum === header.affinityDatasetChecksum && idempotentLookup.eligiblePopulationChecksum === header.eligiblePopulationChecksum,
           persistenceDurationMs: round(persistenceDurationMs),
           totalDurationMs: round(performance.now() - startedAt),
           persistedChecksum: persisted.affinityDatasetChecksum,

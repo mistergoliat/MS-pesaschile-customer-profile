@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildCustomerCommercialAffinityPopulation,
+  calculateEligibleCustomerPopulationChecksum,
   type CustomerAffinityPurchaseEvidence,
 } from '../../src/application/customer-commercial-affinity-population/index.js';
 import {
@@ -8,6 +9,7 @@ import {
   validateCustomerCommercialAffinitySnapshot,
 } from '../../src/application/customer-commercial-affinity-snapshot/index.js';
 import type { ProductSemanticFact, CustomerCommercialAffinityRow } from '../../src/domain/customer-commercial-affinity/index.js';
+import { buildCustomerCommercialAffinitySnapshotKey } from '../../src/domain/customer-commercial-affinity/index.js';
 
 const referenceTime = '2026-09-01T00:00:00.000Z';
 
@@ -57,13 +59,13 @@ function buildFixture() {
     generatedAt: '2026-09-01T00:01:00.000Z',
     sourceWatermarkOrderId: 100,
   });
-  return { header, rows: population.rows };
+  return { header, eligibleCustomerIds: population.eligibleCustomerIds, rows: population.rows };
 }
 
 describe('Customer Commercial Affinity A01.5 snapshot validation', () => {
   it('accepts a complete header and normalized row', () => {
     const fixture = buildFixture();
-    expect(validateCustomerCommercialAffinitySnapshot(fixture)).toMatchObject({ populationSize: 1, axisCounts: { PRODUCT_FAMILY: 1 } });
+    expect(validateCustomerCommercialAffinitySnapshot(fixture)).toMatchObject({ eligiblePopulationChecksum: fixture.header.eligiblePopulationChecksum, populationSize: 1, axisCounts: { PRODUCT_FAMILY: 1 } });
   });
 
   it('rejects semantic lineage mismatch', () => {
@@ -99,5 +101,37 @@ describe('Customer Commercial Affinity A01.5 snapshot validation', () => {
     const checksum = 'd'.repeat(64);
     const header = { ...fixture.header, affinityDatasetChecksum: checksum, populationManifest: { ...fixture.header.populationManifest, affinityDatasetChecksum: checksum } };
     expect(() => validateCustomerCommercialAffinitySnapshot({ ...fixture, header })).toThrow(/checksum mismatch/);
+  });
+
+  it('rejects an affinity row outside the immutable eligible population', () => {
+    const fixture = buildFixture();
+    const eligiblePopulationChecksum = calculateEligibleCustomerPopulationChecksum([11]);
+    expect(() => validateCustomerCommercialAffinitySnapshot({
+      ...fixture,
+      eligibleCustomerIds: [11],
+      header: {
+        ...fixture.header,
+        eligibleCustomerCount: 1,
+        eligiblePopulationChecksum,
+        snapshotKey: buildCustomerCommercialAffinitySnapshotKey({
+          calculationVersion: fixture.header.calculationVersion,
+          productSemanticSnapshotId: fixture.header.productSemanticSnapshotId,
+          productSemanticSnapshotVersion: fixture.header.productSemanticSchemaVersion,
+          ontologyHash: fixture.header.ontologyHash,
+          populationPolicyVersion: fixture.header.populationPolicyVersion,
+          referenceTime: fixture.header.referenceTime,
+          eligiblePopulationChecksum,
+          consumerSemanticChecksum: fixture.header.consumerSemanticChecksum,
+          datasetChecksum: fixture.header.datasetChecksum,
+        }),
+        populationManifest: { ...fixture.header.populationManifest, eligiblePopulationChecksum },
+      },
+    })).toThrow(/outside eligible population/);
+  });
+
+  it('rejects duplicate and invalid eligible customer ids', () => {
+    const fixture = buildFixture();
+    expect(() => validateCustomerCommercialAffinitySnapshot({ ...fixture, eligibleCustomerIds: [10, 10] })).toThrow(/Duplicate eligibleCustomerId/);
+    expect(() => validateCustomerCommercialAffinitySnapshot({ ...fixture, eligibleCustomerIds: [0] })).toThrow(/positive integer/);
   });
 });

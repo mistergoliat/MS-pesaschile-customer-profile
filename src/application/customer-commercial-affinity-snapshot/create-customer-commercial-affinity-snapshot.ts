@@ -16,7 +16,10 @@ import type {
   CustomerCommercialAffinityPopulation,
   CustomerCommercialAffinityPopulationManifest,
 } from '../customer-commercial-affinity-population/index.js';
-import { calculateCustomerCommercialAffinityDatasetChecksum } from '../customer-commercial-affinity-population/index.js';
+import {
+  calculateCustomerCommercialAffinityDatasetChecksum,
+  calculateEligibleCustomerPopulationChecksum,
+} from '../customer-commercial-affinity-population/index.js';
 import type { ProductSemanticSnapshotConsumerMetadata } from '../product-semantic-snapshot/consumer.js';
 
 export type CustomerCommercialAffinitySnapshotStatus = 'building' | 'validated' | 'published' | 'failed' | 'superseded';
@@ -30,6 +33,8 @@ export type CustomerCommercialAffinitySnapshotPerformanceMetadata = {
   readonly batchSize?: number;
   readonly sourceQueries?: number;
   readonly sourceRetries?: number;
+  readonly populationInsertDurationMs?: number;
+  readonly populationChecksumDurationMs?: number;
 };
 
 export type CustomerCommercialAffinitySnapshotHeader = {
@@ -56,6 +61,8 @@ export type CustomerCommercialAffinitySnapshotHeader = {
   readonly affinityRowCount: number;
   readonly datasetChecksum: string;
   readonly affinityDatasetChecksum: string;
+  /** Present on new snapshots; absent only on legacy pre-A01.5.1 headers. */
+  readonly eligiblePopulationChecksum?: string;
   readonly identityAuthority: 'prestashop_customer';
   readonly sourceWatermarkOrderId: number | null;
   readonly semanticCoverage: CustomerCommercialAffinityPopulationManifest['coverage'];
@@ -66,11 +73,14 @@ export type CustomerCommercialAffinitySnapshotHeader = {
 
 export type CustomerCommercialAffinitySnapshotInput = {
   readonly header: CustomerCommercialAffinitySnapshotHeader;
+  /** Complete builder-produced eligible identity set, including no-affinity customers. */
+  readonly eligibleCustomerIds: readonly number[];
   readonly rows: readonly CustomerCommercialAffinityRow[];
 };
 
 export type CustomerCommercialAffinitySnapshotValidation = {
   readonly affinityDatasetChecksum: string;
+  readonly eligiblePopulationChecksum: string;
   readonly populationSize: number;
   readonly axisCounts: Readonly<Record<CustomerCommercialAffinityAxis, number>>;
 };
@@ -80,18 +90,24 @@ export type CustomerCommercialAffinitySnapshotLookup = {
   readonly status: CustomerCommercialAffinitySnapshotStatus;
   readonly datasetChecksum: string;
   readonly affinityDatasetChecksum: string;
+  readonly eligiblePopulationChecksum: string | null;
 };
 
 export type CustomerCommercialAffinityPersistedSnapshotResult = {
   readonly snapshotId: string;
   readonly persistedRowCount: number;
+  readonly populationRowCount: number;
   readonly affinityDatasetChecksum: string;
+  readonly populationInsertDurationMs: number;
+  readonly populationChecksumDurationMs: number;
+  readonly persistenceDurationMs: number;
 };
 
 export interface CustomerCommercialAffinitySnapshotStore {
   findSnapshotByKey(snapshotKey: string): Promise<CustomerCommercialAffinitySnapshotLookup | null>;
   publishSnapshot(input: CustomerCommercialAffinitySnapshotInput): Promise<CustomerCommercialAffinityPersistedSnapshotResult>;
   createBuilding(header: CustomerCommercialAffinitySnapshotHeader): Promise<string>;
+  writePopulation(snapshotId: string, eligibleCustomerIds: readonly number[]): Promise<void>;
   writeRows(snapshotId: string, rows: readonly CustomerCommercialAffinityRow[]): Promise<void>;
   markValidated(snapshotId: string): Promise<void>;
   publish(snapshotId: string): Promise<void>;
@@ -99,6 +115,8 @@ export interface CustomerCommercialAffinitySnapshotStore {
   getActiveSnapshotMetadata(): Promise<CustomerCommercialAffinitySnapshotHeader | null>;
   getCustomerAffinity(customerId: number): Promise<readonly CustomerCommercialAffinityRow[]>;
   getCustomerAffinities(customerIds: readonly number[]): Promise<readonly CustomerCommercialAffinityRow[]>;
+  isCustomerInAffinityPopulation(snapshotId: string, customerId: number): Promise<boolean>;
+  getAffinityPopulationMembershipBatch(snapshotId: string, customerIds: readonly number[]): Promise<readonly number[]>;
 }
 
 export type CreateCustomerCommercialAffinitySnapshotResult = {
@@ -132,6 +150,7 @@ export function buildCustomerCommercialAffinitySnapshotHeader(input: {
     ontologyHash: manifest.ontologyHash,
     populationPolicyVersion: manifest.populationPolicyVersion,
     referenceTime: manifest.referenceTime,
+    eligiblePopulationChecksum: manifest.eligiblePopulationChecksum,
     consumerSemanticChecksum: manifest.consumerSemanticChecksum,
     datasetChecksum: manifest.datasetChecksum,
   });
@@ -159,6 +178,7 @@ export function buildCustomerCommercialAffinitySnapshotHeader(input: {
     affinityRowCount: manifest.affinityRowCount,
     datasetChecksum: manifest.datasetChecksum,
     affinityDatasetChecksum: manifest.affinityDatasetChecksum,
+    eligiblePopulationChecksum: manifest.eligiblePopulationChecksum,
     identityAuthority: customerCommercialAffinityIdentityAuthority,
     sourceWatermarkOrderId: input.sourceWatermarkOrderId,
     semanticCoverage: manifest.coverage,
@@ -170,6 +190,15 @@ export function buildCustomerCommercialAffinitySnapshotHeader(input: {
 
 export function validateCustomerCommercialAffinitySnapshot(input: CustomerCommercialAffinitySnapshotInput): CustomerCommercialAffinitySnapshotValidation {
   validateHeader(input.header);
+  const eligibleCustomerIds = validateEligibleCustomerIds(input.eligibleCustomerIds);
+  if (eligibleCustomerIds.length !== input.header.eligibleCustomerCount) {
+    throw new Error(`Affinity population row count mismatch: header=${input.header.eligibleCustomerCount} ids=${eligibleCustomerIds.length}`);
+  }
+  const eligiblePopulationChecksum = calculateEligibleCustomerPopulationChecksum(eligibleCustomerIds);
+  if (eligiblePopulationChecksum !== input.header.eligiblePopulationChecksum) {
+    throw new Error('Eligible affinity population checksum mismatch');
+  }
+  const eligibleSet = new Set(eligibleCustomerIds);
   if (input.header.affinityRowCount !== input.rows.length) {
     throw new Error(`Affinity snapshot row count mismatch: header=${input.header.affinityRowCount} rows=${input.rows.length}`);
   }
@@ -183,6 +212,7 @@ export function validateCustomerCommercialAffinitySnapshot(input: CustomerCommer
     assertFixedPointRoundTrip(row.score, 'score', 9);
     if (row.explicitEvidenceCoverage !== null) assertFixedPointRoundTrip(row.explicitEvidenceCoverage, 'explicitEvidenceCoverage', 9);
     if (!isAllowedAxis(row.affinityAxis)) throw new Error(`Invalid affinityAxis: ${row.affinityAxis}`);
+    if (!eligibleSet.has(row.customerId)) throw new Error(`Affinity row customer is outside eligible population: ${row.customerId}`);
     const rowKey = `${row.customerId}\u0000${row.affinityAxis}\u0000${row.affinityCode}`;
     if (seen.has(rowKey)) throw new Error(`Duplicate affinity snapshot row: ${rowKey}`);
     seen.add(rowKey);
@@ -195,7 +225,11 @@ export function validateCustomerCommercialAffinitySnapshot(input: CustomerCommer
   if (affinityDatasetChecksum !== input.header.affinityDatasetChecksum) {
     throw new Error('Affinity snapshot checksum mismatch');
   }
-  return { affinityDatasetChecksum, populationSize: input.rows.length, axisCounts };
+  const customersWithAffinity = new Set(input.rows.map((row) => row.customerId)).size;
+  if (customersWithAffinity !== input.header.customersWithAffinity) {
+    throw new Error('Affinity customer coverage count does not match persisted rows');
+  }
+  return { affinityDatasetChecksum, eligiblePopulationChecksum, populationSize: eligibleCustomerIds.length, axisCounts };
 }
 
 export function calculateAffinityDatasetChecksum(
@@ -224,6 +258,8 @@ function validateHeader(header: CustomerCommercialAffinitySnapshotHeader): void 
   assertChecksum(header.consumerSemanticChecksum, 'consumerSemanticChecksum');
   assertChecksum(header.datasetChecksum, 'datasetChecksum');
   assertChecksum(header.affinityDatasetChecksum, 'affinityDatasetChecksum');
+  if (header.eligiblePopulationChecksum === undefined) throw new Error('eligiblePopulationChecksum is required for new affinity snapshots');
+  assertChecksum(header.eligiblePopulationChecksum, 'eligiblePopulationChecksum');
   assertValidUtcTimestamp(header.referenceTime, 'referenceTime');
   assertValidUtcTimestamp(header.generatedAt, 'generatedAt');
   if (header.identityAuthority !== customerCommercialAffinityIdentityAuthority) throw new Error(`Invalid identityAuthority: ${header.identityAuthority}`);
@@ -254,6 +290,7 @@ function validateHeader(header: CustomerCommercialAffinitySnapshotHeader): void 
     ['consumerSemanticChecksum', header.consumerSemanticChecksum, manifest.consumerSemanticChecksum],
     ['datasetChecksum', header.datasetChecksum, manifest.datasetChecksum],
     ['affinityDatasetChecksum', header.affinityDatasetChecksum, manifest.affinityDatasetChecksum],
+    ['eligiblePopulationChecksum', header.eligiblePopulationChecksum, manifest.eligiblePopulationChecksum],
     ['semanticSnapshotMetadata.snapshotId', header.semanticSnapshotMetadata.snapshotId, header.productSemanticSnapshotId],
     ['semanticSnapshotMetadata.schemaVersion', header.semanticSnapshotMetadata.schemaVersion, header.productSemanticSchemaVersion],
     ['semanticSnapshotMetadata.ontologyVersion', header.semanticSnapshotMetadata.ontologyVersion, header.ontologyVersion],
@@ -269,6 +306,7 @@ function validateHeader(header: CustomerCommercialAffinitySnapshotHeader): void 
     ontologyHash: header.ontologyHash,
     populationPolicyVersion: header.populationPolicyVersion,
     referenceTime: header.referenceTime,
+    eligiblePopulationChecksum: header.eligiblePopulationChecksum,
     consumerSemanticChecksum: header.consumerSemanticChecksum,
     datasetChecksum: header.datasetChecksum,
   });
@@ -299,4 +337,16 @@ function assertFixedPointRoundTrip(value: number, name: string, scale: number): 
 
 function isAllowedAxis(value: string): value is CustomerCommercialAffinityAxis {
   return value === 'PRODUCT_FAMILY' || value === 'DISCIPLINE' || value === 'USE_CONTEXT';
+}
+
+function validateEligibleCustomerIds(values: readonly number[]): readonly number[] {
+  if (!Array.isArray(values)) throw new Error('eligibleCustomerIds must be an array');
+  const sorted = [...values].sort((left, right) => left - right);
+  const seen = new Set<number>();
+  for (const customerId of sorted) {
+    assertPositiveInt(customerId, 'eligibleCustomerId');
+    if (seen.has(customerId)) throw new Error(`Duplicate eligibleCustomerId: ${customerId}`);
+    seen.add(customerId);
+  }
+  return sorted;
 }
