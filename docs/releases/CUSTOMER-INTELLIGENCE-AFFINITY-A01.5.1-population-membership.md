@@ -1,6 +1,6 @@
 # CUSTOMER-INTELLIGENCE-AFFINITY-A01.5.1 - Eligible Population Membership
 
-Status: implemented. This release closes the Audience A01 population-membership block in the
+Status: implemented and EC2-validated. This release closes the Audience A01 population-membership block in the
 affinity persistence contract. It does not implement Audience runtime, filters, HTTP endpoints,
 contactability, exports, Brevo integration, or R3 integration.
 
@@ -108,18 +108,30 @@ AFFINITY_REFERENCE_TIME=2026-09-01T00:00:00.000Z npm run customer:affinity:snaps
 AFFINITY_REFERENCE_TIME=2026-09-01T00:00:00.000Z npm run customer:affinity:snapshot:build
 ```
 
-The previously recorded A01.5 controlled dry run was approximately 45,197 eligible customers,
-43,284 with affinity, and 1,913 without affinity. These values remain evidence targets, not
-hard-coded validation values.
+The current production/EC2 validation is:
+
+- migration 014 applied;
+- snapshot 4 published;
+- population size 45,196;
+- affinity rows 102,967;
+- customers with affinity 43,283;
+- customers without affinity 1,913;
+- dataset checksum `56973f655a4120e47b6991ab8fc8b022688eabc76d8d50a5007edc865bc6e4e1`;
+- affinity dataset checksum `9ac709cc835900ea4d1e95da02264a06c71a54a113a4a7559a8d983997a5aa28`;
+- eligible population checksum `55c635541e0fdf206b3e547b8549d0d9e7ef3a774ad4300386009793af9efd90`;
+- second identical build: `idempotent=true`, `snapshotId=4`.
+
+The drift from legacy snapshot 3 is fully explained by `customerId=158623`, `orderId=81612`,
+`valid=0`. It removed exactly one eligible customer, one order, three source lines, and four
+affinity rows; no other customer affinity code set changed.
 
 ## Audience handoff and rollback
 
-`AUDIENCE_A01_UNBLOCKED: YES` for the previously blocked affinity-membership contract. Audience
+`AFFINITY_POPULATION_MEMBERSHIP: READY` and `AUDIENCE_A01_UNBLOCKED: YES` for the previously blocked affinity-membership contract. Audience
 runtime remains out of scope and must consume the published snapshot metadata plus these readers.
 
 Rollback uses [`014_add_customer_commercial_affinity_snapshot_population.rollback.sql`](../../migrations/014_add_customer_commercial_affinity_snapshot_population.rollback.sql):
 it drops the membership table first, then removes the header checksum column. Existing snapshot
 headers remain otherwise untouched.
 
-Decision: `CUSTOMER_COMMERCIAL_AFFINITY_POPULATION_MEMBERSHIP_READY_WITH_DEBT` until the controlled
-analytics migration and real persisted build are executed with the approved credentials.
+Decision: `CUSTOMER_COMMERCIAL_AFFINITY_POPULATION_MEMBERSHIP_READY`.

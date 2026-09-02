@@ -58,3 +58,16 @@ export type {
   CustomerRfmSnapshotPayload,
   GetCustomerRfmResult,
 } from '../domain/customer-rfm/index.js';
+export type {
+  AudienceDefinitionV1,
+  AudienceFilterV1,
+  AudienceConditionV1,
+  AudienceFieldIdV1,
+  AudienceScalarOperatorV1,
+  AudienceEvaluationContextV1,
+  AudienceSnapshotLineageV1,
+  AudienceAvailabilityV1,
+  AudienceEvaluationResultV1,
+  AudienceMemberV1,
+  AudienceValidationErrorV1,
+} from '../domain/customer-intelligence-audience/index.js';

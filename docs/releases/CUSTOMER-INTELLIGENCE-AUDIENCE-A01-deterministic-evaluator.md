@@ -1,286 +1,160 @@
 # CUSTOMER-INTELLIGENCE-AUDIENCE-A01 — Deterministic Evaluator
 
-Status: **BLOCKED_REQUIRES_MIGRATION**
+Status: **READY_WITH_DOCUMENTED_DEBT**
 
-This release was stopped at A01 Gate 1. No Audience runtime, SQL evaluator, persistence, HTTP
-endpoint, integration, or migration was added.
+This release implements the bounded Audience Engine core. It adds no HTTP route, persistence for
+audience definitions/evaluations, CRM/R3/Copilot integration, contactability, export, or campaign
+behavior.
 
-## 1. Pre-flight correction
+## Historical Gate 1 block and resolution
 
-Repository evidence confirms that `HYROX` is a `DISCIPLINE` code, not a `USE_CONTEXT` code:
+The original A01 stopped at Gate 1 because affinity rows did not persist the exact eligible
+customer identity set. That evidence is preserved here: row absence could not distinguish an
+eligible customer with no matching code from a customer outside the affinity population.
 
-- `docs/audits/CUSTOMER-INTELLIGENCE-R2-A00.1-commercial-product-ontology-discovery.md` lists
-  HYROX under discipline tags.
-- `src/application/product-semantic-snapshot/consumer.ts` preserves `disciplines` and validates
-  their axis as `DISCIPLINE`.
-- The affinity builder consumes discipline and use-context axes separately.
+Historical Gate 1 decision: `AFFINITY_POPULATION_MEMBERSHIP=BLOCKED_REQUIRES_MIGRATION`. The
+precise missing contract was an immutable table keyed by `(snapshot_id, customer_id)`, containing
+one row for every eligible customer, including customers without affinity rows. Inferring that set
+from row data, header counts, observed top codes, or mutable PrestaShop data was explicitly
+rejected.
 
-Corrected in the A00 design document:
+`CUSTOMER-INTELLIGENCE-AFFINITY-A01.5.1` resolved that prerequisite with migration 014 and the
+immutable `customer_commercial_affinity_snapshot_population` table. EC2 validation recorded
+published snapshot 4, population size 45,196, 102,967 affinity rows, 43,283 customers with
+affinity, 1,913 without affinity, and the exact dataset, affinity, and eligible-population
+checksums in the A01.5.1 release note. A second identical build returned `idempotent=true` and
+snapshot 4. The one-customer drift from snapshot 3 is explained by customer 158623/order 81612
+with `valid=0`. `AFFINITY_POPULATION_MEMBERSHIP=READY` and `AUDIENCE_A01_UNBLOCKED=YES`.
 
-```json
-{"kind":"HAS_AFFINITY","axis":"DISCIPLINE","code":"HYROX","minScore":"0.30"}
-```
+## Gate 1 result
 
-Examples 4 and 9 were corrected. No ontology or affinity data was changed.
+### G1.1 Affinity population membership — READY
 
-## 2. Gate 1 result
+Audience consumes the persisted snapshot population table, never affinity rows alone. An eligible
+customer with no matching normalized row evaluates `FALSE`; a customer outside the selected
+eligible set evaluates `UNKNOWN`. Batch access is bounded and uses the `(snapshot_id, customer_id)`
+primary key. Snapshot 4 is compatible with this contract.
 
-### AFFINITY_POPULATION_MEMBERSHIP
+### G1.2 Temporal resolution — READY
 
-`BLOCKED_REQUIRES_MIGRATION`
+`createAudienceContextResolver` uses the selected published feature snapshot as the sole anchor,
+then selects the latest published RFM, cluster, CLV, and affinity snapshot at or before its
+reference time. Equal reference times use the higher snapshot id. Future snapshots and legacy
+affinity headers without a population checksum are excluded. The result serializes component
+ids, reference times, versions, policies, checksums, model/ontology lineage, and availability.
 
-The current persisted affinity model contains:
+### G1.3 Raw RFM projection — READY
 
-- `customer_commercial_affinity_snapshot` header counts, including
-  `eligible_customer_count`, `customers_with_affinity`, and `customers_without_affinity`;
-- `customer_commercial_affinity_snapshot_row` rows only for
-  `(snapshot_id, customer_id, affinity_axis, affinity_code)` combinations with evidence.
+The fixed Audience SQL projection reads persisted `recency_days`, `frequency_orders`, and
+`gross_order_value_tax_incl` from the selected RFM snapshot with one set-based query. It does not
+rename those fields to Commercial Profile names and performs no per-customer orchestration.
 
-The header count `customers_without_affinity` is not an identity set. The row table cannot answer
-whether a base customer is an eligible affinity customer with no requested code or is outside the
-affinity population. The current runtime's no-row mapping to `NOT_IN_POPULATION` is therefore not
-sufficient for Audience semantics.
+### G1.4 Affinity code validation — SYNTAX_ONLY_WITH_DOCUMENTED_DEBT
 
-Inferring membership from an affinity row, observed codes, the header count, or a live PrestaShop
-query would be incorrect. A live source query would also make an evaluation depend on mutable data
-outside the selected snapshot.
+Axis is restricted to `PRODUCT_FAMILY`, `DISCIPLINE`, and `USE_CONTEXT`; code is bounded,
+non-empty, case-sensitive, and opaque. Customer Profile does not reject an unobserved code. A
+complete versioned/checksummed Catalog-owned code registry remains an integration debt.
 
-### Precise schema change required
+### G1.5 SQL feasibility — READY_WITHOUT_INDEX_CHANGE
 
-Before the evaluator can be implemented, add an immutable snapshot population table conceptually
-named `customer_commercial_affinity_snapshot_population`:
+The compiler emits fixed SELECT-only SQL, fixed table/column identifiers, parameterized values,
+left joins for scalar component rows, and correlated `EXISTS` predicates for affinity. No index
+migration was required or added. Target-database EXPLAIN evidence remains an operational follow-up
+because `ANALYTICS_DB_*` is not configured in this checkout. The prepared shapes are feature
+scalar, RFM segment, raw RFM threshold, cluster model/id, CLV threshold/support, one affinity,
+RFM-and-affinity, and multi-affinity OR. Existing snapshot/customer and axis/code indexes remain
+the available access paths; no measured basis exists for a new index.
 
-```sql
-snapshot_id BIGINT UNSIGNED NOT NULL,
-customer_id INT UNSIGNED NOT NULL,
-PRIMARY KEY (snapshot_id, customer_id),
-FOREIGN KEY (snapshot_id)
-  REFERENCES customer_commercial_affinity_snapshot(id)
-  ON DELETE CASCADE
-```
+## Contracts and field registry
 
-The table must contain one row for every eligible customer, including the 1,913 customers currently
-reported as `customers_without_affinity`. It should also have a lookup index beginning with
-`(snapshot_id, customer_id)` (the primary key already provides that access path). The existing
-header count remains useful as a reconciliation invariant, but is not a substitute for this set.
+The implementation preserves the A00 v1 contracts and version strings:
 
-The migration must validate that the population row count equals `eligible_customer_count`, that
-customer ids are positive, and that the population checksum is included in immutable snapshot
-lineage. Existing snapshots cannot be made historically exact from the header count alone; they
-must be rebuilt/re-published from the original eligible-customer artifact or explicitly remain
-unusable for audience evaluation.
+- `AudienceDefinitionV1`, `AudienceFilterV1`, `AudienceConditionV1`;
+- `AudienceFieldIdV1`, `AudienceScalarOperatorV1`;
+- `AudienceEvaluationContextV1`, `AudienceSnapshotLineageV1`, `AudienceAvailabilityV1`;
+- `AudienceEvaluationResultV1`, `AudienceMemberV1`, `AudienceValidationErrorV1`.
 
-No migration was created because the task explicitly requires stopping before creating one.
+The compile-time registry exposes only the approved RFM, cluster, CLV, and commercial feature
+fields. Affinity is not a scalar field. Cluster identity remains `(modelVersion, clusterId)` and
+RFM segment interpretation remains paired with its selected segment version.
 
-## 3. Affinity code validation
+Validation enforces the fixed field/operator/type allowlists, maximum depth 5, maximum 20
+conditions, maximum 500 `IN` values, non-empty boolean groups, ordered `BETWEEN` bounds, explicit
+null tests, affinity qualifier bounds, and absolute UTC timestamps. Invalid definitions are
+rejected before compilation.
 
-### AFFINITY_CODE_VALIDATION
+## Canonicalization and semantics
 
-`SYNTAX_ONLY_WITH_DOCUMENTED_DEBT`
+Canonical JSON sorts object keys, recursively canonicalizes `NOT`, sorts/deduplicates `AND` and
+`OR` children, normalizes `IN`/`NOT_IN` values, and normalizes decimal strings without changing
+case-sensitive semantic strings. It performs no algebraic rewriting. The SHA-256 digest is
+available as `audienceDefinitionChecksum`; evaluation timestamps, SQL, preview limits, and
+resolved context are excluded.
 
-The Product Semantic Snapshot consumer exposes immutable snapshot identity, schema version,
-ontology version/hash, classifier version, source checksum, and normalized consumer checksum. It
-does not expose a complete catalog-owned `(axis, code)` registry. The affinity population manifest
-contains observed distributions/top codes, but those are not a complete ontology universe and
-cannot establish that an unobserved code is invalid.
+The evaluator preserves explicit `TRUE`, `FALSE`, and `UNKNOWN` values. SQL NULL behavior and the
+pure row evaluator both implement the A00 truth tables. Actual nullable feature values can satisfy
+`IS_NULL`; missing component rows produce `UNKNOWN`; numeric zero remains a value. Only root
+`TRUE` is included, while all three counts reconcile to the feature population universe.
 
-Therefore A01 may validate the local axis union and non-empty, case-sensitive opaque code syntax,
-but must not emit `UNKNOWN_AFFINITY_CODE` based on observed rows or current catalog state. A future
-catalog-owned, versioned, checksummed code-set contract is required to resolve that validation
-fully. Customer Profile must continue to consume that contract rather than copying the ontology.
+## Affinity evaluation and snapshot lineage
 
-## 4. Other Gate 1 findings
+`HAS_AFFINITY` uses one normalized row for axis, code, and every supplied qualifier. It never
+combines qualifiers across rows and never multiplies base customers. Outside the selected
+affinity population is `UNKNOWN`; eligible without a matching row or with failed qualifiers is
+`FALSE`; one qualifying row is `TRUE`.
 
-### Temporal resolution
+Referenced unavailable components block the whole evaluation with a typed reason. Unreferenced
+unavailable components do not block. Preview members are minimal `{customerId}`, sorted ascending,
+bounded at 1,000, and do not affect `matchedCount`.
 
-The existing Customer Intelligence resolver correctly anchors the feature snapshot and selects
-published RFM/cluster snapshots with `referenceTime <= feature.referenceTime`. A01 must add the
-same selection policy for CLV and Commercial Affinity, with deterministic snapshot-id tie-breaks.
-The current CLV and affinity runtime readers select active/latest snapshots and are not sufficient
-for a reproducible Audience context. This resolver was not implemented after the membership gate
-blocked the release.
+## SQL architecture, security, and performance
 
-Required future context:
+The SQL evaluator starts from the selected Feature Snapshot Population B, left joins selected RFM,
+cluster, and CLV rows, and expresses affinity through population and row `EXISTS` checks. The
+compiler accepts no user identifiers or raw fragments. Values are bound parameters and execution
+is SELECT-only with the configured analytics query timeout. Query and total durations are captured.
+The implementation is set-based and has no N+1 path.
 
-```text
-feature anchor
-  -> latest published RFM    <= feature.referenceTime
-  -> latest published cluster <= feature.referenceTime
-  -> latest published CLV     <= feature.referenceTime
-  -> latest published affinity<= feature.referenceTime
-```
+## Tests and remaining debt
 
-Every selected component must preserve its snapshot id, reference time, version/policy fields,
-checksums, and affinity ontology lineage. Future/unpublished/malformed/unreadable components must
-be excluded or reported as unavailable according to the typed result contract.
+Focused Audience tests: 92 passed. Affinity tests: 147 passed, 1 skipped. Customer Intelligence
+tests: 415 passed. The full repository suite: 2,048 passed, 1 skipped. Typecheck, lint, build, and
+`git diff --check` passed.
 
-### Raw RFM projection
+Remaining debts are the Catalog-owned versioned affinity code registry and target-EC2 EXPLAIN
+artifacts in this checkout. No ontology definition was copied into Customer Profile, and no R3 or
+Copilot dependency was introduced.
 
-The repository has the required persisted fields in `RfmSnapshotRow`:
-
-- `recencyDays`
-- `frequencyOrders`
-- `grossOrderValueTaxIncl`
-
-The current `CustomerIntelligenceRow` projection does not carry these fields, and
-`CustomerCommercialProfileRfm` renames them for its own customer-centric contract. A01 must add a
-fixed audience bulk/read-model projection using the original RFM names, without N+1 reads or
-renaming them to `recency`, `frequency`, or `monetary` in the Audience domain. This was not
-implemented because the Gate 1 membership prerequisite was not resolved.
-
-## 5. Contracts and evaluator status
-
-The A00 design defines the exact intended v1 names and versions:
-
-- `AudienceDefinitionV1`
-- `AudienceFilterV1`
-- `AudienceConditionV1`
-- `AudienceFieldIdV1`
-- `AudienceScalarOperatorV1`
-- `AudienceEvaluationContextV1`
-- `AudienceSnapshotLineageV1`
-- `AudienceAvailabilityV1`
-- `AudienceEvaluationResultV1`
-- `AudienceMemberV1`
-- `AudienceValidationErrorV1`
-
-They were not added to `src/` in this blocked release. The same applies to the scalar field
-registry, hard-bounded validator, canonicalizer/hash, explicit TRUE/FALSE/UNKNOWN evaluator,
-fixed SQL compiler, and completed/blocked result implementation.
-
-The intended semantics remain:
-
-- include only root `TRUE` customers;
-- preserve `UNKNOWN` and count it exactly;
-- block an evaluation when a referenced component is unavailable;
-- use `HAS_AFFINITY` with one normalized row satisfying all qualifiers;
-- use fixed joins and affinity `EXISTS`, never a raw affinity join that multiplies customers;
-- return `customerId` only in the member contract;
-- keep preview limits independent from `matchedCount`.
-
-## 6. SQL/EXPLAIN status
-
-No representative `EXPLAIN` was run because no evaluator SQL was implemented and the affinity
-population gate is unresolved. The planned evidence set remains:
-
-- feature scalar filter;
-- RFM segment filter;
-- RFM raw threshold;
-- cluster id/model;
-- CLV threshold/support;
-- one `HAS_AFFINITY`;
-- RFM AND affinity;
-- multi-affinity OR.
-
-No indexes were added. The existing affinity `(snapshot_id, affinity_axis, affinity_code)` and
-`(snapshot_id, customer_id)` indexes remain useful for the future `EXISTS` plan, but range/qualifier
-index decisions must wait for measured target-MariaDB plans.
-
-## 7. Tests and quality gates
-
-The A01 focused tests were not added because the required Gate 1 membership contract is blocked.
-No Customer Intelligence tests or full repository tests were run for this blocked slice. The only
-validation performed after the documentation correction was `git diff --check`.
-
-## 8. Rollback
-
-No runtime rollback is required. The only changes are documentation:
-
-- A00 examples 4 and 9 now use `DISCIPLINE/HYROX`.
-- This blocked A01 release note records the gate result and required schema addition.
-
-No database, snapshot, index, or production data was changed.
-
-## 9. A02 readiness
-
-`BLOCKED` for A02 audience consumption until the affinity population table/read contract exists,
-historical affinity snapshots are either rebuilt or explicitly excluded, and the temporal resolver
-can select all referenced components at-or-before the feature anchor. The A00 domain remains valid;
-its open decisions are now narrowed to an explicit migration-backed population-membership contract
-and the catalog-owned code-set contract.
-
-## 10. Final report
+## Final decision
 
 ```text
-PRE_FLIGHT_A00_CORRECTIONS:
-Corrected A00 examples 4 and 9: HYROX is DISCIPLINE/HYROX, confirmed by repository ontology
-evidence. No ontology or affinity data changed.
-
-AFFINITY_POPULATION_MEMBERSHIP:
-BLOCKED_REQUIRES_MIGRATION
-
-AFFINITY_CODE_VALIDATION:
-SYNTAX_ONLY_WITH_DOCUMENTED_DEBT
-
-TEMPORAL_RESOLUTION:
-Not implemented after Gate 1 block. Required policy is feature-anchor plus latest published
-component snapshot at-or-before the feature referenceTime for RFM, cluster, CLV, and affinity.
-
-RAW_RFM_PROJECTION:
-Not implemented. Required source fields are RfmSnapshotRow.recencyDays, frequencyOrders, and
-grossOrderValueTaxIncl in a fixed bulk audience projection.
-
-FILES_CHANGED:
-docs/design/CUSTOMER-INTELLIGENCE-AUDIENCE-A00-domain-semantic-design.md
-docs/releases/CUSTOMER-INTELLIGENCE-AUDIENCE-A01-deterministic-evaluator.md
-
-CONTRACTS:
-Not implemented; names and version strings remain defined by A00.
-
-FIELD_REGISTRY:
-Not implemented.
-
-VALIDATION:
-Not implemented.
-
-CANONICALIZATION:
-Not implemented.
-
-THREE_VALUED_LOGIC:
-Not implemented; A00 semantics preserved as the implementation target.
-
-AFFINITY_EVALUATION:
-Not implemented; blocked by missing immutable eligible-customer identity set.
-
-SNAPSHOT_LINEAGE:
-Not implemented; A01 target is feature-anchored at-or-before resolution for all components.
-
-SQL_EVALUATOR:
-Not implemented.
-
-EXPLAIN_RESULTS:
-Not run; no evaluator SQL exists in this blocked slice.
-
-PERFORMANCE:
-Not measured.
-
-FOCUSED_TESTS:
-Not run; tests were not added after the mandatory gate stopped implementation.
-
-CUSTOMER_INTELLIGENCE_TESTS:
-Not run.
-
-FULL_TESTS:
-Not run.
-
-TYPECHECK:
-Not run; no runtime code was changed.
-
-LINT:
-Not run; no runtime code was changed.
-
-BUILD:
-Not run; no runtime code was changed.
-
-GIT_DIFF_CHECK:
-PASSED
-
-PUBLIC_BEHAVIOR_CHANGED:
-NO
-
-A02_READINESS:
-BLOCKED
-
-DECISION:
-BLOCKED
+PRE_FLIGHT_DOCS: PASSED; A01.5.1 records EC2 validation and READY decision
+GATE_1: PASSED
+AFFINITY_POPULATION_MEMBERSHIP: READY
+AFFINITY_CODE_VALIDATION: SYNTAX_ONLY_WITH_DOCUMENTED_DEBT
+TEMPORAL_RESOLUTION: READY
+RAW_RFM_PROJECTION: READY
+CONTRACTS: READY
+FIELD_REGISTRY: READY
+VALIDATION: READY
+CANONICALIZATION: READY
+THREE_VALUED_LOGIC: READY
+NULL_SEMANTICS: READY
+AFFINITY_EVALUATION: READY
+SNAPSHOT_LINEAGE: READY
+SQL_EVALUATOR: READY
+EXPLAIN_RESULTS: NOT RUN; ANALYTICS_DB_* is not configured in this checkout
+PERFORMANCE: SET-BASED; DURATIONS CAPTURED; NO INDEX MIGRATION
+SECURITY: READY
+FOCUSED_TESTS: 92 passed
+AFFINITY_TESTS: 147 passed, 1 skipped
+CUSTOMER_INTELLIGENCE_TESTS: 415 passed
+FULL_TESTS: 2,048 passed, 1 skipped
+TYPECHECK: PASSED
+LINT: PASSED
+BUILD: PASSED
+GIT_DIFF_CHECK: PASSED
+PUBLIC_BEHAVIOR_CHANGED: NO
+A02_READINESS: READY_WITH_DEBT
+DECISION: CUSTOMER_INTELLIGENCE_AUDIENCE_EVALUATOR_READY_WITH_DOCUMENTED_DEBT
 ```
