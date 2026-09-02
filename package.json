@@ -46,7 +46,8 @@
     "customer:affinity:population": "tsx scripts/customer-commercial-affinity/a01-4-population.ts",
     "customer:affinity:query-plan": "tsx scripts/customer-commercial-affinity/a01-4-1-query-plan.ts",
     "customer:affinity:migrate": "tsx scripts/customer-commercial-affinity/apply-migration.ts",
-    "customer:affinity:snapshot:build": "tsx scripts/customer-commercial-affinity/a01-5-snapshot-build.ts"
+    "customer:affinity:snapshot:build": "tsx scripts/customer-commercial-affinity/a01-5-snapshot-build.ts",
+    "customer:audience:validate": "tsx scripts/customer-intelligence-audience/a01-1-operational-validation.ts"
   },
   "keywords": [],
   "author": "",

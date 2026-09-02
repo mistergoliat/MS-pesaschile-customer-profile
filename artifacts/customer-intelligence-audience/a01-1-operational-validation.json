@@ -1,0 +1,50 @@
+{
+  "runnerVersion": "customer-intelligence-audience-a01.1-operational-validation-v1",
+  "operationalStatus": "PENDING_MANUAL_EC2_EXECUTION",
+  "generatedAt": "2026-09-02T22:29:17.261Z",
+  "expectedContext": {
+    "snapshotIds": {
+      "feature": "2",
+      "rfm": "1",
+      "cluster": "1",
+      "clv": "1",
+      "commercialAffinity": "4"
+    },
+    "affinityPopulationChecksum": "55c635541e0fdf206b3e547b8549d0d9e7ef3a774ad4300386009793af9efd90"
+  },
+  "connection": {
+    "configured": true,
+    "source": "RFM_SNAPSHOT_DB_RUNNER_COMPATIBILITY_FALLBACK"
+  },
+  "resolvedContext": {
+    "status": "unavailable",
+    "reason": "ANALYTICS_UNAVAILABLE",
+    "context": null,
+    "availability": {
+      "feature": "UNAVAILABLE",
+      "rfm": "UNAVAILABLE",
+      "cluster": "UNAVAILABLE",
+      "clv": "UNAVAILABLE",
+      "commercialAffinity": "UNAVAILABLE"
+    }
+  },
+  "definitions": [],
+  "determinism": [],
+  "semanticProbes": {
+    "affinity": null,
+    "nullSemantics": null
+  },
+  "explain": [],
+  "performance": {
+    "evaluations": [],
+    "pathologies": []
+  },
+  "indexDecision": {
+    "decision": "NO_INDEX_CHANGE_REQUIRED",
+    "rationale": "No migration is created by this runner; target-EC2 EXPLAIN evidence is pending."
+  },
+  "failureProbes": [],
+  "errors": [
+    "Context resolution unavailable: ANALYTICS_UNAVAILABLE"
+  ]
+}

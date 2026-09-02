@@ -103,6 +103,35 @@ combines qualifiers across rows and never multiplies base customers. Outside the
 affinity population is `UNKNOWN`; eligible without a matching row or with failed qualifiers is
 `FALSE`; one qualifying row is `TRUE`.
 
+## A01.1 operational validation runner — pending manual EC2 evidence
+
+The development/operations-only runner is available at
+`scripts/customer-intelligence-audience/a01-1-operational-validation.ts` and is exposed as
+`npm run customer:audience:validate`. It composes the existing context resolver, evaluator,
+compiler, and MySQL executor; it does not add public API behavior, persistence, migrations, or
+Audience business logic. It discovers real RFM, cluster, and affinity values with bounded reads,
+executes the fixed representative suite, checks three-valued probes, captures EXPLAIN plans and
+performance evidence, and writes the credential-free artifact
+`artifacts/customer-intelligence-audience/a01-1-operational-validation.json`.
+
+The runner prefers `ANALYTICS_DB_*`. On the current EC2 layout, where the analytics tables share
+the RFM schema and only `RFM_SNAPSHOT_DB_*` is available, it uses that existing family through an
+explicit runner-only compatibility fallback. Credentials are never printed. Local execution in
+this checkout is not operational evidence because the agent cannot access EC2.
+
+Exact EC2 command to execute after deploying the runner:
+
+```text
+npm run customer:audience:validate
+```
+
+The repository decision remains:
+
+```text
+A01_OPERATIONAL_STATUS: PENDING_MANUAL_EC2_EXECUTION
+A02_READINESS: BLOCKED_PENDING_MANUAL_EC2_EXECUTION
+```
+
 Referenced unavailable components block the whole evaluation with a typed reason. Unreferenced
 unavailable components do not block. Preview members are minimal `{customerId}`, sorted ascending,
 bounded at 1,000, and do not affect `matchedCount`.
@@ -143,7 +172,7 @@ NULL_SEMANTICS: READY
 AFFINITY_EVALUATION: READY
 SNAPSHOT_LINEAGE: READY
 SQL_EVALUATOR: READY
-EXPLAIN_RESULTS: NOT RUN; ANALYTICS_DB_* is not configured in this checkout
+EXPLAIN_RESULTS: A01.1 runner implemented; target-EC2 execution pending
 PERFORMANCE: SET-BASED; DURATIONS CAPTURED; NO INDEX MIGRATION
 SECURITY: READY
 FOCUSED_TESTS: 92 passed
@@ -155,6 +184,6 @@ LINT: PASSED
 BUILD: PASSED
 GIT_DIFF_CHECK: PASSED
 PUBLIC_BEHAVIOR_CHANGED: NO
-A02_READINESS: READY_WITH_DEBT
+A02_READINESS: BLOCKED_PENDING_MANUAL_EC2_EXECUTION
 DECISION: CUSTOMER_INTELLIGENCE_AUDIENCE_EVALUATOR_READY_WITH_DOCUMENTED_DEBT
 ```
