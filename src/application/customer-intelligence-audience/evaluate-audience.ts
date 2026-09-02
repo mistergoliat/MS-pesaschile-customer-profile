@@ -75,8 +75,12 @@ function incompatibleVersionConstraints(filter: AudienceFilterV1, context: Audie
     if (node.kind === 'AND' || node.kind === 'OR') { node.children.forEach(visit); return; }
     if (node.kind === 'NOT') { visit(node.child); return; }
     if (node.kind !== 'SCALAR') return;
-    const expected = node.field === 'rfm.segmentVersion' ? context.lineage.rfm?.segmentVersion : node.field === 'cluster.modelVersion' ? context.lineage.cluster?.modelVersion : null;
-    if (node.field === 'rfm.segmentCode' && (expected === null || expected === undefined)) { issues.push('rfm.segmentCode requires a resolved segmentVersion'); return; }
+    const expectedVersion = context.lineage.rfm?.segmentVersion;
+    const expected = node.field === 'rfm.segmentVersion' ? expectedVersion : node.field === 'cluster.modelVersion' ? context.lineage.cluster?.modelVersion : null;
+    // segmentCode is interpreted within the selected RFM segment version. It must have a
+    // resolved version available, but the code value itself must never be compared to that
+    // version string. An explicit segmentVersion condition below is checked independently.
+    if (node.field === 'rfm.segmentCode' && (expectedVersion === null || expectedVersion === undefined)) { issues.push('rfm.segmentCode requires a resolved segmentVersion'); return; }
     if (expected === null || expected === undefined) return;
     if (node.operator === 'EQ' && node.value !== expected) issues.push(`${node.field}=${String(node.value)} is incompatible with resolved ${expected}`);
     if (node.operator === 'IN' && Array.isArray(node.value) && !node.value.includes(expected)) issues.push(`${node.field} IN does not include resolved ${expected}`);

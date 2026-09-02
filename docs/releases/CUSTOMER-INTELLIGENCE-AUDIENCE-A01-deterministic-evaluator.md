@@ -132,6 +132,23 @@ A01_OPERATIONAL_STATUS: PENDING_MANUAL_EC2_EXECUTION
 A02_READINESS: BLOCKED_PENDING_MANUAL_EC2_EXECUTION
 ```
 
+## A01.2 operational execution repair
+
+The EC2 A01.1 failure evidence exposed two defects without requiring an Audience redesign:
+the SQL compiler bound expression values after the snapshot/feature placeholders even though
+the expression is emitted first in `SELECT`, and the version guard incorrectly treated an
+`rfm.segmentCode` condition as if its code value were the selected `segmentVersion`. A01.2 now
+keeps expression parameters first, then binds RFM/cluster/CLV/feature snapshot ids, and treats
+the selected RFM version as the compatibility authority while requiring an explicit paired
+`segmentVersion` in the runner's representative segment definition.
+
+The runner now fails the validation process when a completed evaluation does not reconcile to
+the resolved Feature Population B size or when the three-valued count invariant fails. It keeps
+`indexDecision=PENDING_VALID_EXECUTION` until a real non-zero population evaluation succeeds;
+EXPLAIN plans from zero-row or mismatched evaluations are marked unaccepted and are not
+performance evidence. Regression coverage uses distinct realistic ids: feature `2`, RFM `1`,
+cluster `1`, CLV `1`, and affinity `4`.
+
 Referenced unavailable components block the whole evaluation with a typed reason. Unreferenced
 unavailable components do not block. Preview members are minimal `{customerId}`, sorted ascending,
 bounded at 1,000, and do not affect `matchedCount`.

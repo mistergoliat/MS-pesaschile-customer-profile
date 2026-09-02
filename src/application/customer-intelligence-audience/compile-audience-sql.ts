@@ -17,7 +17,9 @@ export function compileAudienceSql(context: AudienceEvaluationContextV1, filter:
   const params: unknown[] = [];
   const expression = compileFilter(filter);
   const sql = `SELECT fr.prestashop_customer_id AS customerId, CASE ${expression} WHEN 1 THEN 'TRUE' WHEN 0 THEN 'FALSE' ELSE 'UNKNOWN' END AS truth\nFROM customer_feature_snapshot_row fr\nLEFT JOIN customer_rfm_snapshot_row rr ON rr.snapshot_id = ? AND rr.prestashop_customer_id = fr.prestashop_customer_id\nLEFT JOIN customer_cluster_snapshot_row cr ON cr.snapshot_id = ? AND cr.prestashop_customer_id = fr.prestashop_customer_id\nLEFT JOIN customer_clv_snapshot_row cv ON cv.snapshot_id = ? AND cv.customer_id = fr.prestashop_customer_id\nWHERE fr.snapshot_id = ?\nORDER BY fr.prestashop_customer_id ASC`;
-  params.unshift(context.lineage.rfm?.snapshotId ?? '0', context.lineage.cluster?.snapshotId ?? '0', context.lineage.clv?.snapshotId ?? '0', context.lineage.feature.snapshotId);
+  // The filter expression is emitted in SELECT before the JOIN and WHERE clauses, so its
+  // placeholders must remain first. Snapshot ids follow in the SQL's actual placeholder order.
+  params.push(context.lineage.rfm?.snapshotId ?? '0', context.lineage.cluster?.snapshotId ?? '0', context.lineage.clv?.snapshotId ?? '0', context.lineage.feature.snapshotId);
   return { sql, params };
 
   function compileFilter(node: AudienceFilterV1): string {

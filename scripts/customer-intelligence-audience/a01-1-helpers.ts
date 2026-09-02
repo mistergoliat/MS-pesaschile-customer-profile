@@ -103,6 +103,17 @@ export function assertEvaluationInvariants(result: AudienceEvaluationResultV1, p
   }
 }
 
+export function hasValidRealPopulationEvidence(populationUniverseCount: number, resolvedPopulationSize: number): boolean {
+  return resolvedPopulationSize > 0 && populationUniverseCount === resolvedPopulationSize;
+}
+
+export function assertEvaluationPopulation(result: AudienceEvaluationResultV1, resolvedPopulationSize: number): void {
+  if (result.status !== 'completed') throw new Error(`Expected completed evaluation, got ${result.status}`);
+  if (!hasValidRealPopulationEvidence(result.populationUniverseCount, resolvedPopulationSize)) {
+    throw new Error(`Evaluation populationUniverseCount=${result.populationUniverseCount} does not match resolved populationSize=${resolvedPopulationSize}`);
+  }
+}
+
 export function sameEvaluationFingerprint(left: AudienceEvaluationResultV1, right: AudienceEvaluationResultV1): boolean {
   return JSON.stringify(evaluationFingerprint(left)) === JSON.stringify(evaluationFingerprint(right));
 }

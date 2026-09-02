@@ -1,7 +1,7 @@
 {
   "runnerVersion": "customer-intelligence-audience-a01.1-operational-validation-v1",
   "operationalStatus": "PENDING_MANUAL_EC2_EXECUTION",
-  "generatedAt": "2026-09-02T22:29:17.261Z",
+  "generatedAt": "2026-09-02T22:46:48.445Z",
   "expectedContext": {
     "snapshotIds": {
       "feature": "2",
@@ -40,8 +40,8 @@
     "pathologies": []
   },
   "indexDecision": {
-    "decision": "NO_INDEX_CHANGE_REQUIRED",
-    "rationale": "No migration is created by this runner; target-EC2 EXPLAIN evidence is pending."
+    "decision": "PENDING_VALID_EXECUTION",
+    "rationale": "No completed real-population evaluation has been accepted yet."
   },
   "failureProbes": [],
   "errors": [

@@ -25,7 +25,9 @@ import type { QueryExecutor } from '../../src/infrastructure/shared/query-execut
 import { sha256Stable } from '../../src/shared/stable-checksum.js';
 import {
   assertEvaluationInvariants,
+  assertEvaluationPopulation,
   buildRepresentativeDefinitions,
+  hasValidRealPopulationEvidence,
   type DiscoveredAudienceValues,
   type RepresentativeAudienceDefinition,
 } from './a01-1-helpers.js';
@@ -45,7 +47,7 @@ type EvaluationRecord = {
   readonly contextChecksum: string | null;
   readonly result: Record<string, unknown>;
 };
-type ExplainRecord = { readonly name: string; readonly definitionChecksum: string; readonly rows: readonly Record<string, unknown>[] };
+type ExplainRecord = { readonly name: string; readonly definitionChecksum: string; readonly rows: readonly Record<string, unknown>[]; readonly accepted: boolean };
 
 async function main(): Promise<void> {
   const generatedAt = new Date().toISOString();
@@ -61,7 +63,7 @@ async function main(): Promise<void> {
     semanticProbes: { affinity: null, nullSemantics: null },
     explain: [],
     performance: { evaluations: [], pathologies: [] },
-    indexDecision: { decision: 'NO_INDEX_CHANGE_REQUIRED', rationale: 'No migration is created by this runner; target-EC2 EXPLAIN evidence is pending.' },
+    indexDecision: { decision: 'PENDING_VALID_EXECUTION', rationale: 'No completed real-population evaluation has been accepted yet.' },
     failureProbes: [],
     errors: [],
   };
@@ -88,6 +90,7 @@ async function main(): Promise<void> {
     artifact.contextEvidence = headerEvidence;
     const contextChecks = verifyContext(context, headerEvidence);
     artifact.contextChecks = contextChecks;
+    if (contextChecks.some((check) => !check.ok)) throw new Error('Resolved context did not match the expected EC2 snapshot evidence');
     const discovered = await discoverRealValues(connection.queryExecutor, context);
     artifact.realValueDiscovery = discovered;
     printDiscovery(discovered);
@@ -106,7 +109,7 @@ async function main(): Promise<void> {
 
     const records = new Map<string, EvaluationRecord>();
     for (const representative of definitions) {
-      const evaluation = await runEvaluation(evaluateAudience, representative);
+      const evaluation = await runEvaluation(evaluateAudience, representative, context.population.populationSize);
       records.set(representative.name, evaluation);
       (artifact.definitions as Array<unknown>)[definitions.indexOf(representative)] = evaluation;
       (artifact.performance as { evaluations: unknown[] }).evaluations.push({
@@ -120,17 +123,26 @@ async function main(): Promise<void> {
     artifact.contextConsistency = contextConsistency;
     if (contextConsistency.some((check) => !check.ok)) throw new Error('A representative definition changed the resolved context');
 
-    artifact.determinism = await runDeterminism(evaluateAudience, definitions, records);
+    artifact.determinism = await runDeterminism(evaluateAudience, definitions, records, context.population.populationSize);
+    if ((artifact.determinism as Array<{ equal: boolean }>).some((check) => !check.equal)) throw new Error('Determinism validation failed');
     artifact.semanticProbes = await runSemanticProbes(connection.queryExecutor, sqlExecutor, evaluateAudience, context, records);
+    const semanticProbes = artifact.semanticProbes as { affinity?: { ok?: boolean }; nullSemantics?: { status?: string; ok?: boolean } };
+    if (semanticProbes.affinity?.ok !== true) throw new Error('Affinity semantic probes failed');
+    if (semanticProbes.nullSemantics?.status === 'COMPLETED' && semanticProbes.nullSemantics.ok !== true) throw new Error('NULL semantic probe failed');
     artifact.failureProbes = await runFailureProbes(evaluateAudience, contextResolver, sqlExecutor);
-    artifact.explain = await runExplain(connection.queryExecutor, context, definitions);
+    if ((artifact.failureProbes as Array<{ ok: boolean }>).some((probe) => !probe.ok)) throw new Error('Failure probe validation failed');
+    const realEvaluationSucceeded = contextChecks.every((check) => check.ok) && [...records.values()].every((record) => record.result.status === 'completed' && hasValidRealPopulationEvidence(Number(record.result.populationUniverseCount), context.population.populationSize));
+    (artifact.performance as { evaluations: unknown[]; pathologies: unknown[]; explainValidation?: unknown }).explainValidation = { accepted: realEvaluationSucceeded, reason: realEvaluationSucceeded ? 'All representative evaluations reconciled to the resolved feature population.' : 'EXPLAIN cannot validate performance after zero-row or mismatched-population evaluation.' };
+    artifact.explain = await runExplain(connection.queryExecutor, context, definitions, realEvaluationSucceeded);
     const pathologies = inspectExplain(artifact.explain as ExplainRecord[], context.population.populationSize);
     (artifact.performance as { evaluations: unknown[]; pathologies: unknown[] }).pathologies = [...pathologies];
-    artifact.indexDecision = decideIndexChange(pathologies);
+    if (realEvaluationSucceeded) artifact.indexDecision = decideIndexChange(pathologies);
     artifact.operationalStatus = contextChecks.every((check) => check.ok) ? 'COMPLETED' : 'COMPLETED_WITH_CONTEXT_MISMATCH';
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     (artifact.errors as string[]).push(message);
+    artifact.operationalStatus = 'FAILED';
+    process.exitCode = 1;
     print(`RUNNER_ERROR: ${message}`);
   } finally {
     if (connection) await connection.close();
@@ -207,10 +219,15 @@ async function discoverRealValues(queryExecutor: QueryExecutor, context: Audienc
   };
 }
 
-async function runEvaluation(evaluateAudience: ReturnType<typeof createEvaluateAudience>, representative: RepresentativeAudienceDefinition): Promise<EvaluationRecord> {
+async function runEvaluation(evaluateAudience: ReturnType<typeof createEvaluateAudience>, representative: RepresentativeAudienceDefinition, resolvedPopulationSize: number): Promise<EvaluationRecord> {
   const definitionChecksum = audienceDefinitionChecksum(representative.definition);
   const result = await evaluateAudience({ definition: representative.definition, previewLimit: PREVIEW_LIMIT });
-  if (result.status === 'completed') assertEvaluationInvariants(result, PREVIEW_LIMIT);
+  if (result.status === 'completed') {
+    assertEvaluationInvariants(result, PREVIEW_LIMIT);
+    assertEvaluationPopulation(result, resolvedPopulationSize);
+  } else {
+    throw new Error(`Representative ${representative.name} was blocked: ${result.reason}`);
+  }
   const contextChecksum = result.context ? sha256Stable(result.context) : null;
   const record: EvaluationRecord = {
     name: representative.name,
@@ -241,14 +258,17 @@ function summarizeEvaluation(result: AudienceEvaluationResultV1): Record<string,
   };
 }
 
-async function runDeterminism(evaluateAudience: ReturnType<typeof createEvaluateAudience>, definitions: readonly RepresentativeAudienceDefinition[], first: ReadonlyMap<string, EvaluationRecord>): Promise<readonly Record<string, unknown>[]> {
+async function runDeterminism(evaluateAudience: ReturnType<typeof createEvaluateAudience>, definitions: readonly RepresentativeAudienceDefinition[], first: ReadonlyMap<string, EvaluationRecord>, resolvedPopulationSize: number): Promise<readonly Record<string, unknown>[]> {
   const checks: Record<string, unknown>[] = [];
   for (const name of ['FEATURE', 'AFFINITY', 'MIXED'] as const) {
     const representative = definitions.find((candidate) => candidate.name === name);
     const initial = first.get(name);
     if (!representative || !initial) { checks.push({ name, equal: false, reason: 'Representative definition unavailable' }); continue; }
     const second = await evaluateAudience({ definition: representative.definition, previewLimit: PREVIEW_LIMIT });
-    if (second.status === 'completed') assertEvaluationInvariants(second, PREVIEW_LIMIT);
+    if (second.status === 'completed') {
+      assertEvaluationInvariants(second, PREVIEW_LIMIT);
+      assertEvaluationPopulation(second, resolvedPopulationSize);
+    }
     let equal = false;
     let reason: string | null = null;
     if (initial.result.status !== 'completed' || second.status !== 'completed') reason = 'At least one evaluation was blocked';
@@ -342,14 +362,14 @@ async function runFailureProbes(evaluateAudience: ReturnType<typeof createEvalua
   ];
 }
 
-async function runExplain(queryExecutor: QueryExecutor, context: AudienceEvaluationContextV1, definitions: readonly RepresentativeAudienceDefinition[]): Promise<readonly ExplainRecord[]> {
+async function runExplain(queryExecutor: QueryExecutor, context: AudienceEvaluationContextV1, definitions: readonly RepresentativeAudienceDefinition[], accepted: boolean): Promise<readonly ExplainRecord[]> {
   const retained = new Set(['FEATURE', 'RAW_RFM', 'CLUSTER', 'CLV', 'AFFINITY', 'MIXED']);
   const results: ExplainRecord[] = [];
   for (const representative of definitions) {
     if (!retained.has(representative.name)) continue;
     const compiled = compileAudienceSql(context, representative.definition.root);
     const rows = await queryExecutor.execute(`EXPLAIN ${compiled.sql}`, compiled.params);
-    results.push({ name: representative.name, definitionChecksum: audienceDefinitionChecksum(representative.definition), rows: rows.map((row) => ({ table: row.table ?? null, type: row.type ?? null, possible_keys: row.possible_keys ?? null, key: row.key ?? null, rows: row.rows ?? null, Extra: row.Extra ?? null })) });
+    results.push({ name: representative.name, definitionChecksum: audienceDefinitionChecksum(representative.definition), rows: rows.map((row) => ({ table: row.table ?? null, type: row.type ?? null, possible_keys: row.possible_keys ?? null, key: row.key ?? null, rows: row.rows ?? null, Extra: row.Extra ?? null })), accepted });
   }
   return results;
 }

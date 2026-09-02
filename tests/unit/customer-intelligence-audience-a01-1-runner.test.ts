@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   assertEvaluationInvariants,
+  assertEvaluationPopulation,
   buildRepresentativeDefinitions,
   evaluationFingerprint,
+  hasValidRealPopulationEvidence,
 } from '../../scripts/customer-intelligence-audience/a01-1-helpers.js';
 import type { AudienceEvaluationResultV1 } from '../../src/domain/customer-intelligence-audience/index.js';
 
@@ -62,5 +64,13 @@ describe('A01.1 operational runner helpers', () => {
       definitionChecksum: 'definition-checksum', context, populationUniverseCount: 3,
       trueCount: 2, falseCount: 1, unknownCount: 0, matchedCount: 2, previewCustomerIds: [10, 20],
     });
+  });
+
+  it('does not accept zero-row or mismatched population evidence', () => {
+    expect(hasValidRealPopulationEvidence(0, 45196)).toBe(false);
+    expect(hasValidRealPopulationEvidence(45195, 45196)).toBe(false);
+    expect(hasValidRealPopulationEvidence(45196, 45196)).toBe(true);
+    const mismatched = { status: 'completed', populationUniverseCount: 0 } as AudienceEvaluationResultV1;
+    expect(() => assertEvaluationPopulation(mismatched, 45196)).toThrow('populationUniverseCount=0');
   });
 });
