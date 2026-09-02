@@ -15,8 +15,13 @@ import {
   expandCompactAnalyticalQuery,
   isCompactAnalyticalQueryShape,
   validateAnalyticalQueryPlan,
+  MAX_RESULT_ROWS,
   type AnalyticalQueryPlan,
 } from '../../domain/customer-intelligence-query/index.js';
+import {
+  CapabilityError,
+  createCapabilityBudget,
+} from '../customer-intelligence-capability/index.js';
 import type {
   ResolveCurrentCustomerIntelligenceContext,
   ResolveCustomerIntelligenceContextForFeatureSnapshot,
@@ -24,6 +29,7 @@ import type {
 import type { ExecuteAnalyticalQueryWithResolvedContext } from '../customer-intelligence-query/index.js';
 import { AnalyticsTimeoutError, AnalyticsUnavailableError, AnalyticsSchemaIncompatibleError } from '../customer-profile/errors.js';
 import type { AnalyticalSchemaProvider, CustomerIntelligenceCopilotModel, CopilotModelMetadata } from './ports.js';
+import { createLegacyCopilotAnalyticsCapabilityAdapter, type CopilotAnalyticsCapabilityAdapter } from './analytics-capability-adapter.js';
 
 export type AnswerCustomerIntelligenceQuestionRequest = {
   readonly question: string;
@@ -43,9 +49,15 @@ export function createAnswerCustomerIntelligenceQuestion(deps: {
   readonly getAnalyticalSchema: AnalyticalSchemaProvider;
   readonly resolveCurrent: ResolveCurrentCustomerIntelligenceContext;
   readonly resolveForFeatureSnapshot: ResolveCustomerIntelligenceContextForFeatureSnapshot;
-  readonly executeAnalyticalQuery: ExecuteAnalyticalQueryWithResolvedContext;
+  readonly analyticsCapability?: CopilotAnalyticsCapabilityAdapter;
+  /** @deprecated Compatibility adapter for existing tests/scripts. */
+  readonly executeAnalyticalQuery?: ExecuteAnalyticalQueryWithResolvedContext;
   readonly model: CustomerIntelligenceCopilotModel;
 }): AnswerCustomerIntelligenceQuestion {
+  const analyticsCapability = deps.analyticsCapability
+    ?? (deps.executeAnalyticalQuery ? createLegacyCopilotAnalyticsCapabilityAdapter(deps.executeAnalyticalQuery) : null);
+  if (!analyticsCapability) throw new Error('Customer Intelligence analytics capability is not configured');
+
   return async (request) => {
     const question = request.question.trim();
     if (question.length === 0) {
@@ -83,17 +95,22 @@ export function createAnswerCustomerIntelligenceQuestion(deps: {
     }
 
     const executions = [];
+    const budget = createCapabilityBudget({
+      maxCalls: CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES,
+      maxRows: CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES * MAX_RESULT_ROWS,
+      maxDurationMs: Number.MAX_SAFE_INTEGER,
+    });
     for (const step of planning.steps) {
       try {
-        const execution = await deps.executeAnalyticalQuery({
+        const result = await analyticsCapability.execute({
           plan: step.plan,
-          context: contextResult.context,
+          requestId: `stateless-copilot:${request.featureSnapshotId ?? 'current'}`,
+          caller: 'current_copilot_stateless',
+          pinnedContext: contextResult.context,
           resolvedIds: contextResult.resolvedIds,
+          budget,
         });
-        if (execution.status === 'invalid_plan') {
-          return plannerInvalid(execution.errors);
-        }
-        executions.push({ id: step.id, plan: step.plan, result: execution.result });
+        executions.push({ id: step.id, plan: step.plan, result });
       } catch (error) {
         return mapAnalyticsError(error);
       }
@@ -242,6 +259,12 @@ function mapContextFailure(reason: string): CustomerIntelligenceCopilotResponse 
 }
 
 function mapAnalyticsError(error: unknown): CustomerIntelligenceCopilotResponse {
+  if (error instanceof CapabilityError) {
+    if (error.code === 'INVALID_INPUT') return plannerInvalid([error.message]);
+    if (error.code === 'TIMEOUT') return { status: 'analytics_timeout', finalResponseState: 'failure', message: error.message, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
+    if (error.code === 'ANALYTICS_UNAVAILABLE' || error.code === 'UNAVAILABLE_SNAPSHOT') return { status: 'analytics_unavailable', finalResponseState: 'failure', message: error.message, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
+    throw error;
+  }
   if (error instanceof AnalyticsTimeoutError) {
     return { status: 'analytics_timeout', finalResponseState: 'failure', message: error.message, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
   }

@@ -44,10 +44,10 @@ import {
   expandCompactAnalyticalQuery,
   isCompactAnalyticalQueryShape,
   validateAnalyticalQueryPlan,
-  type AnalyticalFilterInput,
   type AnalyticalFilterNode,
   type AnalyticalQueryPlan,
   type AnalyticalQueryResult,
+  MAX_RESULT_ROWS,
 } from '../../domain/customer-intelligence-query/index.js';
 import type { CustomerIntelligenceSnapshotContext } from '../../domain/customer-intelligence/index.js';
 import type { Clock } from '../customer-profile/ports.js';
@@ -57,6 +57,8 @@ import type {
   ResolveCustomerIntelligenceContextResult,
 } from '../customer-intelligence/resolve-customer-intelligence-context.js';
 import type { ExecuteAnalyticalQueryForExport, ExecuteAnalyticalQueryWithResolvedContext } from '../customer-intelligence-query/index.js';
+import { composeSelectedPopulationScope, createCapabilityBudget, CapabilityError, type CapabilitySelectedPopulation } from '../customer-intelligence-capability/index.js';
+import { createLegacyCopilotAnalyticsCapabilityAdapter, type CopilotAnalyticsCapabilityAdapter } from '../customer-intelligence-copilot/analytics-capability-adapter.js';
 import type { ExecuteIntersection } from '../customer-intelligence-intersection/index.js';
 import { AnalyticsTimeoutError, AnalyticsUnavailableError, AnalyticsSchemaIncompatibleError } from '../customer-profile/errors.js';
 import type {
@@ -72,7 +74,7 @@ import {
   deriveAnalyticalReferences,
   deriveSemanticFocus,
 } from './session-context.js';
-import { composeStepFiltersWithUiContext, resolveCopilotUiContext } from './ui-context.js';
+import { resolveCopilotUiContext } from './ui-context.js';
 import { buildCopilotXlsxExport, createCopilotExportFilename } from './xlsx-export.js';
 import type {
   CopilotSession,
@@ -139,6 +141,12 @@ type AnalyticsFailureResponse =
       readonly status: 'analytics_timeout';
       readonly finalResponseState: 'failure';
       readonly message: string;
+      readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION;
+    }
+  | {
+      readonly status: 'planner_invalid';
+      readonly finalResponseState: 'failure';
+      readonly errors: readonly string[];
       readonly contractVersion: typeof CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION;
     };
 
@@ -307,7 +315,9 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
   readonly getAnalyticalSchema: AnalyticalSchemaProvider;
   readonly resolveCurrent: ResolveCurrentCustomerIntelligenceContext;
   readonly resolveForFeatureSnapshot: ResolveCustomerIntelligenceContextForFeatureSnapshot;
-  readonly executeAnalyticalQuery: ExecuteAnalyticalQueryWithResolvedContext;
+  readonly analyticsCapability?: CopilotAnalyticsCapabilityAdapter;
+  /** @deprecated Compatibility adapter for existing tests/scripts. */
+  readonly executeAnalyticalQuery?: ExecuteAnalyticalQueryWithResolvedContext;
   readonly executeAnalyticalQueryForExport: ExecuteAnalyticalQueryForExport;
   // task MARKETING-R1-T06.4 Section 3: the same dashboard-agnostic T06.3 adapter
   // (createExecuteIntersection), reused verbatim - never a second validator/resolver/executor.
@@ -325,6 +335,10 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
   readonly onPlannerDiagnostic?: (diagnostic: CopilotPlannerDiagnostic) => void;
   readonly onStageLatencyDiagnostic?: (diagnostic: CopilotStageLatencyDiagnostic) => void;
 }): CustomerIntelligenceCopilotSessionService {
+  const analyticsCapability = deps.analyticsCapability
+    ?? (deps.executeAnalyticalQuery ? createLegacyCopilotAnalyticsCapabilityAdapter(deps.executeAnalyticalQuery) : null);
+  if (!analyticsCapability) throw new Error('Customer Intelligence analytics capability is not configured');
+
   async function resolvePinnedContext(featureSnapshotId?: string | null): Promise<Extract<ResolveCustomerIntelligenceContextResult, { status: 'available' }> | AnalyticsUnavailableResponse> {
     const contextResult = featureSnapshotId ? await deps.resolveForFeatureSnapshot(featureSnapshotId) : await deps.resolveCurrent();
     if (contextResult.status !== 'available') {
@@ -460,7 +474,7 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
           schema: serializeAnalyticalSchemaForCopilot(deps.getAnalyticalSchema()),
           queryContract: serializeAnalyticalQueryContractForCopilot(),
           model: deps.model,
-          executeAnalyticalQuery: deps.executeAnalyticalQuery,
+          analyticsCapability,
           store: deps.store,
           clock: deps.clock,
           limits: deps.limits,
@@ -572,7 +586,7 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
           question,
           planning: unified.planning,
           sessionContext,
-          executeAnalyticalQuery: deps.executeAnalyticalQuery,
+          analyticsCapability,
           model: deps.model,
           store: deps.store,
           clock: deps.clock,
@@ -742,10 +756,15 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
       try {
         const executionResult = await executeAnalyticalSteps({
           steps: planning.steps,
-          executeAnalyticalQuery: deps.executeAnalyticalQuery,
+          analyticsCapability,
           context: session.pinnedContext,
           resolvedIds: session.resolvedIds,
-          uiContextFilters: session.uiContext?.rawFilters ?? null,
+          sessionId: session.sessionId,
+          turnId,
+          selectedPopulation: session.uiContext ? {
+            filters: session.uiContext.rawFilters,
+            queryPlanHash: session.uiContext.selectedPopulation.queryPlanHash,
+          } : null,
         });
         if (executionResult.status === 'invalid_plan') {
           analyticsExecutionDurationMs = 0;
@@ -974,7 +993,7 @@ export function createCustomerIntelligenceCopilotSessionService(deps: {
       } catch (error) {
         const mapped = mapAnalyticsError(error);
         if (mapped.status === 'analytics_timeout') return { status: 'analytics_timeout', message: mapped.message };
-        return { status: 'analytics_unavailable', message: mapped.message };
+        return { status: 'analytics_unavailable', message: mapped.status === 'planner_invalid' ? mapped.errors.join('; ') : mapped.message };
       }
     },
   };
@@ -1399,7 +1418,7 @@ async function processToolRuntimeTurn(args: {
   readonly schema: ReturnType<typeof serializeAnalyticalSchemaForCopilot>;
   readonly queryContract: ReturnType<typeof serializeAnalyticalQueryContractForCopilot>;
   readonly model: CustomerIntelligenceCopilotModel;
-  readonly executeAnalyticalQuery: ExecuteAnalyticalQueryWithResolvedContext;
+  readonly analyticsCapability: CopilotAnalyticsCapabilityAdapter;
   readonly store: CopilotSessionStore;
   readonly clock: Clock;
   readonly limits: CopilotSessionLimits;
@@ -1477,10 +1496,15 @@ async function processToolRuntimeTurn(args: {
   try {
     const executionResult = await executeAnalyticalSteps({
       steps: validatedToolCall.steps,
-      executeAnalyticalQuery: args.executeAnalyticalQuery,
+      analyticsCapability: args.analyticsCapability,
       context: args.session.pinnedContext,
       resolvedIds: args.session.resolvedIds,
-      uiContextFilters: args.session.uiContext?.rawFilters ?? null,
+      sessionId: args.session.sessionId,
+      turnId: args.turnId,
+      selectedPopulation: args.session.uiContext ? {
+        filters: args.session.uiContext.rawFilters,
+        queryPlanHash: args.session.uiContext.selectedPopulation.queryPlanHash,
+      } : null,
     });
     if (executionResult.status === 'invalid_plan') {
       const response = withSession({ sessionId: args.session.sessionId, turnId: args.turnId }, plannerInvalid(executionResult.errors));
@@ -2893,7 +2917,7 @@ async function executePlannedAnalyticsTurn(args: {
   readonly question: string;
   readonly planning: ValidatedConversationPlanStatus;
   readonly sessionContext: ReturnType<typeof buildCopilotSessionContext>;
-  readonly executeAnalyticalQuery: ExecuteAnalyticalQueryWithResolvedContext;
+  readonly analyticsCapability: CopilotAnalyticsCapabilityAdapter;
   readonly model: CustomerIntelligenceCopilotModel;
   readonly store: CopilotSessionStore;
   readonly clock: Clock;
@@ -2908,10 +2932,15 @@ async function executePlannedAnalyticsTurn(args: {
   try {
     const executionResult = await executeAnalyticalSteps({
       steps: args.planning.steps,
-      executeAnalyticalQuery: args.executeAnalyticalQuery,
+      analyticsCapability: args.analyticsCapability,
       context: args.session.pinnedContext,
       resolvedIds: args.session.resolvedIds,
-      uiContextFilters: args.session.uiContext?.rawFilters ?? null,
+      sessionId: args.session.sessionId,
+      turnId: args.turnId,
+      selectedPopulation: args.session.uiContext ? {
+        filters: args.session.uiContext.rawFilters,
+        queryPlanHash: args.session.uiContext.selectedPopulation.queryPlanHash,
+      } : null,
     });
     if (executionResult.status === 'invalid_plan') {
       emitStageLatency(args.onStageLatencyDiagnostic, {
@@ -3038,54 +3067,42 @@ function validatePlanEnvelopeAndQueries(rawPlan: unknown):
 
 async function executeAnalyticalSteps(args: {
   readonly steps: readonly ValidatedStep[];
-  readonly executeAnalyticalQuery: ExecuteAnalyticalQueryWithResolvedContext;
+  readonly analyticsCapability: CopilotAnalyticsCapabilityAdapter;
   readonly context: CustomerIntelligenceSnapshotContext;
   readonly resolvedIds: CopilotSession['resolvedIds'];
-  // task MARKETING-R1-T06.4 Section 10/11: the active uiContext's canonical T03 filter tree
-  // (null when no uiContext is active). Every analytics execution path (native tool runtime,
-  // unified planner, legacy planner) calls this one function, so composing the model's own step
-  // filters with the uiContext scope - then re-validating - lives here once instead of being
-  // duplicated at each call site. The model may narrow within the scope or override a specific
-  // dimension (comparison/broadening, Section 12); it can never silently drop the scope, because
-  // composition happens after the model's plan is already fixed, not by prompting alone.
-  readonly uiContextFilters: AnalyticalFilterInput | null;
+  readonly sessionId: string;
+  readonly turnId: string;
+  readonly selectedPopulation: CapabilitySelectedPopulation | null;
 }): Promise<
   | { readonly status: 'ok'; readonly executions: readonly { readonly id: string; readonly plan: AnalyticalQueryPlan; readonly result: AnalyticalQueryResult }[] }
   | { readonly status: 'invalid_plan'; readonly errors: readonly string[] }
 > {
-  const scopedSteps: ValidatedStep[] = [];
-  const scopeErrors: string[] = [];
-  for (const step of args.steps) {
-    if (args.uiContextFilters === null) {
-      scopedSteps.push(step);
-      continue;
-    }
-    const composedFilters = composeStepFiltersWithUiContext(step.plan.filters, args.uiContextFilters);
-    const composedPlan: AnalyticalQueryPlan = { ...step.plan, ...(composedFilters !== undefined ? { filters: composedFilters } : {}) };
-    const validation = validateAnalyticalQueryPlan(composedPlan);
-    if (!validation.ok) {
-      scopeErrors.push(...validation.errors.map((error) => `${step.id}: ${error}`));
-      continue;
-    }
-    scopedSteps.push({ ...step, plan: validation.plan.canonical });
-  }
-  if (scopeErrors.length > 0) return { status: 'invalid_plan', errors: scopeErrors };
-
-  const attempts = await mapConcurrent(scopedSteps, CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES, async (step) => ({
-    step,
-    execution: await args.executeAnalyticalQuery({
-      plan: step.plan,
-      context: args.context,
-      resolvedIds: args.resolvedIds,
-    }),
-  }));
-  const invalid = attempts.find((attempt) => attempt.execution.status === 'invalid_plan');
-  if (invalid && invalid.execution.status === 'invalid_plan') return { status: 'invalid_plan', errors: invalid.execution.errors };
+  const budget = createCapabilityBudget({
+    maxCalls: CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES,
+    maxRows: CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES * MAX_RESULT_ROWS,
+    maxDurationMs: Number.MAX_SAFE_INTEGER,
+  });
+  const attempts = await mapConcurrent(args.steps, CUSTOMER_INTELLIGENCE_COPILOT_MAX_QUERIES, async (step) => {
+    const composedFilters = composeSelectedPopulationScope(step.plan.filters, args.selectedPopulation?.filters);
+    return {
+      step,
+      plan: { ...step.plan, ...(composedFilters !== undefined ? { filters: composedFilters } : {}) },
+      result: await args.analyticsCapability.execute({
+        plan: step.plan,
+        requestId: `${args.sessionId}:${args.turnId}`,
+        caller: 'current_copilot_session',
+        sessionId: args.sessionId,
+        pinnedContext: args.context,
+        resolvedIds: args.resolvedIds,
+        selectedPopulation: args.selectedPopulation,
+        budget,
+      }),
+    };
+  });
   return {
     status: 'ok',
     executions: attempts.map((attempt) => {
-      if (attempt.execution.status === 'invalid_plan') throw new Error('unexpected invalid analytical execution');
-      return { id: attempt.step.id, plan: attempt.step.plan, result: attempt.execution.result };
+      return { id: attempt.step.id, plan: attempt.plan, result: attempt.result };
     }),
   };
 }
@@ -3709,12 +3726,23 @@ function mapContextFailure(reason: string): AnalyticsUnavailableResponse {
 }
 
 function mapAnalyticsError(error: unknown): AnalyticsFailureResponse {
+  if (error instanceof CapabilityError) {
+    if (error.code === 'TIMEOUT') return { status: 'analytics_timeout', finalResponseState: 'failure', message: error.message, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
+    if (error.code === 'ANALYTICS_UNAVAILABLE' || error.code === 'UNAVAILABLE_SNAPSHOT') return { status: 'analytics_unavailable', finalResponseState: 'failure', message: error.message, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
+    if (error.code === 'INVALID_INPUT') return { status: 'planner_invalid', finalResponseState: 'failure', errors: [error.message], contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
+    throw error;
+  }
   if (error instanceof AnalyticsTimeoutError) return { status: 'analytics_timeout', finalResponseState: 'failure', message: error.message, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
   if (error instanceof AnalyticsUnavailableError || error instanceof AnalyticsSchemaIncompatibleError) return { status: 'analytics_unavailable', finalResponseState: 'failure', message: error.message, contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION };
   throw error;
 }
 
 function analyticsFailureStatus(error: unknown): string {
+  if (error instanceof CapabilityError) {
+    if (error.code === 'TIMEOUT') return 'analytics_timeout';
+    if (error.code === 'ANALYTICS_UNAVAILABLE' || error.code === 'UNAVAILABLE_SNAPSHOT') return 'analytics_unavailable';
+    return error.code.toLowerCase();
+  }
   if (error instanceof AnalyticsTimeoutError) return 'analytics_timeout';
   if (error instanceof AnalyticsUnavailableError || error instanceof AnalyticsSchemaIncompatibleError) return 'analytics_unavailable';
   return 'analytics_failed';

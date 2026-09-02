@@ -8,6 +8,7 @@ import {
 } from '../../domain/customer-intelligence-copilot/index.js';
 import type { AnalyticalFilterCondition, AnalyticalFilterInput, AnalyticalFilterNode } from '../../domain/customer-intelligence-query/index.js';
 import type { ExecuteIntersection } from '../customer-intelligence-intersection/index.js';
+import { composeSelectedPopulationScope, collectFilterFieldNames } from '../customer-intelligence-capability/index.js';
 import type { CopilotSession, CopilotSessionUiContextState } from './contracts.js';
 
 export type ResolveCopilotUiContextResult =
@@ -138,51 +139,9 @@ function walkLeaves(node: AnalyticalFilterNode, leaves: AnalyticalFilterConditio
   for (const child of 'and' in node ? node.and : node.or) walkLeaves(child, leaves);
 }
 
-// task MARKETING-R1-T06.4 Section 10/11: deterministic AND composition of the model's own query
-// filters with the current uiContext scope, applied before T03 validation/execution (never after
-// - see executeAnalyticalSteps in session-service.ts). A uiContext top-level node is dropped
-// (never AND'd in) whenever the model's own query filters already reference any field inside
-// that node - this is exactly what lets an explicit model filter on the same
-// dimension refine, override, or compare against the default scope (task Section 12) without
-// composition ever producing an impossible `clusterId = 3 AND clusterId = 2`. A nested OR group
-// is kept or dropped as one indivisible unit, never partially flattened - partial flattening
-// would silently turn an OR into an AND.
-export function composeStepFiltersWithUiContext(stepFilters: AnalyticalFilterInput | undefined, uiContextFilters: AnalyticalFilterInput | null): AnalyticalFilterInput | undefined {
-  if (uiContextFilters === null) return stepFilters;
-  const stepFields = collectFilterFieldNames(stepFilters ?? null);
-  const scopeNodes = toScopeNodes(uiContextFilters).filter((node) => {
-    const nodeFields = collectFilterFieldNames(node);
-    return ![...nodeFields].some((field) => stepFields.has(field));
-  });
-  if (scopeNodes.length === 0) return stepFilters;
-  return { and: [...toNodeArray(stepFilters ?? null), ...scopeNodes] };
-}
-
-// A top-level {and:[...]} group is semantically identical to the bare-array AND sugar for
-// override purposes, so it is unwrapped the same way - otherwise the exact same uiContext scope
-// would compose differently (losing an unrelated condition alongside an overridden one) purely
-// depending on which of the two equivalent T03 filter syntaxes the caller happened to use. A
-// top-level {or:[...]} stays one indivisible unit, same as any nested OR (never partially
-// flattened - see composeStepFiltersWithUiContext's own doc comment above).
-function toScopeNodes(filters: AnalyticalFilterInput): readonly AnalyticalFilterNode[] {
-  if (Array.isArray(filters)) return filters as readonly AnalyticalFilterNode[];
-  if ('and' in filters) return filters.and;
-  return [filters as AnalyticalFilterNode];
-}
-
-export function collectFilterFieldNames(filters: AnalyticalFilterInput | null): ReadonlySet<string> {
-  const fields = new Set<string>();
-  for (const node of toNodeArray(filters)) walkFieldNames(node, fields);
-  return fields;
-}
-
-function walkFieldNames(node: AnalyticalFilterNode, fields: Set<string>): void {
-  if ('field' in node) {
-    fields.add(node.field);
-    return;
-  }
-  for (const child of 'and' in node ? node.and : node.or) walkFieldNames(child, fields);
-}
+// Compatibility exports: scope semantics now live in the provider/brain-neutral capability layer.
+export const composeStepFiltersWithUiContext = composeSelectedPopulationScope;
+export { collectFilterFieldNames };
 
 function toNodeArray(filters: AnalyticalFilterInput | null): readonly AnalyticalFilterNode[] {
   if (filters === null) return [];

@@ -1,4 +1,5 @@
 export * from './ports.js';
+export * from './analytics-capability-adapter.js';
 export {
   createAnswerCustomerIntelligenceQuestion,
   type AnswerCustomerIntelligenceQuestion,

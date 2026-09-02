@@ -69,6 +69,11 @@ import {
   createCustomerIntelligenceCopilotSessionService,
   type CustomerIntelligenceCopilotSessionService,
 } from './application/customer-intelligence-copilot-session/index.js';
+import {
+  createCustomerIntelligenceAnalyticsQueryCapability,
+  createCustomerIntelligenceCapabilityRegistry,
+} from './application/customer-intelligence-capability/index.js';
+import { createCopilotAnalyticsCapabilityAdapter } from './application/customer-intelligence-copilot/analytics-capability-adapter.js';
 import { createCustomerIntelligenceContextResolvers } from './application/customer-intelligence/resolve-customer-intelligence-context.js';
 import { createGetCustomerIntelligenceRow, type GetCustomerIntelligenceRow } from './application/customer-intelligence/get-customer-intelligence-row.js';
 import { createGetCustomerClv, getCustomerClvNotConfigured, type GetCustomerClv } from './application/customer-clv/get-customer-clv.js';
@@ -375,6 +380,13 @@ export function bootstrap(): Bootstrap {
     const executeAnalyticalQueryWithResolvedContext = createExecuteAnalyticalQueryWithResolvedContext({
       queryExecutor: analyticalQueryExecutor,
     });
+    const analyticsCapability = createCopilotAnalyticsCapabilityAdapter(
+      createCustomerIntelligenceCapabilityRegistry({
+        analyticsQuery: createCustomerIntelligenceAnalyticsQueryCapability({
+          executeAnalyticalQuery: executeAnalyticalQueryWithResolvedContext,
+        }),
+      }),
+    );
     // task MARKETING-R1-T06.4 Section 3: the same dashboard-agnostic T06.3 adapter, built once
     // and shared by the Dashboard Intersections endpoint above and the Copilot's uiContext
     // adapter below - never a second executeIntersection instance.
@@ -395,14 +407,14 @@ export function bootstrap(): Bootstrap {
         getAnalyticalSchema,
         resolveCurrent: resolvers.resolveCurrent,
         resolveForFeatureSnapshot: resolvers.resolveForFeatureSnapshot,
-        executeAnalyticalQuery: executeAnalyticalQueryWithResolvedContext,
+        analyticsCapability,
         model: copilotModel.model,
       });
       customerIntelligenceCopilotSessionService = createCustomerIntelligenceCopilotSessionService({
         getAnalyticalSchema,
         resolveCurrent: resolvers.resolveCurrent,
         resolveForFeatureSnapshot: resolvers.resolveForFeatureSnapshot,
-        executeAnalyticalQuery: executeAnalyticalQueryWithResolvedContext,
+        analyticsCapability,
         executeAnalyticalQueryForExport: createExecuteAnalyticalQueryForExport({
           queryExecutor: analyticalQueryExecutor,
         }),
