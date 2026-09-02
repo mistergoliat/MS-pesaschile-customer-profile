@@ -26,6 +26,7 @@ import { sha256Stable } from '../../src/shared/stable-checksum.js';
 import {
   assertEvaluationInvariants,
   assertEvaluationPopulation,
+  assessAffinityProbes,
   buildRepresentativeDefinitions,
   hasValidRealPopulationEvidence,
   type DiscoveredAudienceValues,
@@ -304,18 +305,27 @@ async function runSemanticProbes(queryExecutor: QueryExecutor, sqlExecutor: Retu
   const affinityDefinition = records.get('AFFINITY')?.definition;
   const affinityTruths = affinityDefinition ? await sqlExecutor.execute(compileAudienceSql(context, affinityDefinition.root)) : [];
   const truthByCustomer = new Map(affinityTruths.map((row) => [row.customerId, normalizeTruth(row.truth)]));
+  const trueCustomerId = idFrom(trueRows[0]) ?? null;
+  const falseCustomerId = idFrom(falseRows[0]) ?? null;
+  const unknownCustomerId = idFrom(unknownRows[0]) ?? null;
+  const assessment = assessAffinityProbes({
+    trueProbe: { customerId: trueCustomerId, truth: truthFor(truthByCustomer, trueCustomerId) },
+    falseProbe: { customerId: falseCustomerId, truth: truthFor(truthByCustomer, falseCustomerId) },
+    unknownProbe: { customerId: unknownCustomerId, truth: truthFor(truthByCustomer, unknownCustomerId) },
+  });
   const probes = {
     status: 'COMPLETED',
-    trueCustomerId: idFrom(trueRows[0]),
-    falseCustomerId: idFrom(falseRows[0]),
-    unknownCustomerId: idFrom(unknownRows[0]),
-    trueTruth: truthByCustomer.get(idFrom(trueRows[0]) ?? -1) ?? null,
-    falseTruth: truthByCustomer.get(idFrom(falseRows[0]) ?? -1) ?? null,
-    unknownTruth: truthByCustomer.get(idFrom(unknownRows[0]) ?? -1) ?? null,
+    ok: assessment.ok,
+    trueCustomerId,
+    falseCustomerId,
+    unknownCustomerId,
+    trueTruth: assessment.trueProbe.truth,
+    falseTruth: assessment.falseProbe.truth,
+    unknownTruth: assessment.unknownProbe.truth,
+    unknownProbeStatus: assessment.unknownProbe.status,
   };
-  const affinityOk = probes.trueTruth === 'TRUE' && probes.falseTruth === 'FALSE' && probes.unknownTruth === 'UNKNOWN';
   const nullProbe = await runNullProbe(queryExecutor, sqlExecutor, evaluateAudience, context);
-  return { affinity: { ...probes, ok: affinityOk }, nullSemantics: nullProbe };
+  return { affinity: { ...probes }, nullSemantics: nullProbe };
 }
 
 async function runNullProbe(queryExecutor: QueryExecutor, sqlExecutor: ReturnType<typeof createMysqlAudienceSqlExecutor>, evaluateAudience: ReturnType<typeof createEvaluateAudience>, context: AudienceEvaluationContextV1): Promise<Record<string, unknown>> {
@@ -398,6 +408,10 @@ function idFrom(row: RowDataPacket | undefined): number | undefined {
 
 function normalizeTruth(value: unknown): AudienceTruthV1 {
   return value === 'TRUE' || value === 1 || value === '1' ? 'TRUE' : value === 'FALSE' || value === 0 || value === '0' ? 'FALSE' : 'UNKNOWN';
+}
+
+function truthFor(truthByCustomer: ReadonlyMap<number, AudienceTruthV1>, customerId: number | null): AudienceTruthV1 | null {
+  return customerId === null ? null : truthByCustomer.get(customerId) ?? null;
 }
 
 function printContext(resolution: Awaited<ReturnType<ReturnType<typeof createAudienceContextResolver>['resolveCurrent']>>): void {

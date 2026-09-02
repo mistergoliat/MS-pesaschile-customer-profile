@@ -3,6 +3,7 @@ import type {
   AudienceDefinitionV1,
   AudienceEvaluationContextV1,
   AudienceEvaluationResultV1,
+  AudienceTruthV1,
 } from '../../src/domain/customer-intelligence-audience/index.js';
 
 export type DiscoveredAudienceValues = {
@@ -116,4 +117,35 @@ export function assertEvaluationPopulation(result: AudienceEvaluationResultV1, r
 
 export function sameEvaluationFingerprint(left: AudienceEvaluationResultV1, right: AudienceEvaluationResultV1): boolean {
   return JSON.stringify(evaluationFingerprint(left)) === JSON.stringify(evaluationFingerprint(right));
+}
+
+export type AffinityProbeInput = {
+  readonly trueProbe: { readonly customerId: number | null; readonly truth: AudienceTruthV1 | null };
+  readonly falseProbe: { readonly customerId: number | null; readonly truth: AudienceTruthV1 | null };
+  readonly unknownProbe: { readonly customerId: number | null; readonly truth: AudienceTruthV1 | null };
+};
+
+export type AffinityProbeAssessment = {
+  readonly ok: boolean;
+  readonly trueProbe: AffinityProbeInput['trueProbe'];
+  readonly falseProbe: AffinityProbeInput['falseProbe'];
+  readonly unknownProbe: AffinityProbeInput['unknownProbe'] & {
+    readonly status: 'AVAILABLE' | 'UNAVAILABLE_NO_OUTSIDE_POPULATION_CUSTOMER';
+  };
+};
+
+export function assessAffinityProbes(input: AffinityProbeInput): AffinityProbeAssessment {
+  const unknownAvailable = input.unknownProbe.customerId !== null;
+  const unknownProbe = {
+    ...input.unknownProbe,
+    status: unknownAvailable ? 'AVAILABLE' as const : 'UNAVAILABLE_NO_OUTSIDE_POPULATION_CUSTOMER' as const,
+  };
+  return {
+    ok: input.trueProbe.customerId !== null && input.trueProbe.truth === 'TRUE'
+      && input.falseProbe.customerId !== null && input.falseProbe.truth === 'FALSE'
+      && (!unknownAvailable || input.unknownProbe.truth === 'UNKNOWN'),
+    trueProbe: input.trueProbe,
+    falseProbe: input.falseProbe,
+    unknownProbe,
+  };
 }

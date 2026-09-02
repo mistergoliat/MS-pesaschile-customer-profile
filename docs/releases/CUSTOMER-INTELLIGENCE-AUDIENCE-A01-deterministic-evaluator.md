@@ -149,6 +149,16 @@ EXPLAIN plans from zero-row or mismatched evaluations are marked unaccepted and 
 performance evidence. Regression coverage uses distinct realistic ids: feature `2`, RFM `1`,
 cluster `1`, CLV `1`, and affinity `4`.
 
+## A01.2.1 affinity probe availability repair
+
+When Feature Population B and the selected Affinity population have the same membership, the
+runner cannot instantiate a real outside-population customer. The affinity probe now records
+`unknownProbeStatus=UNAVAILABLE_NO_OUTSIDE_POPULATION_CUSTOMER`, with `customerId=null` and
+`truth=null`, and this is accepted as documented missing operational evidence. If an outside
+customer exists, the runner still requires that customer to evaluate `UNKNOWN`; TRUE and FALSE
+remain mandatory and must evaluate to their respective truths. The evaluator's core semantics
+are unchanged: an actual customer outside the affinity population remains `UNKNOWN`.
+
 Referenced unavailable components block the whole evaluation with a typed reason. Unreferenced
 unavailable components do not block. Preview members are minimal `{customerId}`, sorted ascending,
 bounded at 1,000, and do not affect `matchedCount`.

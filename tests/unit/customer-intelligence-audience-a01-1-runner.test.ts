@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   assertEvaluationInvariants,
   assertEvaluationPopulation,
+  assessAffinityProbes,
   buildRepresentativeDefinitions,
   evaluationFingerprint,
   hasValidRealPopulationEvidence,
@@ -72,5 +73,29 @@ describe('A01.1 operational runner helpers', () => {
     expect(hasValidRealPopulationEvidence(45196, 45196)).toBe(true);
     const mismatched = { status: 'completed', populationUniverseCount: 0 } as AudienceEvaluationResultV1;
     expect(() => assertEvaluationPopulation(mismatched, 45196)).toThrow('populationUniverseCount=0');
+  });
+
+  it('accepts a real UNKNOWN probe when populations differ', () => {
+    expect(assessAffinityProbes({
+      trueProbe: { customerId: 22070, truth: 'TRUE' },
+      falseProbe: { customerId: 22066, truth: 'FALSE' },
+      unknownProbe: { customerId: 22071, truth: 'UNKNOWN' },
+    })).toMatchObject({ ok: true, unknownProbe: { status: 'AVAILABLE', customerId: 22071, truth: 'UNKNOWN' } });
+  });
+
+  it('accepts an unavailable UNKNOWN probe when populations are identical', () => {
+    expect(assessAffinityProbes({
+      trueProbe: { customerId: 22070, truth: 'TRUE' },
+      falseProbe: { customerId: 22066, truth: 'FALSE' },
+      unknownProbe: { customerId: null, truth: null },
+    })).toMatchObject({ ok: true, unknownProbe: { status: 'UNAVAILABLE_NO_OUTSIDE_POPULATION_CUSTOMER', customerId: null, truth: null } });
+  });
+
+  it('fails when an existing UNKNOWN candidate does not evaluate UNKNOWN', () => {
+    expect(assessAffinityProbes({
+      trueProbe: { customerId: 22070, truth: 'TRUE' },
+      falseProbe: { customerId: 22066, truth: 'FALSE' },
+      unknownProbe: { customerId: 22071, truth: 'FALSE' },
+    }).ok).toBe(false);
   });
 });
