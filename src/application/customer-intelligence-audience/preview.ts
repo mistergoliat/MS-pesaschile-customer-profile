@@ -42,12 +42,13 @@ export type AudiencePreviewV1 = {
 export type AudiencePreviewEnricher = (input: {
   readonly context: AudienceEvaluationContextV1;
   readonly customerIds: readonly number[];
+  readonly matchedCount: number;
   readonly limit: number;
 }) => Promise<AudiencePreviewV1>;
 
 export function createAudiencePreviewEnricher(deps: { readonly reader: AudiencePreviewReader }): AudiencePreviewEnricher {
-  return async ({ context, customerIds, limit }) => {
-    if (customerIds.length === 0) return emptyPreview(context, limit);
+  return async ({ context, customerIds, matchedCount, limit }) => {
+    if (customerIds.length === 0) return emptyPreview(context, matchedCount, limit);
     try {
       const rawRows = await deps.reader.read(context, customerIds);
       const rowsByCustomerId = new Map<number, AudiencePreviewRowV1>();
@@ -63,15 +64,15 @@ export function createAudiencePreviewEnricher(deps: { readonly reader: AudienceP
         }
       }
       const rows = customerIds.filter((id) => rowsByCustomerId.has(id)).map((id) => rowsByCustomerId.get(id)!);
-      return { previewVersion: CUSTOMER_INTELLIGENCE_AUDIENCE_PREVIEW_VERSION, limit, returned: rows.length, rows, truncated: rows.length < customerIds.length, enrichmentStatus: 'available', degradedComponents: [], lineage: context.lineage };
+      return { previewVersion: CUSTOMER_INTELLIGENCE_AUDIENCE_PREVIEW_VERSION, limit, returned: rows.length, rows, truncated: matchedCount > rows.length, enrichmentStatus: 'available', degradedComponents: [], lineage: context.lineage };
     } catch {
-      return { previewVersion: CUSTOMER_INTELLIGENCE_AUDIENCE_PREVIEW_VERSION, limit, returned: 0, rows: [], truncated: customerIds.length > 0, enrichmentStatus: 'degraded', degradedComponents: ['feature', 'rfm', 'cluster', 'clv', 'commercialAffinity'], lineage: context.lineage };
+      return { previewVersion: CUSTOMER_INTELLIGENCE_AUDIENCE_PREVIEW_VERSION, limit, returned: 0, rows: [], truncated: matchedCount > 0, enrichmentStatus: 'degraded', degradedComponents: ['feature', 'rfm', 'cluster', 'clv', 'commercialAffinity'], lineage: context.lineage };
     }
   };
 }
 
-function emptyPreview(context: AudienceEvaluationContextV1, limit: number): AudiencePreviewV1 {
-  return { previewVersion: CUSTOMER_INTELLIGENCE_AUDIENCE_PREVIEW_VERSION, limit, returned: 0, rows: [], truncated: false, enrichmentStatus: 'available', degradedComponents: [], lineage: context.lineage };
+function emptyPreview(context: AudienceEvaluationContextV1, matchedCount: number, limit: number): AudiencePreviewV1 {
+  return { previewVersion: CUSTOMER_INTELLIGENCE_AUDIENCE_PREVIEW_VERSION, limit, returned: 0, rows: [], truncated: matchedCount > 0, enrichmentStatus: 'available', degradedComponents: [], lineage: context.lineage };
 }
 
 function toPreviewRow(row: AudiencePreviewReadRow, context: AudienceEvaluationContextV1): AudiencePreviewRowV1 {

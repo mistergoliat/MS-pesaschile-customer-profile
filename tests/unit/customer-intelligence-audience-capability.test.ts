@@ -31,11 +31,26 @@ describe('Customer Intelligence Audience A02 capability', () => {
 
   it('enriches all preview members with one bounded reader call and preserves lineage', async () => {
     const read = vi.fn(async () => [raw(2), raw(1)]);
-    const preview = await createAudiencePreviewEnricher({ reader: { read } })({ context, customerIds: [2, 1], limit: 50 });
+    const preview = await createAudiencePreviewEnricher({ reader: { read } })({ context, customerIds: [2, 1], matchedCount: 2, limit: 50 });
     expect(read).toHaveBeenCalledTimes(1);
     expect(preview.rows.map((row) => row.customerId)).toEqual([2, 1]);
     expect(preview.lineage).toBe(context.lineage);
     expect(preview.rows[0]?.availability.commercialAffinity).toBe('UNAVAILABLE');
+  });
+
+  it.each([
+    [0, 0, false],
+    [43, 43, false],
+    [100, 100, false],
+    [101, 100, true],
+    [45196, 100, true],
+  ])('sets preview truncation from matchedCount=%s and returned=%s', async (matchedCount, returned, truncated) => {
+    const customerIds = Array.from({ length: returned }, (_, index) => index + 1);
+    const read = vi.fn(async () => customerIds.map(raw));
+    const preview = await createAudiencePreviewEnricher({ reader: { read } })({ context, customerIds, matchedCount, limit: 100 });
+
+    expect(preview.returned).toBe(returned);
+    expect(preview.truncated).toBe(truncated);
   });
 
   it('keeps the evaluation result separate and unchanged when preview enrichment degrades', async () => {

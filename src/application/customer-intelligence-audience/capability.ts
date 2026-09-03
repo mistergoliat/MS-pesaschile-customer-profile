@@ -23,7 +23,7 @@ export function createCustomerIntelligenceAudienceCapability(deps: { readonly ev
     async evaluate(request) {
       const evaluation = await deps.evaluateAudience({ definition: request.definition, previewLimit: request.previewLimit ?? CUSTOMER_INTELLIGENCE_AUDIENCE_DEFAULT_PREVIEW_LIMIT });
       if (evaluation.status !== 'completed') return { capabilityVersion: CUSTOMER_INTELLIGENCE_AUDIENCE_CAPABILITY_VERSION, evaluation, preview: null };
-      const preview = await deps.previewEnricher({ context: evaluation.context, customerIds: evaluation.previewMembers.map((member) => member.customerId), limit: request.previewLimit ?? CUSTOMER_INTELLIGENCE_AUDIENCE_DEFAULT_PREVIEW_LIMIT });
+      const preview = await deps.previewEnricher({ context: evaluation.context, customerIds: evaluation.previewMembers.map((member) => member.customerId), matchedCount: evaluation.matchedCount, limit: request.previewLimit ?? CUSTOMER_INTELLIGENCE_AUDIENCE_DEFAULT_PREVIEW_LIMIT });
       return { capabilityVersion: CUSTOMER_INTELLIGENCE_AUDIENCE_CAPABILITY_VERSION, evaluation, preview };
     },
   };
