@@ -6,6 +6,16 @@ import {
   type ProductSemanticFactTag,
 } from '../../domain/customer-commercial-affinity/index.js';
 import { sha256Stable } from '../../shared/stable-checksum.js';
+export {
+  PRODUCT_SEMANTIC_BATCH_MAX_SIZE,
+  PRODUCT_SEMANTIC_BATCH_SCHEMA_VERSION,
+  type ProductSemanticBatchMetadata,
+  type ProductSemanticBatchProduct,
+  type ProductSemanticBatchResult,
+  type ProductSemanticBatchTag,
+  type ProductSemanticFactsSource,
+  type ProductSemanticFactsSourceInput,
+} from './batch-contract.js';
 
 export const PRODUCT_SEMANTIC_SNAPSHOT_SCHEMA_VERSION = '1';
 

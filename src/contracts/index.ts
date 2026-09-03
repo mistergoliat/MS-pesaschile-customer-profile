@@ -71,3 +71,13 @@ export type {
   AudienceMemberV1,
   AudienceValidationErrorV1,
 } from '../domain/customer-intelligence-audience/index.js';
+export {
+  PRODUCT_SEMANTIC_BATCH_MAX_SIZE,
+  PRODUCT_SEMANTIC_BATCH_SCHEMA_VERSION,
+  type ProductSemanticBatchMetadata,
+  type ProductSemanticBatchProduct,
+  type ProductSemanticBatchResult,
+  type ProductSemanticBatchTag,
+  type ProductSemanticFactsSource,
+  type ProductSemanticFactsSourceInput,
+} from '../application/product-semantic-snapshot/batch-contract.js';
