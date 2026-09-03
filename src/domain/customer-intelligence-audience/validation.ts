@@ -7,8 +7,6 @@ export const MAX_CONDITIONS = 20;
 export const MAX_IN_VALUES = 500;
 export const MAX_PREVIEW_MEMBERS = 1000;
 
-const operators: readonly AudienceScalarOperatorV1[] = ['EQ', 'NEQ', 'IN', 'NOT_IN', 'GT', 'GTE', 'LT', 'LTE', 'BETWEEN', 'IS_NULL', 'IS_NOT_NULL'];
-
 export function validateAudienceDefinition(input: unknown): { readonly ok: true; readonly definition: AudienceDefinitionV1 } | { readonly ok: false; readonly errors: readonly AudienceValidationErrorV1[] } {
   const errors: AudienceValidationErrorV1[] = [];
   if (!isObject(input) || input.definitionVersion !== AUDIENCE_DEFINITION_VERSION || !('root' in input)) {
@@ -37,7 +35,7 @@ export function validateAudienceDefinition(input: unknown): { readonly ok: true;
   function validateScalar(condition: Record<string, unknown>, path: string): void {
     const field = typeof condition.field === 'string' ? getAudienceFieldDefinition(condition.field) : null;
     if (!field) { errors.push({ code: 'UNSUPPORTED_FIELD', path: `${path}.field`, message: 'Field is not in the fixed Audience registry' }); return; }
-    if (typeof condition.operator !== 'string' || !operators.includes(condition.operator as AudienceScalarOperatorV1)) { errors.push({ code: 'INCOMPATIBLE_OPERATOR', path: `${path}.operator`, message: 'Operator is not supported' }); return; }
+    if (typeof condition.operator !== 'string' || !field.allowedOperators.includes(condition.operator as AudienceScalarOperatorV1)) { errors.push({ code: 'INCOMPATIBLE_OPERATOR', path: `${path}.operator`, message: `Operator is not supported for ${field.type} field` }); return; }
     const operator = condition.operator as AudienceScalarOperatorV1;
     if (operator === 'IS_NULL' || operator === 'IS_NOT_NULL') { if ('value' in condition) errors.push({ code: 'UNSUPPORTED_NULL_TEST', path, message: 'Null tests do not accept a value' }); return; }
     if (!('value' in condition) || condition.value === null || condition.value === undefined) { errors.push({ code: 'INVALID_SCALAR_TYPE', path: `${path}.value`, message: 'A value is required and null must use an explicit null test' }); return; }

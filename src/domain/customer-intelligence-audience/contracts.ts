@@ -174,6 +174,7 @@ export type AudienceEvaluationResultV1 =
       readonly context: AudienceEvaluationContextV1 | null;
       readonly componentAvailability: AudienceAvailabilityV1;
       readonly blockingComponents: readonly string[];
+      readonly validationErrors?: readonly AudienceValidationErrorV1[];
       readonly reason: 'UNAVAILABLE_COMPONENT' | 'INCOMPATIBLE_SNAPSHOT' | 'INVALID_DEFINITION' | 'BUDGET_EXCEEDED' | 'QUERY_TIMEOUT' | 'EXECUTION_FAILED';
       readonly warnings: readonly string[];
     };

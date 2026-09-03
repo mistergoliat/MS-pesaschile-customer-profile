@@ -37,6 +37,46 @@ export type AudienceSqlRow = { readonly customerId: number; readonly truth: Audi
 export type CompiledAudienceSql = { readonly sql: string; readonly params: readonly unknown[] };
 export type AudienceSqlExecutor = { execute(compiled: CompiledAudienceSql): Promise<readonly AudienceSqlRow[]> };
 
+export type AudiencePreviewReadRow = {
+  readonly customerId: number;
+  readonly validOrders: number;
+  readonly totalSpentTaxIncl: string;
+  readonly averageOrderValueTaxIncl: string;
+  readonly firstOrderAt: string;
+  readonly lastOrderAt: string;
+  readonly daysSinceLastOrder: number;
+  readonly purchaseFrequencyDays: string | null;
+  readonly rfm: {
+    readonly recencyScore: number;
+    readonly frequencyScore: number;
+    readonly monetaryScore: number;
+    readonly rfmCode: string;
+    readonly segmentCode: string | null;
+    readonly segmentVersion: string | null;
+    readonly recencyDays: number;
+    readonly frequencyOrders: number;
+    readonly grossOrderValueTaxIncl: string;
+  } | null;
+  readonly cluster: { readonly clusterId: number; readonly modelVersion: string; readonly label: string | null } | null;
+  readonly clv: { readonly expectedRevenueTaxIncl: string; readonly expectedOrders: string | null; readonly estimateSupportLevel: string } | null;
+  readonly affinityPopulationMember: boolean;
+  readonly affinity?: {
+    readonly axis: 'PRODUCT_FAMILY' | 'DISCIPLINE' | 'USE_CONTEXT';
+    readonly code: string;
+    readonly score: string;
+    readonly supportingOrderCount: number;
+    readonly supportingProductCount: number;
+    readonly supportingSpend: string;
+    readonly lastEvidenceAt: string;
+    readonly explicitEvidenceCoverage: string | null;
+  };
+};
+
+export type AudiencePreviewReader = {
+  /** One bounded, set-based read for all requested members, using the supplied lineage. */
+  read(context: AudienceEvaluationContextV1, customerIds: readonly number[]): Promise<readonly AudiencePreviewReadRow[]>;
+};
+
 export type EvaluateAudienceRequest = {
   readonly definition: unknown;
   readonly featureSnapshotId?: string;

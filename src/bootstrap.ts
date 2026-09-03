@@ -134,6 +134,10 @@ import {
 } from './application/customer-commercial-profile/customer-commercial-profile-service.js';
 import type { ReadinessCheck } from './http/routes/index.js';
 import { CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION } from './domain/customer-intelligence-copilot/index.js';
+import { createAudienceContextResolver, createCustomerIntelligenceAudienceCapability, createEvaluateAudience, createAudiencePreviewEnricher, type CustomerIntelligenceAudienceCapability } from './application/customer-intelligence-audience/index.js';
+import { createMysqlAudiencePreviewReader } from './infrastructure/customer-intelligence-audience/mysql-audience-preview-reader.js';
+import { createMysqlAudienceSnapshotHeaderReader } from './infrastructure/customer-intelligence-audience/mysql-audience-snapshot-header-reader.js';
+import { createMysqlAudienceSqlExecutor } from './infrastructure/customer-intelligence-audience/mysql-audience-sql-executor.js';
 
 const systemClock = new SystemClock();
 
@@ -161,6 +165,7 @@ export type Bootstrap = {
   readonly getCustomerCommercialAffinitySnapshot: GetCustomerCommercialAffinitySnapshot;
   readonly getCustomerIntelligenceRow: GetCustomerIntelligenceRow;
   readonly customerCommercialProfileService: CustomerCommercialProfileService;
+  readonly customerIntelligenceAudienceCapability?: CustomerIntelligenceAudienceCapability;
   readonly answerCustomerIntelligenceQuestion: AnswerCustomerIntelligenceQuestion;
   readonly customerIntelligenceCopilotSessionService?: CustomerIntelligenceCopilotSessionService;
   readonly checkReadiness: ReadinessCheck;
@@ -325,15 +330,32 @@ export function bootstrap(): Bootstrap {
     contractVersion: CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION,
   });
   let customerIntelligenceCopilotSessionService: CustomerIntelligenceCopilotSessionService | undefined;
+  let customerIntelligenceAudienceCapability: CustomerIntelligenceAudienceCapability | undefined;
   const copilotModel = createConfiguredCustomerIntelligenceCopilotModel();
   if (config.analyticsDb) {
     const analyticsPool = getAnalyticsPool();
+    const analyticsQueryExecutor = getAnalyticsQueryExecutor();
     const intelligenceReader = createMysqlCustomerIntelligenceReader(analyticsPool);
     const resolvers = createCustomerIntelligenceContextResolvers({
       featureSnapshotReader: createMysqlCustomerFeatureSnapshotReader(analyticsPool),
       snapshotHeaderReader: createMysqlSnapshotHeaderReader(analyticsPool),
       intelligenceReader,
       clvSnapshotReader,
+    });
+
+    const audienceContextResolver = createAudienceContextResolver({
+      featureSnapshotReader: createMysqlCustomerFeatureSnapshotReader(analyticsPool),
+      snapshotHeaderReader: createMysqlAudienceSnapshotHeaderReader(analyticsPool),
+    });
+    customerIntelligenceAudienceCapability = createCustomerIntelligenceAudienceCapability({
+      evaluateAudience: createEvaluateAudience({
+        contextResolver: audienceContextResolver,
+        sqlExecutor: createMysqlAudienceSqlExecutor(analyticsQueryExecutor),
+        clock: () => systemClock.now().toISOString(),
+      }),
+      previewEnricher: createAudiencePreviewEnricher({
+        reader: createMysqlAudiencePreviewReader(analyticsQueryExecutor),
+      }),
     });
     getCustomerIntelligenceRow = createGetCustomerIntelligenceRow({
       resolveCurrent: resolvers.resolveCurrent,
@@ -376,7 +398,7 @@ export function bootstrap(): Bootstrap {
     // Copilot uses below (createExecuteAnalyticalQueryWithResolvedContext), built once here so
     // both consumers share one instance rather than two. Also has no LLM dependency: wired
     // regardless of copilotModel.status, same as the other dashboard readers above.
-    const analyticalQueryExecutor = createMysqlAnalyticalQueryExecutor(getAnalyticsQueryExecutor());
+    const analyticalQueryExecutor = createMysqlAnalyticalQueryExecutor(analyticsQueryExecutor);
     const executeAnalyticalQueryWithResolvedContext = createExecuteAnalyticalQueryWithResolvedContext({
       queryExecutor: analyticalQueryExecutor,
     });
@@ -483,6 +505,7 @@ export function bootstrap(): Bootstrap {
     getCustomerCommercialAffinitySnapshot,
     getCustomerIntelligenceRow,
     customerCommercialProfileService,
+    customerIntelligenceAudienceCapability,
     answerCustomerIntelligenceQuestion,
     customerIntelligenceCopilotSessionService,
     checkReadiness,

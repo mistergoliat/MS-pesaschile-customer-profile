@@ -75,6 +75,9 @@ import type { CustomerIntelligenceCopilotSessionService } from '../../applicatio
 import type { CopilotUiContextRequest, CustomerIntelligenceCopilotResponse } from '../../domain/customer-intelligence-copilot/index.js';
 import type { PrestashopReadinessResult } from '../../infrastructure/prestashop/prestashop-pool.js';
 import { classifyErrorForLog } from '../../observability/classify-error-for-log.js';
+import type { CustomerIntelligenceAudienceCapability } from '../../application/customer-intelligence-audience/capability.js';
+import { getAudienceCapabilitySchema, CUSTOMER_INTELLIGENCE_AUDIENCE_CAPABILITY_VERSION, CUSTOMER_INTELLIGENCE_AUDIENCE_MAX_PREVIEW_LIMIT } from '../../application/customer-intelligence-audience/index.js';
+import type { AudienceEvaluationResultV1 } from '../../domain/customer-intelligence-audience/index.js';
 
 const numericId = z
   .string()
@@ -155,6 +158,12 @@ const copilotExportBody = z
     format: z.literal('xlsx'),
   })
   .strict();
+const audienceEvaluateBody = z
+  .object({
+    definition: z.unknown(),
+    previewLimit: z.number().int().min(0).max(CUSTOMER_INTELLIGENCE_AUDIENCE_MAX_PREVIEW_LIMIT).optional(),
+  })
+  .strict();
 
 export type ReadinessResult = {
   readonly crm: boolean;
@@ -205,6 +214,11 @@ export type RouteDependencies = {
     readonly enabled: boolean;
     readonly internalToken: string | null;
   };
+  readonly customerIntelligenceAudience?: {
+    readonly enabled: boolean;
+    readonly internalToken: string | null;
+  };
+  readonly customerIntelligenceAudienceCapability?: CustomerIntelligenceAudienceCapability;
   readonly checkReadiness: ReadinessCheck;
 };
 
@@ -243,6 +257,41 @@ export function buildRoutes(deps: RouteDependencies): Router {
       identityStatus: 'DIRECT_SOURCE',
       contractVersion: CUSTOMER_PROFILE_CONTRACT_VERSION,
     });
+  });
+
+  router.get('/v1/customer-intelligence/audiences/schema', (request: Request, response: Response) => {
+    if (!ensureAudienceRouteAvailable(request, response, deps)) return;
+    if (Object.keys(request.query).length > 0) {
+      response.status(400).json({ error: 'unsupported_query_params' });
+      return;
+    }
+    if (request.body !== undefined) {
+      response.status(400).json({ error: 'unsupported_body' });
+      return;
+    }
+    response.status(200).json(getAudienceCapabilitySchema());
+  });
+
+  router.post('/v1/customer-intelligence/audiences/evaluate', async (request: Request, response: Response) => {
+    if (!ensureAudienceRouteAvailable(request, response, deps)) return;
+    if (Object.keys(request.query).length > 0) {
+      response.status(400).json({ error: 'unsupported_query_params' });
+      return;
+    }
+    const parsedBody = audienceEvaluateBody.safeParse(request.body);
+    if (!parsedBody.success || !Object.prototype.hasOwnProperty.call(request.body ?? {}, 'definition')) {
+      response.status(400).json({ error: 'invalid_audience_evaluation_request' });
+      return;
+    }
+    const startedAt = Date.now();
+    try {
+      const result = await deps.customerIntelligenceAudienceCapability!.evaluate({ definition: parsedBody.data.definition, previewLimit: parsedBody.data.previewLimit });
+      response.status(statusForAudienceCapabilityResult(result.evaluation)).json(result);
+      console.info({ endpoint: 'customer-intelligence-audience-evaluate', capabilityVersion: CUSTOMER_INTELLIGENCE_AUDIENCE_CAPABILITY_VERSION, status: result.evaluation.status, matchedCount: result.evaluation.status === 'completed' ? result.evaluation.matchedCount : null, previewReturned: result.preview?.returned ?? 0, durationMs: Date.now() - startedAt }, 'customer intelligence audience evaluation');
+    } catch (error) {
+      console.error({ event: 'customer_intelligence_audience_request_failed', endpoint: 'customer-intelligence-audience-evaluate', capabilityVersion: CUSTOMER_INTELLIGENCE_AUDIENCE_CAPABILITY_VERSION, durationMs: Date.now() - startedAt, errorType: classifyErrorForLog(error) });
+      response.status(500).json({ error: 'internal_error' });
+    }
   });
 
   router.post('/v1/customer-intelligence/copilot', async (request: Request, response: Response) => {
@@ -1241,6 +1290,34 @@ function isAuthorizedCopilotRequest(request: Request, expectedToken: string): bo
   return expectedBuffer.length === actualBuffer.length && timingSafeEqual(expectedBuffer, actualBuffer);
 }
 
+function isAuthorizedAudienceRequest(request: Request, expectedToken: string): boolean {
+  const actual = request.header('x-internal-customer-intelligence-token') ?? request.header('x-internal-copilot-token');
+  if (!actual) return false;
+  const expectedBuffer = Buffer.from(expectedToken);
+  const actualBuffer = Buffer.from(actual);
+  return expectedBuffer.length === actualBuffer.length && timingSafeEqual(expectedBuffer, actualBuffer);
+}
+
+function ensureAudienceRouteAvailable(request: Request, response: Response, deps: RouteDependencies): boolean {
+  if (!deps.customerIntelligenceAudience?.enabled) {
+    response.status(404).json({ error: 'customer_intelligence_audience_disabled' });
+    return false;
+  }
+  if (!deps.customerIntelligenceAudience.internalToken) {
+    response.status(503).json({ error: 'customer_intelligence_audience_auth_not_configured' });
+    return false;
+  }
+  if (!isAuthorizedAudienceRequest(request, deps.customerIntelligenceAudience.internalToken)) {
+    response.status(401).json({ error: 'unauthorized' });
+    return false;
+  }
+  if (!deps.customerIntelligenceAudienceCapability) {
+    response.status(503).json({ error: 'customer_intelligence_audience_not_configured' });
+    return false;
+  }
+  return true;
+}
+
 function ensureCopilotRouteAvailable(request: Request, response: Response, deps: RouteDependencies): boolean {
   if (!deps.marketingCopilot?.enabled) {
     response.status(404).json({ error: 'marketing_copilot_disabled' });
@@ -1424,6 +1501,13 @@ function statusForCustomerCommercialAffinityResult(result: CustomerCommercialAff
 
 function statusForCustomerCommercialAffinitySnapshotResult(result: CustomerCommercialAffinitySnapshotResult): number {
   return result.status === 'available' ? 200 : 503;
+}
+
+function statusForAudienceCapabilityResult(result: AudienceEvaluationResultV1): number {
+  if (result.status === 'completed') return 200;
+  if (result.reason === 'INVALID_DEFINITION' || result.reason === 'BUDGET_EXCEEDED' || result.reason === 'INCOMPATIBLE_SNAPSHOT') return 400;
+  if (result.reason === 'QUERY_TIMEOUT') return 504;
+  return 503;
 }
 
 function statusForClusterSnapshotSummaryResult(result: GetClusterSnapshotSummaryResult): number {

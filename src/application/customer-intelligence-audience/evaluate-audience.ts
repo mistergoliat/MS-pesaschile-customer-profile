@@ -1,4 +1,4 @@
-import { audienceDefinitionChecksum, canonicalizeAudienceDefinition, evaluateAudienceFilter, validateAudienceDefinition, type AudienceAvailabilityV1, type AudienceEvaluationContextV1, type AudienceEvaluationResultV1, type AudienceFilterV1, type AudienceRowV1 } from '../../domain/customer-intelligence-audience/index.js';
+import { audienceDefinitionChecksum, canonicalizeAudienceDefinition, evaluateAudienceFilter, validateAudienceDefinition, type AudienceAvailabilityV1, type AudienceEvaluationContextV1, type AudienceEvaluationResultV1, type AudienceFilterV1, type AudienceRowV1, type AudienceValidationErrorV1 } from '../../domain/customer-intelligence-audience/index.js';
 import { MAX_PREVIEW_MEMBERS } from '../../domain/customer-intelligence-audience/index.js';
 import { compileAudienceSql } from './compile-audience-sql.js';
 import type { AudienceContextResolver, AudienceSqlExecutor, EvaluateAudience, EvaluateAudienceRequest } from './ports.js';
@@ -8,7 +8,7 @@ export function createEvaluateAudience(deps: { readonly contextResolver: Audienc
   return async (request: EvaluateAudienceRequest): Promise<Result> => {
     const evaluatedAt = request.evaluatedAt ?? deps.clock?.() ?? new Date().toISOString();
     const validation = validateAudienceDefinition(request.definition);
-    if (!validation.ok) return blocked(evaluatedAt, 'INVALID_DEFINITION', validation.errors.map((e) => `${e.path}: ${e.message}`));
+    if (!validation.ok) return blocked(evaluatedAt, 'INVALID_DEFINITION', validation.errors.map((e) => `${e.path}: ${e.message}`), null, null, undefined, validation.errors);
     const canonicalDefinition = canonicalizeAudienceDefinition(validation.definition);
     const checksum = audienceDefinitionChecksum(canonicalDefinition);
     const previewLimit = request.previewLimit ?? MAX_PREVIEW_MEMBERS;
@@ -88,4 +88,4 @@ function incompatibleVersionConstraints(filter: AudienceFilterV1, context: Audie
   visit(filter); return issues;
 }
 function normalizeTruth(value: unknown): 'TRUE' | 'FALSE' | 'UNKNOWN' { return value === 'TRUE' || value === 1 || value === '1' ? 'TRUE' : value === 'FALSE' || value === 0 || value === '0' ? 'FALSE' : 'UNKNOWN'; }
-function blocked(evaluatedAt: string, reason: Extract<AudienceEvaluationResultV1, { status: 'blocked' }>['reason'], components: readonly string[], checksum: string | null = null, context: AudienceEvaluationContextV1 | null = null, availability: AudienceAvailabilityV1 = { feature: 'UNAVAILABLE', rfm: 'UNAVAILABLE', cluster: 'UNAVAILABLE', clv: 'UNAVAILABLE', commercialAffinity: 'UNAVAILABLE' }): Extract<AudienceEvaluationResultV1, { status: 'blocked' }> { return { status: 'blocked', resultVersion: 'customer-intelligence-audience-evaluation-v1', definitionVersion: 'customer-intelligence-audience-definition-v1', definitionChecksum: checksum, audienceDefinitionChecksum: checksum, evaluationId: null, evaluatedAt, referenceTime: context?.referenceTime ?? null, context, componentAvailability: availability, blockingComponents: components, reason, warnings: [] }; }
+function blocked(evaluatedAt: string, reason: Extract<AudienceEvaluationResultV1, { status: 'blocked' }>['reason'], components: readonly string[], checksum: string | null = null, context: AudienceEvaluationContextV1 | null = null, availability: AudienceAvailabilityV1 = { feature: 'UNAVAILABLE', rfm: 'UNAVAILABLE', cluster: 'UNAVAILABLE', clv: 'UNAVAILABLE', commercialAffinity: 'UNAVAILABLE' }, validationErrors?: readonly AudienceValidationErrorV1[]): Extract<AudienceEvaluationResultV1, { status: 'blocked' }> { return { status: 'blocked', resultVersion: 'customer-intelligence-audience-evaluation-v1', definitionVersion: 'customer-intelligence-audience-definition-v1', definitionChecksum: checksum, audienceDefinitionChecksum: checksum, evaluationId: null, evaluatedAt, referenceTime: context?.referenceTime ?? null, context, componentAvailability: availability, blockingComponents: components, reason, warnings: [], ...(validationErrors === undefined ? {} : { validationErrors }) }; }
