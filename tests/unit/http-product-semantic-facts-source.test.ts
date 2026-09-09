@@ -36,9 +36,24 @@ describe('HTTP Product Semantic Facts source', () => {
     await expect(duplicate.getFacts({ productIds: [31] })).rejects.toMatchObject({ code: 'PRODUCT_SEMANTIC_LINEAGE_INVALID' });
     const mismatch = makeSource({ error: { code: 'PRODUCT_SEMANTIC_SNAPSHOT_MISMATCH', message: 'mismatch' } }, 409).source;
     await expect(mismatch.getFacts({ productIds: [31], expectedSnapshotId: snapshotId })).rejects.toMatchObject({ code: 'PRODUCT_SEMANTIC_SNAPSHOT_MISMATCH', retryable: false });
-    const unavailable = makeSource({ error: { code: 'PRODUCT_SEMANTICS_UNAVAILABLE', message: 'unavailable' } }, 503).source;
+    const unavailableFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { code: 'PRODUCT_SEMANTICS_UNAVAILABLE', message: 'unavailable' } }), { status: 503 }));
+    const unavailable = new HttpProductSemanticFactsSource({ baseUrl: 'http://catalog.local', apiKey: 'secret', maxRetries: 0, fetchImpl: unavailableFetch });
     await expect(unavailable.getFacts({ productIds: [31] })).rejects.toMatchObject({ code: 'PRODUCT_SEMANTICS_UNAVAILABLE', retryable: true });
     const timeout = new HttpProductSemanticFactsSource({ baseUrl: 'http://catalog.local', apiKey: 'secret', fetchImpl: vi.fn().mockRejectedValue(new DOMException('aborted', 'AbortError')) });
     await expect(timeout.getFacts({ productIds: [31] })).rejects.toMatchObject({ code: 'PRODUCT_SEMANTICS_TIMEOUT', retryable: true });
+  });
+
+  it('retries transient failures in the Catalog client but never retries auth failures', async () => {
+    const transientFetch = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: 'PRODUCT_SEMANTICS_UNAVAILABLE', message: 'try again' } }), { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...valid, missingProductIds: [] }), { status: 200 }));
+    const transient = new HttpProductSemanticFactsSource({ baseUrl: 'http://catalog.local', apiKey: 'secret', maxRetries: 2, retryDelayMs: 0, fetchImpl: transientFetch });
+    await expect(transient.getFacts({ productIds: [31] })).resolves.toMatchObject({ snapshotId });
+    expect(transientFetch).toHaveBeenCalledTimes(2);
+
+    const authFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { code: 'AUTH_FAILED', message: 'denied' } }), { status: 401 }));
+    const auth = new HttpProductSemanticFactsSource({ baseUrl: 'http://catalog.local', apiKey: 'secret', maxRetries: 2, retryDelayMs: 0, fetchImpl: authFetch });
+    await expect(auth.getFacts({ productIds: [31] })).rejects.toMatchObject({ code: 'PRODUCT_SEMANTICS_AUTH_FAILED', retryable: false });
+    expect(authFetch).toHaveBeenCalledTimes(1);
   });
 });

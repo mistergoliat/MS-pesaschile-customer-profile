@@ -110,11 +110,12 @@ const envSchema = z.object({
   // How many recent orders the snapshot carries — not the customer's full order history.
   CUSTOMER_PROFILE_RECENT_ORDERS_LIMIT: z.coerce.number().int().min(1).max(50).default(10),
 
-  // Product semantic truth is owned by Catalog Service. These remain optional until the
-  // population runner wires the HTTP source; if configured, the pair is all-or-nothing.
+  // Product semantic truth is owned by Catalog Service. The HTTP population runner requires
+  // the pair when AFFINITY_SEMANTIC_SOURCE=http; if configured, the pair is all-or-nothing.
   CATALOG_SERVICE_BASE_URL: z.string().trim().min(1).optional(),
   CATALOG_SERVICE_API_KEY: z.string().min(1).optional(),
   CATALOG_SERVICE_TIMEOUT_MS: z.coerce.number().int().min(100).max(30000).default(2500),
+  CATALOG_SERVICE_MAX_RETRIES: z.coerce.number().int().min(0).max(10).default(2),
 
   // No silent default: unlike PRESTASHOP_DB_PREFIX ('ps_'), there is no prior recorded
   // decision about which ps_lang.id_lang PesasChile operates in, so guessing 1 here would
@@ -343,6 +344,7 @@ export const config = {
     baseUrl: catalogServiceBaseUrl,
     apiKey: raw.CATALOG_SERVICE_API_KEY ?? null,
     timeoutMs: raw.CATALOG_SERVICE_TIMEOUT_MS,
+    maxRetries: raw.CATALOG_SERVICE_MAX_RETRIES,
   },
   customerOrderStatus: {
     carrierLanguageId: raw.PRESTASHOP_CARRIER_LANG_ID,

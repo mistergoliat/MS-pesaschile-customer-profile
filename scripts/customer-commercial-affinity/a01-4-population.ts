@@ -1,21 +1,17 @@
 import 'dotenv/config';
 import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
-import { createProductSemanticSnapshotConsumer } from '../../src/application/product-semantic-snapshot/consumer.js';
 import {
   buildCustomerCommercialAffinityPopulation,
   CUSTOMER_COMMERCIAL_AFFINITY_POPULATION_POLICY_VERSION,
 } from '../../src/application/customer-commercial-affinity-population/population-builder.js';
 import { createMysqlCustomerAffinityPurchaseReader } from '../../src/infrastructure/prestashop/mysql-customer-affinity-purchase-reader.js';
-import { FileProductSemanticSnapshotSource } from '../../src/infrastructure/catalog-product-semantics/file-product-semantic-snapshot-source.js';
 import { createQueryExecutor } from '../../src/infrastructure/shared/query-executor.js';
 import { assertPrestashopPoolIsReadOnly, createPrestashopPool, loadPrestashopConnectionConfig } from '../clustering/lib/db.js';
+import { loadCustomerAffinitySemanticSnapshot } from './lib/semantic-source.js';
 
 const referenceTime = requiredEnv('AFFINITY_REFERENCE_TIME');
 const outputPath = resolve(process.env.AFFINITY_OUTPUT_PATH ?? 'artifacts/customer-commercial-affinity/a01-4-population.json');
-const snapshotDirectory = process.env.PRODUCT_SEMANTIC_SNAPSHOT_DIR
-  ? resolve(process.env.PRODUCT_SEMANTIC_SNAPSHOT_DIR)
-  : resolve(process.cwd(), '..', 'MS-pesaschile-catalog-service', 'data', 'product-semantic-snapshots');
 const connection = loadPrestashopConnectionConfig(process.env);
 const pool = createPrestashopPool(connection);
 const startedAt = performance.now();
@@ -26,10 +22,6 @@ try {
     createQueryExecutor(pool, connection.queryTimeoutMs),
     connection.prefix,
   );
-  const semanticConsumer = createProductSemanticSnapshotConsumer(new FileProductSemanticSnapshotSource(snapshotDirectory));
-  const semanticStartedAt = performance.now();
-  const semanticSnapshot = await semanticConsumer.refresh();
-  const semanticJoinDurationMs = performance.now() - semanticStartedAt;
   const sourceStartedAt = performance.now();
   const purchases = await reader.readEvidence(referenceTime, {
     batchSize: parsePositiveEnv(process.env.AFFINITY_BATCH_SIZE, 1_000),
@@ -38,6 +30,10 @@ try {
   });
   const sourceReadDurationMs = performance.now() - sourceStartedAt;
   const sourceMetrics = reader.getLastReadMetrics();
+  const semanticStartedAt = performance.now();
+  const semanticLoad = await loadCustomerAffinitySemanticSnapshot(purchases, { referenceTime });
+  const semanticSnapshot = semanticLoad.snapshot;
+  const semanticJoinDurationMs = performance.now() - semanticStartedAt;
   const buildStartedAt = performance.now();
   const population = buildCustomerCommercialAffinityPopulation({
     referenceTime,
@@ -62,6 +58,17 @@ try {
     batches: sourceMetrics.batches,
     batchSize: parsePositiveEnv(process.env.AFFINITY_BATCH_SIZE, 1_000),
     retries: sourceMetrics.retries,
+    purchaseRowsRead: purchases.length,
+    distinctProductIds: semanticLoad.metrics.requestedDistinctProductIds,
+    semanticBatches: semanticLoad.metrics.semanticBatches,
+    requestedProductIds: semanticLoad.metrics.requestedProductIds,
+    matchedSemanticFacts: semanticLoad.metrics.matchedSemanticFacts,
+    missingProductIds: semanticLoad.metrics.missingProductIds,
+    classificationCounts: semanticLoad.metrics.classificationCounts,
+    productSemanticSnapshotId: semanticLoad.metrics.productSemanticSnapshotId,
+    ontologyVersion: semanticLoad.metrics.ontologyVersion,
+    ontologyHash: semanticLoad.metrics.ontologyHash,
+    semanticSource: process.env.AFFINITY_SEMANTIC_SOURCE ?? 'http',
     distinctCustomers: population.manifest.eligibleCustomerCount,
     semanticJoinDurationMs: round(semanticJoinDurationMs),
     sourceReadDurationMs: round(sourceReadDurationMs),

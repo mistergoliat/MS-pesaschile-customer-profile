@@ -38,6 +38,9 @@ export type HttpProductSemanticFactsSourceOptions = {
   readonly baseUrl: string;
   readonly apiKey: string;
   readonly timeoutMs?: number;
+  /** Retries are owned here because this is the only Catalog HTTP client layer. */
+  readonly maxRetries?: number;
+  readonly retryDelayMs?: number;
   readonly fetchImpl?: FetchLike;
 };
 
@@ -45,6 +48,8 @@ export class HttpProductSemanticFactsSource implements ProductSemanticFactsSourc
   private readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly timeoutMs: number;
+  private readonly maxRetries: number;
+  private readonly retryDelayMs: number;
   private readonly fetchImpl: FetchLike;
 
   constructor(options: HttpProductSemanticFactsSourceOptions) {
@@ -54,6 +59,10 @@ export class HttpProductSemanticFactsSource implements ProductSemanticFactsSourc
     this.baseUrl = options.baseUrl.replace(/\/+$/u, '');
     this.apiKey = options.apiKey;
     this.timeoutMs = options.timeoutMs ?? 2500;
+    this.maxRetries = options.maxRetries ?? 2;
+    this.retryDelayMs = options.retryDelayMs ?? 100;
+    if (!Number.isSafeInteger(this.maxRetries) || this.maxRetries < 0) throw new Error('maxRetries must be a non-negative integer');
+    if (!Number.isFinite(this.retryDelayMs) || this.retryDelayMs < 0) throw new Error('retryDelayMs must be non-negative');
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
   }
 
@@ -78,6 +87,22 @@ export class HttpProductSemanticFactsSource implements ProductSemanticFactsSourc
       throw new ProductSemanticFactsSourceError('INVALID_PRODUCT_SEMANTICS_REQUEST', 'expectedSnapshotId is invalid');
     }
 
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await this.requestBatch(productIds, input.expectedSnapshotId);
+      } catch (error) {
+        const mapped = error instanceof ProductSemanticFactsSourceError
+          ? error
+          : error instanceof Error && error.name === 'AbortError'
+            ? new ProductSemanticFactsSourceError('PRODUCT_SEMANTICS_TIMEOUT', 'Catalog Service request timed out', 408, true, { cause: error })
+            : new ProductSemanticFactsSourceError('PRODUCT_SEMANTICS_NETWORK_ERROR', 'Catalog Service request failed', 503, true, { cause: error });
+        if (!mapped.retryable || attempt >= this.maxRetries) throw mapped;
+        await wait(this.retryDelayMs * (attempt + 1));
+      }
+    }
+  }
+
+  private async requestBatch(productIds: readonly number[], expectedSnapshotId?: string): Promise<ProductSemanticBatchResult> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     const correlationId = randomUUID();
@@ -91,23 +116,22 @@ export class HttpProductSemanticFactsSource implements ProductSemanticFactsSourc
         },
         body: JSON.stringify({
           productIds,
-          ...(input.expectedSnapshotId === undefined ? {} : { expectedSnapshotId: input.expectedSnapshotId }),
+          ...(expectedSnapshotId === undefined ? {} : { expectedSnapshotId }),
         }),
         signal: controller.signal,
       });
       const payload = await readJson(response);
       if (!response.ok) throw mapHttpError(response.status, payload);
-      return validateBatchPayload(payload, productIds, input.expectedSnapshotId);
-    } catch (error) {
-      if (error instanceof ProductSemanticFactsSourceError) throw error;
-      if (error instanceof Error && error.name === 'AbortError') {
-        throw new ProductSemanticFactsSourceError('PRODUCT_SEMANTICS_TIMEOUT', 'Catalog Service request timed out', 408, true, { cause: error });
-      }
-      throw new ProductSemanticFactsSourceError('PRODUCT_SEMANTICS_NETWORK_ERROR', 'Catalog Service request failed', 503, true, { cause: error });
+      return validateBatchPayload(payload, productIds, expectedSnapshotId);
     } finally {
       clearTimeout(timer);
     }
   }
+}
+
+async function wait(delayMs: number): Promise<void> {
+  if (delayMs <= 0) return;
+  await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
 }
 
 function normalizeProductIds(productIds: readonly number[]): number[] {
