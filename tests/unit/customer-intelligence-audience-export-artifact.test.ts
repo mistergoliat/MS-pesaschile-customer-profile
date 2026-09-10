@@ -143,13 +143,14 @@ describe('A04.3 generic audience export', () => {
     const readByCustomerIds = vi.fn(async () => []);
     const result = await createAudienceExport({ contactReader: { readByCustomerIds }, clock: () => '2026-09-10T12:00:00.000Z' })({
       membership: membership([]),
-      selectedFields: ['customerId', 'email'],
-      format: 'GENERIC_CSV',
-      destination: 'DOWNLOAD',
+      fields: ['customerId', 'email'],
+      format: 'CSV',
     });
     expect(readByCustomerIds).not.toHaveBeenCalled();
     expect(result.rowCount).toBe(0);
     expect(result.artifact.toString('utf8')).toBe('customerId,email\r\n');
+    expect(result.artifact.toString('utf8')).not.toContain('EXT_ID');
+    expect('destination' in result).toBe(false);
     expect(result.membershipChecksum).toBe('membership-checksum');
     expect(result.evaluationChecksum).toBe('evaluation-checksum');
     expect(result.lineage).toBeDefined();
@@ -157,10 +158,10 @@ describe('A04.3 generic audience export', () => {
 
   it('rejects Brevo flow and global hydration failures before producing an artifact', async () => {
     const readByCustomerIds = vi.fn(async () => { throw new Error('down'); });
-    await expect(createAudienceExport({ contactReader: { readByCustomerIds } })({ membership: membership([1]), format: 'BREVO_CONTACT_IMPORT_CSV' })).rejects.toThrowError(
+    await expect(createAudienceExport({ contactReader: { readByCustomerIds } })({ membership: membership([1]), format: 'BREVO_CONTACT_IMPORT_CSV' as never })).rejects.toThrowError(
       expect.objectContaining({ code: 'UNSUPPORTED_FORMAT' }),
     );
-    await expect(createAudienceExport({ contactReader: { readByCustomerIds } })({ membership: membership([1]), format: 'GENERIC_CSV' })).rejects.toThrowError(
+    await expect(createAudienceExport({ contactReader: { readByCustomerIds } })({ membership: membership([1]), format: 'CSV' })).rejects.toThrowError(
       expect.objectContaining({ code: 'CONTACT_HYDRATION_FAILED' }),
     );
   });
@@ -172,9 +173,8 @@ describe('A04.3 generic audience export', () => {
         { customerId: 1, email: '=cmd', firstname: null, lastname: 'A' },
         { customerId: 2, email: null, firstname: 'B', lastname: null },
       ],
-      selectedFields: ['lastname', 'customerId', 'email'],
-      format: 'GENERIC_XLSX',
-      destination: 'DOWNLOAD',
+      fields: ['lastname', 'customerId', 'email'],
+      format: 'XLSX',
       generatedAt: '2026-09-10T12:00:00.000Z',
     });
     const workbook = new ExcelJS.Workbook();
@@ -204,7 +204,7 @@ describe('A04.3 generic audience export', () => {
     await expect(buildAudienceExportArtifact({
       membership: membership([1]),
       contacts: [{ customerId: 1, email: 'a@example.com', firstname: null, lastname: null }],
-      format: 'GENERIC_XLSX',
+      format: 'XLSX',
       limits: { maxOutputBytes: 10 },
     })).rejects.toThrowError(expect.objectContaining({ code: 'EXPORT_SIZE_LIMIT_EXCEEDED' }));
   });

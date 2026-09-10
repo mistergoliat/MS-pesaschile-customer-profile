@@ -1,6 +1,6 @@
 import type { AudienceExportFieldIdV1, AudienceExportRowV1 } from '../../domain/customer-intelligence-audience/index.js';
 
-export const GENERIC_CSV_CONTENT_TYPE = 'text/csv; charset=utf-8' as const;
+export const CSV_CONTENT_TYPE = 'text/csv; charset=utf-8' as const;
 
 export class AudienceExportSizeLimitError extends Error {
   readonly code = 'EXPORT_SIZE_LIMIT_EXCEEDED' as const;

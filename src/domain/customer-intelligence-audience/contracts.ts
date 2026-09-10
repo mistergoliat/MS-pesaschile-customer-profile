@@ -10,6 +10,7 @@ export const AUDIENCE_REPRODUCIBILITY_LEVEL = 'ACTIVE_SNAPSHOT_CONSISTENT' as co
 export const AUDIENCE_EXPORT_CONTACT_VERSION = 'customer-intelligence-audience-export-contact-v1' as const;
 export const AUDIENCE_EXPORT_PREVIEW_VERSION = 'customer-intelligence-audience-export-preview-v1' as const;
 export const AUDIENCE_EXPORT_ARTIFACT_VERSION = 'customer-intelligence-audience-export-artifact-v1' as const;
+export const AUDIENCE_EXPORT_REQUEST_VERSION = 'customer-intelligence-audience-export-request-v1' as const;
 
 export type AudienceDecimalV1 = string;
 export type AudienceFieldIdV1 =
@@ -195,9 +196,15 @@ export type AudienceExportContactV1 = {
 };
 
 export type AudienceExportFieldIdV1 = 'customerId' | 'email' | 'firstname' | 'lastname';
-export type AudienceExportFormatV1 = 'GENERIC_CSV' | 'GENERIC_XLSX' | 'BREVO_CONTACT_IMPORT_CSV';
-export type AudienceGenericExportFormatV1 = Exclude<AudienceExportFormatV1, 'BREVO_CONTACT_IMPORT_CSV'>;
-export type AudienceExportDestinationV1 = 'DOWNLOAD' | 'BREVO_CONTACT_IMPORT_FILE';
+/** The only user-visible downloadable formats in A04. */
+export type AudienceExportFormatV1 = 'CSV' | 'XLSX';
+export type AudienceDownloadExportFormatV1 = AudienceExportFormatV1;
+export type AudienceExportRequestV1 = {
+  readonly requestVersion: typeof AUDIENCE_EXPORT_REQUEST_VERSION;
+  readonly definition: unknown;
+  readonly format: AudienceExportFormatV1;
+  readonly fields?: readonly AudienceExportFieldIdV1[];
+};
 export type AudienceExportPreviewStatusV1 = 'READY' | 'BLOCKED';
 export type AudienceExportRejectionReasonV1 =
   | 'MISSING_CONTACT_IDENTIFIER'
@@ -226,7 +233,6 @@ export type AudienceExportPreviewV1 = {
   readonly brevoRejectedCount: number;
   readonly selectedFields: readonly AudienceExportFieldIdV1[];
   readonly selectedFormat: AudienceExportFormatV1;
-  readonly selectedDestination: AudienceExportDestinationV1;
   readonly estimatedFileRows: number;
   readonly estimatedFileSizeBytes: number | null;
   readonly membershipChecksum: string;
@@ -248,7 +254,7 @@ export type AudienceExportRowV1 = {
 
 export type AudienceExportMetadataV1 = {
   readonly exportVersion: typeof AUDIENCE_EXPORT_ARTIFACT_VERSION;
-  readonly format: AudienceGenericExportFormatV1;
+  readonly format: AudienceDownloadExportFormatV1;
   readonly rowCount: number;
   readonly definitionChecksum: string;
   readonly evaluationChecksum: string;
@@ -265,14 +271,13 @@ export type AudienceExportMetadataV1 = {
   readonly resolutionPolicyVersion: string;
   readonly relevantSnapshotLineage: AudienceRelevantSnapshotLineageV1;
   readonly selectedFields: readonly AudienceExportFieldIdV1[];
-  readonly selectedDestination: 'DOWNLOAD';
   readonly generatedAt: string;
   readonly validationWarnings: readonly string[];
 };
 
 export type AudienceExportArtifactV1 = {
   readonly exportVersion: typeof AUDIENCE_EXPORT_ARTIFACT_VERSION;
-  readonly format: AudienceGenericExportFormatV1;
+  readonly format: AudienceDownloadExportFormatV1;
   readonly rowCount: number;
   readonly selectedFields: readonly AudienceExportFieldIdV1[];
   readonly membershipChecksum: string;

@@ -1,22 +1,21 @@
 import type {
   AudienceExportArtifactV1,
   AudienceExportContactV1,
-  AudienceExportDestinationV1,
   AudienceExportFieldIdV1,
   AudienceExportFormatV1,
   AudienceExportMetadataV1,
-  AudienceGenericExportFormatV1,
+  AudienceDownloadExportFormatV1,
   AudienceMembershipResultV1,
 } from '../../domain/customer-intelligence-audience/index.js';
 import { stableStringify } from '../../shared/stable-checksum.js';
-import { writeGenericCsv, GENERIC_CSV_CONTENT_TYPE } from './csv-writer.js';
+import { writeGenericCsv, CSV_CONTENT_TYPE } from './csv-writer.js';
 import {
   buildAudienceExportProjection,
   normalizeAudienceExportFields,
   AudienceExportProjectionError,
 } from './export-projection.js';
 import type { AudienceExportContactReader } from './ports.js';
-import { writeGenericXlsx, GENERIC_XLSX_CONTENT_TYPE, type AudienceXlsxMetadataEntry } from './xlsx-writer.js';
+import { writeGenericXlsx, XLSX_CONTENT_TYPE, type AudienceXlsxMetadataEntry } from './xlsx-writer.js';
 
 export const DEFAULT_AUDIENCE_EXPORT_MAX_OUTPUT_BYTES = 50 * 1024 * 1024;
 export const DEFAULT_AUDIENCE_EXPORT_MAX_MATCHED_ROWS = 50_000;
@@ -26,18 +25,14 @@ export type AudienceExportLimitsV1 = {
   readonly maxMatchedRows?: number;
 };
 
-export type AudienceExportRequestV1 = {
+export type AudienceMembershipExportRequestV1 = {
   readonly membership: AudienceMembershipResultV1;
-  readonly selectedFields?: readonly (AudienceExportFieldIdV1 | string)[];
   readonly fields?: readonly (AudienceExportFieldIdV1 | string)[];
-  readonly selectedFormat?: AudienceExportFormatV1 | string;
-  readonly format?: AudienceExportFormatV1 | string;
-  readonly selectedDestination?: AudienceExportDestinationV1 | string;
-  readonly destination?: AudienceExportDestinationV1 | string;
+  readonly format?: AudienceExportFormatV1;
   readonly generatedAt?: string;
 };
 
-export type BuildAudienceExportArtifactInput = AudienceExportRequestV1 & {
+export type BuildAudienceExportArtifactInput = AudienceMembershipExportRequestV1 & {
   readonly contacts: readonly AudienceExportContactV1[];
   readonly limits?: AudienceExportLimitsV1;
 };
@@ -48,13 +43,11 @@ export type AudienceExportDependencies = {
   readonly limits?: AudienceExportLimitsV1;
 };
 
-export type AudienceExport = (request: AudienceExportRequestV1) => Promise<AudienceExportArtifactV1>;
+export type AudienceExport = (request: AudienceMembershipExportRequestV1) => Promise<AudienceExportArtifactV1>;
 
 export class AudienceExportError extends Error {
   readonly code:
     | 'UNSUPPORTED_FORMAT'
-    | 'UNSUPPORTED_DESTINATION'
-    | 'UNSUPPORTED_FORMAT_DESTINATION'
     | 'UNSUPPORTED_FIELD'
     | 'DUPLICATE_FIELD'
     | 'REQUIRED_FIELD_MISSING'
@@ -94,9 +87,8 @@ export function createAudienceExport(deps: AudienceExportDependencies): Audience
 
     return buildAudienceExportArtifact({
       ...request,
-      selectedFields: selection.selectedFields,
-      selectedFormat: selection.format,
-      selectedDestination: selection.destination,
+      fields: selection.selectedFields,
+      format: selection.format,
       contacts,
       generatedAt: request.generatedAt ?? deps.clock?.() ?? new Date().toISOString(),
       limits: deps.limits,
@@ -130,7 +122,7 @@ export async function buildAudienceExportArtifact(input: BuildAudienceExportArti
     validationWarnings: warnings,
   });
 
-  const artifact = selection.format === 'GENERIC_CSV'
+  const artifact = selection.format === 'CSV'
     ? writeGenericCsv({ rows: projection.rows, selectedFields: projection.selectedFields, maxBytes })
     : await writeGenericXlsx({
         rows: projection.rows,
@@ -139,7 +131,7 @@ export async function buildAudienceExportArtifact(input: BuildAudienceExportArti
         maxBytes,
         generatedAt,
       });
-  const contentType = selection.format === 'GENERIC_CSV' ? GENERIC_CSV_CONTENT_TYPE : GENERIC_XLSX_CONTENT_TYPE;
+  const contentType = selection.format === 'CSV' ? CSV_CONTENT_TYPE : XLSX_CONTENT_TYPE;
   const filename = createAudienceExportFilename(input.membership.definitionChecksum, generatedAt, selection.format);
 
   return {
@@ -164,33 +156,22 @@ export const createAudienceExportArtifact = createAudienceExport;
 export function createAudienceExportFilename(
   definitionChecksum: string,
   generatedAt: string,
-  format: AudienceGenericExportFormatV1,
+  format: AudienceDownloadExportFormatV1,
 ): string {
   const checksumPart = sanitizeFilenamePart(definitionChecksum.slice(0, 12)) || 'unknown';
   const timestampPart = sanitizeFilenamePart(generatedAt.replace(/[:.]/gu, '-')) || 'generated';
-  return `audience-export-${checksumPart}-${timestampPart}.${format === 'GENERIC_CSV' ? 'csv' : 'xlsx'}`;
+  return `audience-export-${checksumPart}-${timestampPart}.${format === 'CSV' ? 'csv' : 'xlsx'}`;
 }
 
 type ResolvedExportRequest = {
   readonly selectedFields: readonly AudienceExportFieldIdV1[];
-  readonly format: AudienceGenericExportFormatV1;
-  readonly destination: 'DOWNLOAD';
+  readonly format: AudienceDownloadExportFormatV1;
 };
 
-function resolveExportRequest(input: AudienceExportRequestV1): ResolvedExportRequest {
-  if (input.selectedFields !== undefined && input.fields !== undefined && !sameValues(input.selectedFields, input.fields)) {
-    throw new AudienceExportError('CONFLICTING_REQUEST', 'selectedFields and fields must match when both are supplied');
-  }
-  if (input.selectedFormat !== undefined && input.format !== undefined && input.selectedFormat !== input.format) {
-    throw new AudienceExportError('CONFLICTING_REQUEST', 'selectedFormat and format must match when both are supplied');
-  }
-  if (input.selectedDestination !== undefined && input.destination !== undefined && input.selectedDestination !== input.destination) {
-    throw new AudienceExportError('CONFLICTING_REQUEST', 'selectedDestination and destination must match when both are supplied');
-  }
-
+function resolveExportRequest(input: AudienceMembershipExportRequestV1): ResolvedExportRequest {
   let selectedFields: readonly AudienceExportFieldIdV1[];
   try {
-    selectedFields = normalizeAudienceExportFields(input.selectedFields ?? input.fields);
+    selectedFields = normalizeAudienceExportFields(input.fields);
   } catch (error) {
     if (error instanceof AudienceExportProjectionError) {
       throw new AudienceExportError(error.code, error.message, { cause: error });
@@ -198,18 +179,11 @@ function resolveExportRequest(input: AudienceExportRequestV1): ResolvedExportReq
     throw error;
   }
 
-  const requestedFormat = input.selectedFormat ?? input.format ?? 'GENERIC_CSV';
-  if (requestedFormat !== 'GENERIC_CSV' && requestedFormat !== 'GENERIC_XLSX') {
+  const requestedFormat = input.format ?? 'CSV';
+  if (requestedFormat !== 'CSV' && requestedFormat !== 'XLSX') {
     throw new AudienceExportError('UNSUPPORTED_FORMAT', `Unsupported audience export format: ${String(requestedFormat)}`);
   }
-  const requestedDestination = input.selectedDestination ?? input.destination ?? 'DOWNLOAD';
-  if (requestedDestination !== 'DOWNLOAD') {
-    if (requestedDestination === 'BREVO_CONTACT_IMPORT_FILE') {
-      throw new AudienceExportError('UNSUPPORTED_FORMAT_DESTINATION', 'Brevo contact import is not supported by A04.3 generic export');
-    }
-    throw new AudienceExportError('UNSUPPORTED_DESTINATION', `Unsupported audience export destination: ${String(requestedDestination)}`);
-  }
-  return { selectedFields, format: requestedFormat, destination: 'DOWNLOAD' };
+  return { selectedFields, format: requestedFormat };
 }
 
 function assertMembershipExportable(membership: AudienceMembershipResultV1, maxMatchedRows: number): void {
@@ -245,7 +219,7 @@ function assertConfiguredLimits(limits: AudienceExportLimitsV1 | undefined): voi
 
 function createMetadata(input: {
   readonly membership: AudienceMembershipResultV1;
-  readonly format: AudienceGenericExportFormatV1;
+  readonly format: AudienceDownloadExportFormatV1;
   readonly selectedFields: readonly AudienceExportFieldIdV1[];
   readonly generatedAt: string;
   readonly validationWarnings: readonly string[];
@@ -270,7 +244,6 @@ function createMetadata(input: {
     resolutionPolicyVersion: membership.lineage.resolutionPolicyVersion,
     relevantSnapshotLineage: membership.lineage.relevantSnapshotLineage,
     selectedFields: input.selectedFields,
-    selectedDestination: 'DOWNLOAD',
     generatedAt: input.generatedAt,
     validationWarnings: input.validationWarnings,
   };
@@ -296,15 +269,10 @@ function metadataEntries(metadata: AudienceExportMetadataV1): readonly AudienceX
     ['resolutionPolicyVersion', metadata.resolutionPolicyVersion],
     ['relevantSnapshotLineage', stableStringify(metadata.relevantSnapshotLineage)],
     ['selectedFields', stableStringify(metadata.selectedFields)],
-    ['selectedDestination', metadata.selectedDestination],
     ['generatedAt', metadata.generatedAt],
     ['validationWarnings', stableStringify(metadata.validationWarnings)],
   ];
   return entries;
-}
-
-function sameValues(left: readonly unknown[], right: readonly unknown[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function uniqueStrings(values: readonly string[]): readonly string[] {

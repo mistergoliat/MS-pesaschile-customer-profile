@@ -35,8 +35,7 @@ function membership(
 function request(overrides: Partial<AudienceExportPreviewRequestV1> = {}): AudienceExportPreviewRequestV1 {
   return {
     membership: membership([1, 2, 3], { population: 4, matched: 3, notMatched: 0, unknown: 1 }),
-    selectedFormat: 'GENERIC_CSV',
-    selectedDestination: 'DOWNLOAD',
+    format: 'CSV',
     ...overrides,
   };
 }
@@ -82,9 +81,8 @@ describe('A04.2 audience export preview', () => {
     const result = buildAudienceExportPreview({
       membership: membership([1, 2], { population: 2, matched: 2, notMatched: 0, unknown: 0 }),
       contacts: [{ customerId: 1, email: 'valid@example.com', firstname: null, lastname: null }],
-      selectedFields: ['customerId', 'email', 'firstname', 'lastname'],
-      selectedFormat: 'GENERIC_XLSX',
-      selectedDestination: 'DOWNLOAD',
+      fields: ['customerId', 'email', 'firstname', 'lastname'],
+      format: 'XLSX',
     });
 
     expect(result).toMatchObject({
@@ -101,11 +99,10 @@ describe('A04.2 audience export preview', () => {
     const result = buildAudienceExportPreview({
       membership: membership([1], { population: 1, matched: 1, notMatched: 0, unknown: 0 }),
       contacts: [{ customerId: 1, email: 'invalid email', firstname: null, lastname: null }],
-      selectedFormat: 'BREVO_CONTACT_IMPORT_CSV',
-      selectedDestination: 'BREVO_CONTACT_IMPORT_FILE',
+      format: 'CSV',
     });
 
-    expect(result).toMatchObject({ status: 'READY', exportableCount: 1, brevoEligibleCount: 0, brevoRejectedCount: 1, estimatedFileRows: 0 });
+    expect(result).toMatchObject({ status: 'READY', exportableCount: 1, brevoEligibleCount: 0, brevoRejectedCount: 1, estimatedFileRows: 1 });
     expect(result.rejectionReasonCounts).toMatchObject({ INVALID_EMAIL: 1 });
     expect(result.validationWarnings).toContain('invalid_email');
   });
@@ -133,11 +130,10 @@ describe('A04.2 audience export preview', () => {
     const result = buildAudienceExportPreview({
       membership: membership([1], { population: 1, matched: 1, notMatched: 0, unknown: 0 }),
       contacts: [],
-      selectedFormat: 'GENERIC_CSV',
-      selectedDestination: 'BREVO_CONTACT_IMPORT_FILE',
+      format: 'GENERIC_CSV' as never,
     });
     expect(result.status).toBe('BLOCKED');
-    expect(result.blockingReasons).toContain('UNSUPPORTED_FORMAT_DESTINATION');
+    expect(result.blockingReasons).toContain('UNSUPPORTED_FORMAT');
     expect(result.membershipChecksum).toBe('membership-checksum');
     expect(result.evaluationChecksum).toBe('evaluation-checksum');
   });
@@ -146,11 +142,10 @@ describe('A04.2 audience export preview', () => {
     const result = buildAudienceExportPreview({
       membership: membership([1], { population: 1, matched: 1, notMatched: 0, unknown: 0 }),
       contacts: [],
-      selectedFormat: 'BREVO_CONTACT_IMPORT_CSV',
-      selectedDestination: 'BREVO_CONTACT_IMPORT_FILE',
+      format: 'CSV',
       brevoExtIdMappingApproved: false,
     });
-    expect(result).toMatchObject({ status: 'BLOCKED', brevoEligibleCount: 0, brevoRejectedCount: 1 });
+    expect(result).toMatchObject({ status: 'READY', exportableCount: 1, brevoEligibleCount: 0, brevoRejectedCount: 1 });
     expect(result.rejectionReasonCounts).toMatchObject({ ATTRIBUTE_MAPPING_UNAVAILABLE: 1 });
   });
 

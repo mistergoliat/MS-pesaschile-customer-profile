@@ -1,7 +1,7 @@
 import type { AudienceExportFieldIdV1, AudienceExportRowV1 } from '../../domain/customer-intelligence-audience/index.js';
 import { AudienceExportSizeLimitError } from './csv-writer.js';
 
-export const GENERIC_XLSX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' as const;
+export const XLSX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' as const;
 
 export type AudienceXlsxMetadataEntry = readonly [string, string | number | boolean | null];
 

@@ -1,6 +1,5 @@
 import type {
   AudienceExportContactV1,
-  AudienceExportDestinationV1,
   AudienceExportFieldIdV1,
   AudienceExportFormatV1,
   AudienceExportPreviewV1,
@@ -23,13 +22,8 @@ const REJECTION_REASONS: readonly AudienceExportRejectionReasonV1[] = [
 
 export type AudienceExportPreviewRequestV1 = {
   readonly membership: AudienceMembershipResultV1;
-  readonly selectedFields?: readonly AudienceExportFieldIdV1[];
-  readonly selectedFormat?: AudienceExportFormatV1;
-  readonly selectedDestination?: AudienceExportDestinationV1;
-  /** Compatibility aliases for callers using the A04 request vocabulary. */
   readonly fields?: readonly AudienceExportFieldIdV1[];
   readonly format?: AudienceExportFormatV1;
-  readonly destination?: AudienceExportDestinationV1;
   /** The current A04 core policy approves customerId -> EXT_ID by default. */
   readonly brevoExtIdMappingApproved?: boolean;
   readonly extIdMappingApproved?: boolean;
@@ -84,9 +78,8 @@ export function createAudienceExportPreview(deps: AudienceExportPreviewDependenc
     return buildAudienceExportPreview({
       membership: request.membership,
       contacts,
-      selectedFields: selection.selectedFields,
-      selectedFormat: selection.selectedFormat,
-      selectedDestination: selection.selectedDestination,
+      fields: selection.selectedFields,
+      format: selection.selectedFormat,
       brevoExtIdMappingApproved: request.brevoExtIdMappingApproved ?? request.extIdMappingApproved ?? true,
     });
   };
@@ -96,9 +89,8 @@ export function createAudienceExportPreview(deps: AudienceExportPreviewDependenc
 export function buildAudienceExportPreview(input: {
   readonly membership: AudienceMembershipResultV1;
   readonly contacts: readonly AudienceExportContactV1[];
-  readonly selectedFields?: readonly AudienceExportFieldIdV1[];
-  readonly selectedFormat?: AudienceExportFormatV1;
-  readonly selectedDestination?: AudienceExportDestinationV1;
+  readonly fields?: readonly AudienceExportFieldIdV1[];
+  readonly format?: AudienceExportFormatV1;
   readonly brevoExtIdMappingApproved?: boolean;
 }): AudienceExportPreviewV1 {
   assertCompleteMembership(input.membership);
@@ -144,14 +136,12 @@ export function buildAudienceExportPreview(input: {
   });
   if (!mappingApproved) warnings.push('attribute_mapping_unavailable');
 
-  const isBrevo = selection.selectedFormat === 'BREVO_CONTACT_IMPORT_CSV';
-  const brevoMappingBlocked = isBrevo && !mappingApproved;
-  const exportableCount = brevoMappingBlocked ? 0 : audienceMatchedCount;
-  const estimatedFileRows = isBrevo ? brevoEligibleCount : audienceMatchedCount;
+  const exportableCount = audienceMatchedCount;
+  const estimatedFileRows = audienceMatchedCount;
 
   return {
     previewVersion: 'customer-intelligence-audience-export-preview-v1',
-    status: brevoMappingBlocked ? 'BLOCKED' : 'READY',
+    status: 'READY',
     audienceMatchedCount,
     unknownCount: input.membership.counts.unknown,
     customersWithEmail,
@@ -166,7 +156,6 @@ export function buildAudienceExportPreview(input: {
     brevoRejectedCount,
     selectedFields: selection.selectedFields,
     selectedFormat: selection.selectedFormat,
-    selectedDestination: selection.selectedDestination,
     estimatedFileRows,
     estimatedFileSizeBytes: null,
     membershipChecksum: input.membership.membershipChecksum,
@@ -174,7 +163,6 @@ export function buildAudienceExportPreview(input: {
     lineage: input.membership.lineage,
     validationWarnings: ['phone_source_unavailable', ...warnings],
     rejectionReasonCounts,
-    ...(brevoMappingBlocked ? { blockingReasons: ['ATTRIBUTE_MAPPING_UNAVAILABLE'] } : {}),
   };
 }
 
@@ -204,40 +192,28 @@ export async function previewAudienceExport(
 type ResolvedSelection = {
   readonly selectedFields: readonly AudienceExportFieldIdV1[];
   readonly selectedFormat: AudienceExportFormatV1;
-  readonly selectedDestination: AudienceExportDestinationV1;
   readonly blockingReasons: readonly string[];
 };
 
 function resolveSelection(input: {
-  readonly selectedFields?: readonly AudienceExportFieldIdV1[];
-  readonly selectedFormat?: AudienceExportFormatV1;
-  readonly selectedDestination?: AudienceExportDestinationV1;
   readonly fields?: readonly AudienceExportFieldIdV1[];
   readonly format?: AudienceExportFormatV1;
-  readonly destination?: AudienceExportDestinationV1;
 }): ResolvedSelection {
-  const requestedFields = input.selectedFields ?? input.fields ?? DEFAULT_FIELDS;
+  const requestedFields = input.fields ?? DEFAULT_FIELDS;
   const selectedFields = [...requestedFields] as AudienceExportFieldIdV1[];
-  const selectedFormat = input.selectedFormat ?? input.format ?? 'GENERIC_CSV';
-  const selectedDestination = input.selectedDestination ?? input.destination ?? defaultDestination(selectedFormat);
+  const selectedFormat = input.format ?? 'CSV';
   const blockingReasons: string[] = [];
 
-  if (input.selectedFields !== undefined && input.fields !== undefined && !sameFields(input.selectedFields, input.fields)) {
-    blockingReasons.push('UNSUPPORTED_FIELD');
-  }
   if (selectedFields.length === 0 || selectedFields.some((field) => !SUPPORTED_FIELDS.has(field)) || new Set(selectedFields).size !== selectedFields.length) {
     blockingReasons.push('UNSUPPORTED_FIELD');
   }
-  if (!isExportFormat(selectedFormat) || !isExportDestination(selectedDestination)) {
-    blockingReasons.push('UNSUPPORTED_FIELD');
-  } else if (!isSupportedCombination(selectedFormat, selectedDestination)) {
-    blockingReasons.push('UNSUPPORTED_FORMAT_DESTINATION');
+  if (!isExportFormat(selectedFormat)) {
+    blockingReasons.push('UNSUPPORTED_FORMAT');
   }
 
   return {
     selectedFields: selectedFields.filter((field): field is AudienceExportFieldIdV1 => SUPPORTED_FIELDS.has(field)),
-    selectedFormat: isExportFormat(selectedFormat) ? selectedFormat : 'GENERIC_CSV',
-    selectedDestination: isExportDestination(selectedDestination) ? selectedDestination : 'DOWNLOAD',
+    selectedFormat: isExportFormat(selectedFormat) ? selectedFormat : 'CSV',
     blockingReasons: [...new Set(blockingReasons)],
   };
 }
@@ -248,7 +224,6 @@ function buildBlockedPreview(
   blockingReasons: readonly string[],
 ): AudienceExportPreviewV1 {
   const matched = membership.counts.matched;
-  const isBrevo = selection.selectedFormat === 'BREVO_CONTACT_IMPORT_CSV';
   const rejectionReasonCounts = emptyReasonCounts();
   if (blockingReasons.includes('UNSUPPORTED_FIELD')) rejectionReasonCounts.UNSUPPORTED_FIELD = matched;
   return {
@@ -265,10 +240,9 @@ function buildBlockedPreview(
     exportableCount: 0,
     excludedFromExportCount: matched,
     brevoEligibleCount: 0,
-    brevoRejectedCount: isBrevo ? matched : 0,
+    brevoRejectedCount: 0,
     selectedFields: selection.selectedFields,
     selectedFormat: selection.selectedFormat,
-    selectedDestination: selection.selectedDestination,
     estimatedFileRows: 0,
     estimatedFileSizeBytes: null,
     membershipChecksum: membership.membershipChecksum,
@@ -369,24 +343,6 @@ function emptyReasonCounts(): AudienceExportRejectionReasonCountsV1 & Record<Aud
   return Object.fromEntries(REJECTION_REASONS.map((reason) => [reason, 0])) as AudienceExportRejectionReasonCountsV1 & Record<AudienceExportRejectionReasonV1, number>;
 }
 
-function defaultDestination(format: AudienceExportFormatV1 | string): AudienceExportDestinationV1 {
-  return format === 'BREVO_CONTACT_IMPORT_CSV' ? 'BREVO_CONTACT_IMPORT_FILE' : 'DOWNLOAD';
-}
-
 function isExportFormat(value: unknown): value is AudienceExportFormatV1 {
-  return value === 'GENERIC_CSV' || value === 'GENERIC_XLSX' || value === 'BREVO_CONTACT_IMPORT_CSV';
-}
-
-function isExportDestination(value: unknown): value is AudienceExportDestinationV1 {
-  return value === 'DOWNLOAD' || value === 'BREVO_CONTACT_IMPORT_FILE';
-}
-
-function isSupportedCombination(format: AudienceExportFormatV1, destination: AudienceExportDestinationV1): boolean {
-  return format === 'BREVO_CONTACT_IMPORT_CSV'
-    ? destination === 'BREVO_CONTACT_IMPORT_FILE'
-    : destination === 'DOWNLOAD';
-}
-
-function sameFields(left: readonly AudienceExportFieldIdV1[], right: readonly AudienceExportFieldIdV1[]): boolean {
-  return left.length === right.length && left.every((field, index) => field === right[index]);
+  return value === 'CSV' || value === 'XLSX';
 }
