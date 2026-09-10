@@ -34,6 +34,10 @@ export function createMysqlCustomerCommercialAffinitySnapshotStore(pool: Pool): 
   }
 
   async function writeRows(snapshotId: string, rows: readonly CustomerCommercialAffinityRow[]): Promise<void> {
+    for (const row of rows) {
+      assertValidAffinityRow(row);
+      if (row.supportingUnits === null) throw new Error('New affinity snapshot rows require supportingUnits');
+    }
     const connection = await pool.getConnection();
     try {
       await connection.beginTransaction();
@@ -278,7 +282,7 @@ export function createMysqlCustomerCommercialAffinitySnapshotStore(pool: Pool): 
 const SELECT_ACTIVE_ROWS_SQL = `
   SELECT r.customer_id AS customerId, r.affinity_axis AS affinityAxis, r.affinity_code AS affinityCode,
          r.score, r.supporting_order_count AS supportingOrderCount,
-         r.supporting_product_count AS supportingProductCount, r.supporting_spend AS supportingSpend,
+         r.supporting_product_count AS supportingProductCount, r.supporting_units AS supportingUnits, r.supporting_spend AS supportingSpend,
          r.last_evidence_at AS lastEvidenceAt, r.explicit_evidence_coverage AS explicitEvidenceCoverage
     FROM customer_commercial_affinity_snapshot_row r
     INNER JOIN customer_commercial_affinity_snapshot s ON s.id = r.snapshot_id
@@ -430,13 +434,13 @@ async function assertPersistedAffinityCoverage(connection: PoolConnection, snaps
 async function insertRows(connection: PoolConnection, snapshotId: number, rows: readonly CustomerCommercialAffinityRow[]): Promise<void> {
   for (let offset = 0; offset < rows.length; offset += ROW_BATCH_SIZE) {
     const batch = rows.slice(offset, offset + ROW_BATCH_SIZE);
-    const placeholders = batch.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+    const placeholders = batch.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
     await connection.execute(
       `INSERT INTO customer_commercial_affinity_snapshot_row (
         snapshot_id, customer_id, affinity_axis, affinity_code, score, supporting_order_count,
-        supporting_product_count, supporting_spend, last_evidence_at, explicit_evidence_coverage
+        supporting_product_count, supporting_units, supporting_spend, last_evidence_at, explicit_evidence_coverage
       ) VALUES ${placeholders}`,
-      batch.flatMap((row) => [snapshotId, row.customerId, row.affinityAxis, row.affinityCode, row.score.toFixed(9), row.supportingOrderCount, row.supportingProductCount, row.supportingSpend, toMysqlDateTime6(row.lastEvidenceAt), row.explicitEvidenceCoverage === null ? null : row.explicitEvidenceCoverage.toFixed(9)]),
+      batch.flatMap((row) => [snapshotId, row.customerId, row.affinityAxis, row.affinityCode, row.score.toFixed(9), row.supportingOrderCount, row.supportingProductCount, row.supportingUnits, row.supportingSpend, toMysqlDateTime6(row.lastEvidenceAt), row.explicitEvidenceCoverage === null ? null : row.explicitEvidenceCoverage.toFixed(9)]),
     );
   }
 }
@@ -450,6 +454,7 @@ async function calculatePersistedChecksum(connection: PoolConnection, snapshotId
   const [rows] = await connection.execute<RowDataPacket[]>(
     `SELECT customer_id AS customerId, affinity_axis AS affinityAxis, affinity_code AS affinityCode,
             score, supporting_order_count AS supportingOrderCount, supporting_product_count AS supportingProductCount,
+            supporting_units AS supportingUnits,
             supporting_spend AS supportingSpend, last_evidence_at AS lastEvidenceAt,
             explicit_evidence_coverage AS explicitEvidenceCoverage
        FROM customer_commercial_affinity_snapshot_row
@@ -500,6 +505,7 @@ function parseRow(row: RowDataPacket): CustomerCommercialAffinityRow {
     score: Number(row.score),
     supportingOrderCount: Number(row.supportingOrderCount),
     supportingProductCount: Number(row.supportingProductCount),
+    supportingUnits: row.supportingUnits === null || row.supportingUnits === undefined ? null : Number(row.supportingUnits),
     supportingSpend: String(row.supportingSpend),
     lastEvidenceAt: toIsoFromDbDateTime(row.lastEvidenceAt),
     explicitEvidenceCoverage: row.explicitEvidenceCoverage === null ? null : Number(row.explicitEvidenceCoverage),

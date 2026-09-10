@@ -58,6 +58,7 @@ try {
     batches: sourceMetrics.batches,
     batchSize: parsePositiveEnv(process.env.AFFINITY_BATCH_SIZE, 1_000),
     retries: sourceMetrics.retries,
+    quantityQuality: sourceMetrics.quantityQuality,
     purchaseRowsRead: purchases.length,
     distinctProductIds: semanticLoad.metrics.requestedDistinctProductIds,
     semanticBatches: semanticLoad.metrics.semanticBatches,

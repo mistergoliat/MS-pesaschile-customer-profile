@@ -30,6 +30,7 @@ function line(overrides: Partial<CustomerAffinityPurchaseEvidence> = {}): Custom
     orderDetailId: 1,
     orderCreatedAt: '2026-08-01T00:00:00.000Z',
     productId: 1,
+    productQuantity: 1,
     lineRevenueTaxIncl: '100.10',
     ...overrides,
   };
@@ -92,6 +93,69 @@ describe('Customer Commercial Affinity A01.4 population builder', () => {
     expect(findRow(result).supportingSpend).toBe('30.030000');
   });
 
+  it('aggregates purchased units across repeated lines, repeated orders, and same-code products', () => {
+    const result = buildCustomerCommercialAffinityPopulation(input([
+      line({ productId: 1, orderId: 100, orderDetailId: 1, productQuantity: 2 }),
+      line({ productId: 1, orderId: 100, orderDetailId: 2, productQuantity: 3 }),
+      line({ productId: 1, orderId: 101, orderDetailId: 3, productQuantity: 4 }),
+      line({ productId: 2, orderId: 100, orderDetailId: 4, productQuantity: 5 }),
+    ], [fact(1), fact(2)]));
+
+    expect(findRow(result).supportingUnits).toBe(14);
+    expect(findRow(result).supportingOrderCount).toBe(2);
+    expect(findRow(result).supportingProductCount).toBe(2);
+  });
+
+  it('keeps score and row membership invariant when only product quantities change', () => {
+    const purchases = [line({ productId: 1, orderDetailId: 1 }), line({ productId: 2, orderDetailId: 2, lineRevenueTaxIncl: '200.20' })];
+    const facts = [fact(1), fact(2)];
+    const baseline = buildCustomerCommercialAffinityPopulation(input(purchases, facts));
+    const changed = buildCustomerCommercialAffinityPopulation(input([
+      ...purchases.map((purchase, index) => ({ ...purchase, productQuantity: index === 0 ? 7 : 11 })),
+    ], facts));
+    const baselineRow = findRow(baseline);
+    const changedRow = findRow(changed);
+
+    expect(changed.rows.map((row) => `${row.affinityAxis}:${row.affinityCode}`)).toEqual(baseline.rows.map((row) => `${row.affinityAxis}:${row.affinityCode}`));
+    expect(changedRow.score).toBe(baselineRow.score);
+    expect(changedRow.supportingOrderCount).toBe(baselineRow.supportingOrderCount);
+    expect(changedRow.supportingProductCount).toBe(baselineRow.supportingProductCount);
+    expect(changedRow.supportingSpend).toBe(baselineRow.supportingSpend);
+    expect(changedRow.lastEvidenceAt).toBe(baselineRow.lastEvidenceAt);
+    expect(changedRow.explicitEvidenceCoverage).toBe(baselineRow.explicitEvidenceCoverage);
+    expect(changedRow.supportingUnits).not.toBe(baselineRow.supportingUnits);
+    expect(changed.eligibleCustomerIds).toEqual(baseline.eligibleCustomerIds);
+    expect(changed.rows).toHaveLength(baseline.rows.length);
+    expect(changed.manifest.eligibleCustomerCount).toBe(baseline.manifest.eligibleCustomerCount);
+    expect(changed.manifest.datasetChecksum).not.toBe(baseline.manifest.datasetChecksum);
+    expect(changed.manifest.affinityDatasetChecksum).not.toBe(baseline.manifest.affinityDatasetChecksum);
+  });
+
+  it('applies quantity only to mapped axes and excludes non-product classifications', () => {
+    const result = buildCustomerCommercialAffinityPopulation(input([
+      line({ customerId: 10, productId: 1, productQuantity: 4 }),
+      line({ customerId: 11, productId: 2, productQuantity: 9 }),
+    ], [
+      fact(1, { classificationStatus: 'PARTIALLY_CLASSIFIED', primaryProductFamily: null, disciplines: [{ code: 'POWERLIFTING' }], useContexts: [] }),
+      fact(2, { classificationStatus: 'EXCLUDED_NON_PRODUCT', primaryProductFamily: null }),
+    ]));
+
+    expect(result.rows).toMatchObject([{ affinityAxis: 'DISCIPLINE', affinityCode: 'POWERLIFTING', supportingUnits: 4 }]);
+    expect(result.rows).toHaveLength(1);
+    expect(result.eligibleCustomerIds).toEqual([10, 11]);
+    expect(result.manifest.customersWithoutAffinityRows).toBe(1);
+  });
+
+  it.each([
+    ['null', null],
+    ['zero', 0],
+    ['negative', -1],
+    ['fractional', 1.5],
+    ['unsafe integer', Number.MAX_SAFE_INTEGER + 1],
+  ])('rejects %s product quantities at the population boundary', (_label, productQuantity) => {
+    expect(() => buildCustomerCommercialAffinityPopulation(input([line({ productQuantity: productQuantity as number })], [fact(1)]))).toThrow(/productQuantity/);
+  });
+
   it('excludes the reference-time boundary and future orders deterministically', () => {
     const result = buildCustomerCommercialAffinityPopulation(input([
       line({ orderId: 1, orderCreatedAt: '2026-08-31T23:59:59.999Z' }),
@@ -143,6 +207,7 @@ describe('Customer Commercial Affinity A01.4 population builder', () => {
       'DISCIPLINE:POWERLIFTING',
       'USE_CONTEXT:COMMERCIAL_GYM',
     ]);
+    expect(result.rows.map((row) => row.supportingUnits)).toEqual([1, 1]);
     expect(result.rows.find((row) => row.affinityCode === 'OTHER')).toBeUndefined();
   });
 

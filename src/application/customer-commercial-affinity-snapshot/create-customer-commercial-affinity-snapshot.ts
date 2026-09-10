@@ -208,6 +208,8 @@ export function validateCustomerCommercialAffinitySnapshot(input: CustomerCommer
     assertValidAffinityRow(row);
     assertPositiveInt(row.supportingOrderCount, 'supportingOrderCount');
     assertPositiveInt(row.supportingProductCount, 'supportingProductCount');
+    if (row.supportingUnits !== null) assertPositiveInt(row.supportingUnits, 'supportingUnits');
+    else throw new Error('New affinity snapshot rows require supportingUnits');
     assertPersistableDecimal(row.supportingSpend, 'supportingSpend', 20, 6);
     assertFixedPointRoundTrip(row.score, 'score', 9);
     if (row.explicitEvidenceCoverage !== null) assertFixedPointRoundTrip(row.explicitEvidenceCoverage, 'explicitEvidenceCoverage', 9);

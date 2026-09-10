@@ -46,6 +46,7 @@ type SemanticEvidenceItem = {
   readonly axis: CustomerCommercialAffinityAxis;
   readonly code: string;
   readonly productId: number;
+  readonly productQuantity: number;
   readonly orderCount: number;
   readonly spendShare: number;
   readonly totalSpentTaxIncl: string;
@@ -100,6 +101,9 @@ function toEvidenceItem(
   tag: ProductSemanticFactTag,
   role: CustomerCommercialAffinityEvidenceRole,
 ): SemanticEvidenceItem {
+  if (!Number.isSafeInteger(purchase.totalQuantityPurchased) || purchase.totalQuantityPurchased <= 0) {
+    throw new Error(`Invalid totalQuantityPurchased for productId ${purchase.productId}: ${purchase.totalQuantityPurchased}`);
+  }
   if (!isValidDecimalString(purchase.spendShare)) {
     throw new Error(`Invalid spendShare decimal string for productId ${purchase.productId}: ${purchase.spendShare}`);
   }
@@ -107,6 +111,7 @@ function toEvidenceItem(
     axis,
     code: tag.code,
     productId: purchase.productId,
+    productQuantity: purchase.totalQuantityPurchased,
     orderCount: purchase.orderCount,
     spendShare: Number(purchase.spendShare),
     totalSpentTaxIncl: purchase.totalSpentTaxIncl,
@@ -158,6 +163,7 @@ export type CustomerCommercialAffinityAggregate = {
   readonly aggregateSpendShare: number;
   readonly supportingProductCount: number;
   readonly supportingOrderCount: number;
+  readonly supportingUnits: number;
   readonly supportingSpend: string;
   readonly lastEvidenceAt: string;
   readonly explicitEvidenceMass: number;
@@ -213,6 +219,7 @@ function aggregateGroup(items: readonly SemanticEvidenceItem[]): CustomerCommerc
     // A01.4, which can join against AnalyticalOrder line data. Never used for scoring (frequency
     // is deferred entirely — see scoring-policy.ts).
     supportingOrderCount: sortedItems.reduce((sum, item) => sum + item.orderCount, 0),
+    supportingUnits: sumSafePositiveIntegers(sortedItems.map((item) => item.productQuantity), 'supportingUnits'),
     supportingSpend: addDecimals(sortedItems.map((item) => item.totalSpentTaxIncl)),
     lastEvidenceAt: sortedItems.reduce(
       (latest, item) => (Date.parse(item.lastPurchasedAt) > Date.parse(latest) ? item.lastPurchasedAt : latest),
@@ -225,6 +232,17 @@ function aggregateGroup(items: readonly SemanticEvidenceItem[]): CustomerCommerc
 
 function sumEvidenceWeights(items: readonly SemanticEvidenceItem[]): number {
   return items.reduce((sum, item) => sum + itemEvidenceWeight(item), 0);
+}
+
+function sumSafePositiveIntegers(values: readonly number[], name: string): number {
+  let total = 0;
+  for (const value of values) {
+    if (!Number.isSafeInteger(value) || value <= 0 || total > Number.MAX_SAFE_INTEGER - value) {
+      throw new Error(`Invalid ${name}: quantity sum exceeds safe integer range`);
+    }
+    total += value;
+  }
+  return total;
 }
 
 // ── Stage 3: final saturation + row assembly ───────────────────────────────────────────────
@@ -255,6 +273,7 @@ export function scoreAffinityEvidence(aggregate: CustomerCommercialAffinityAggre
     score,
     supportingOrderCount: aggregate.supportingOrderCount,
     supportingProductCount: aggregate.supportingProductCount,
+    supportingUnits: aggregate.supportingUnits,
     supportingSpend: aggregate.supportingSpend,
     lastEvidenceAt: aggregate.lastEvidenceAt,
     explicitEvidenceCoverage,

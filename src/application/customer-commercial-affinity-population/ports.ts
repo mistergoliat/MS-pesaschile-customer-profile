@@ -4,6 +4,7 @@ export type CustomerAffinityPurchaseEvidence = {
   readonly orderDetailId?: number;
   readonly orderCreatedAt: string;
   readonly productId: number;
+  readonly productQuantity: number;
   readonly lineRevenueTaxIncl: string;
 };
 
@@ -39,4 +40,17 @@ export type CustomerAffinityPurchaseReadMetrics = {
   readonly sourceLinesRead: number;
   readonly retries: number;
   readonly durationMs: number;
+  readonly quantityQuality: CustomerAffinityPurchaseQuantityQuality;
+};
+
+export type CustomerAffinityPurchaseQuantityQuality = {
+  readonly eligibleLines: number;
+  readonly min: number | null;
+  readonly max: number | null;
+  readonly zeroCount: number;
+  readonly negativeCount: number;
+  readonly nullCount: number;
+  readonly fractionalCount: number;
+  readonly unsafeIntegerCount: number;
+  readonly invalidCount: number;
 };

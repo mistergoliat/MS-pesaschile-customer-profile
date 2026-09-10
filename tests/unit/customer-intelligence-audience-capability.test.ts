@@ -38,6 +38,12 @@ describe('Customer Intelligence Audience A02 capability', () => {
     expect(preview.rows[0]?.availability.commercialAffinity).toBe('UNAVAILABLE');
   });
 
+  it('preserves supportingUnits in audience preview affinity evidence', async () => {
+    const read = vi.fn(async () => [{ ...raw(1), affinityPopulationMember: true, affinity: { axis: 'PRODUCT_FAMILY' as const, code: 'BARBELL', score: '0.80', supportingOrderCount: 2, supportingProductCount: 1, supportingUnits: 6, supportingSpend: '100.00', lastEvidenceAt: '2026-08-01T00:00:00.000Z', explicitEvidenceCoverage: null } }]);
+    const preview = await createAudiencePreviewEnricher({ reader: { read } })({ context, customerIds: [1], matchedCount: 1, limit: 50 });
+    expect(preview.rows[0]?.affinities[0]?.supportingUnits).toBe(6);
+  });
+
   it.each([
     [0, 0, false],
     [43, 43, false],

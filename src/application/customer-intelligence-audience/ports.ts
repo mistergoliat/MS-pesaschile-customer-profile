@@ -66,6 +66,7 @@ export type AudiencePreviewReadRow = {
     readonly score: string;
     readonly supportingOrderCount: number;
     readonly supportingProductCount: number;
+    readonly supportingUnits: number | null;
     readonly supportingSpend: string;
     readonly lastEvidenceAt: string;
     readonly explicitEvidenceCoverage: string | null;

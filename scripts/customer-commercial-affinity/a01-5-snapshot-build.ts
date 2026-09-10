@@ -36,6 +36,7 @@ try {
   });
   const sourceReadDurationMs = performance.now() - sourceStartedAt;
   const sourceMetrics = reader.getLastReadMetrics();
+  assertQuantityQuality(sourceMetrics.quantityQuality);
   const semanticLoad = await loadCustomerAffinitySemanticSnapshot(purchases, { referenceTime, generatedAt });
   const semanticSnapshot = semanticLoad.snapshot;
   const buildStartedAt = performance.now();
@@ -77,6 +78,7 @@ try {
     header,
     validation,
     sourceMetrics,
+    quantityQuality: sourceMetrics.quantityQuality,
     semanticMetrics: semanticLoad.metrics,
     purchaseRowsRead: purchases.length,
     distinctProductIds: semanticLoad.metrics.requestedDistinctProductIds,
@@ -183,4 +185,8 @@ function parseNonNegativeEnv(value: string | undefined, fallback: number): numbe
 
 function round(value: number): number {
   return Math.round(value * 1_000) / 1_000;
+}
+
+function assertQuantityQuality(quality: { readonly eligibleLines: number; readonly invalidCount: number }): void {
+  if (quality.invalidCount !== 0) throw new Error(`Quantity quality gate failed: ${quality.invalidCount}/${quality.eligibleLines} invalid product quantities`);
 }

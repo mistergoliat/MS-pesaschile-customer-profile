@@ -20,6 +20,7 @@ function buildFixture() {
     orderDetailId: 1,
     orderCreatedAt: '2026-08-01T00:00:00.000Z',
     productId: 1,
+    productQuantity: 1,
     lineRevenueTaxIncl: '100.10',
   };
   const fact: ProductSemanticFact = {
@@ -101,6 +102,11 @@ describe('Customer Commercial Affinity A01.5 snapshot validation', () => {
     const checksum = 'd'.repeat(64);
     const header = { ...fixture.header, affinityDatasetChecksum: checksum, populationManifest: { ...fixture.header.populationManifest, affinityDatasetChecksum: checksum } };
     expect(() => validateCustomerCommercialAffinitySnapshot({ ...fixture, header })).toThrow(/checksum mismatch/);
+  });
+
+  it('requires supportingUnits on new snapshots while allowing the nullable row contract for legacy reads', () => {
+    const fixture = buildFixture();
+    expect(() => validateCustomerCommercialAffinitySnapshot({ ...fixture, rows: [{ ...fixture.rows[0]!, supportingUnits: null }] })).toThrow(/supportingUnits/);
   });
 
   it('rejects an affinity row outside the immutable eligible population', () => {

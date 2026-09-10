@@ -19,8 +19,8 @@ describe('MySQL customer affinity purchase reader', () => {
         }
         if (/o\.id_order IN/u.test(sql)) {
           return sql.includes('?, ?')
-            ? [{ customerId: 10, orderId: 1, orderDetailId: 11, orderCreatedAt: '2026-08-01 00:00:00', productId: 22, lineRevenueTaxIncl: '100.10' }, { customerId: 10, orderId: 2, orderDetailId: 21, orderCreatedAt: '2026-08-02 00:00:00', productId: 22, lineRevenueTaxIncl: '200.20' }].map((row) => row as RowDataPacket)
-            : [{ customerId: 11, orderId: 3, orderDetailId: 31, orderCreatedAt: '2026-08-03 00:00:00', productId: 23, lineRevenueTaxIncl: '300.30' } as RowDataPacket];
+            ? [{ customerId: 10, orderId: 1, orderDetailId: 11, orderCreatedAt: '2026-08-01 00:00:00', productId: 22, productQuantity: 2, lineRevenueTaxIncl: '100.10' }, { customerId: 10, orderId: 2, orderDetailId: 21, orderCreatedAt: '2026-08-02 00:00:00', productId: 22, productQuantity: 3, lineRevenueTaxIncl: '200.20' }].map((row) => row as RowDataPacket)
+            : [{ customerId: 11, orderId: 3, orderDetailId: 31, orderCreatedAt: '2026-08-03 00:00:00', productId: 23, productQuantity: 1, lineRevenueTaxIncl: '300.30' } as RowDataPacket];
         }
         throw new Error(`Unexpected SQL: ${sql}`);
       },
@@ -33,6 +33,9 @@ describe('MySQL customer affinity purchase reader', () => {
     expect(evidence.map((row) => row.orderId)).toEqual([1, 2, 3]);
     expect(progress).toEqual([1, 2]);
     expect(reader.getLastReadMetrics()).toMatchObject({ sourceWatermarkOrderId: 3, sourceQueries: 5, batches: 2, sourceOrdersRead: 3, sourceLinesRead: 3, retries: 0 });
+    expect(evidence.map((row) => row.productQuantity)).toEqual([2, 3, 1]);
+    expect(reader.getLastReadMetrics().quantityQuality).toEqual({ eligibleLines: 3, min: 1, max: 3, zeroCount: 0, negativeCount: 0, nullCount: 0, fractionalCount: 0, unsafeIntegerCount: 0, invalidCount: 0 });
+    expect(calls.some((sql) => sql.includes('od.product_quantity AS productQuantity'))).toBe(true);
     expect(calls.every((sql) => !/\b(INSERT|UPDATE|DELETE|CREATE|DROP|ALTER)\b/i.test(sql))).toBe(true);
     expect(calls.filter((sql) => /date_add\s*</u.test(sql)).length).toBe(5);
   });
@@ -68,6 +71,7 @@ describe('MySQL customer affinity purchase reader', () => {
       orderDetailId: orderId * 10,
       orderCreatedAt: `2026-08-0${orderId} 00:00:00`,
       productId: 20 + orderId,
+      productQuantity: orderId,
       lineRevenueTaxIncl: `${orderId}.00`,
     }));
 
@@ -97,5 +101,25 @@ describe('MySQL customer affinity purchase reader', () => {
     const large = await read(4);
     expect(small).toEqual(large);
     expect(small[0]?.orderCreatedAt).toBe('2026-08-01T00:00:00.000Z');
+  });
+
+  it.each([
+    ['null', null],
+    ['zero', 0],
+    ['negative', -1],
+    ['fractional', 1.5],
+    ['unsafe integer', Number.MAX_SAFE_INTEGER + 1],
+  ])('rejects %s source product quantities and reports the quality failure', async (_label, productQuantity) => {
+    const executor: QueryExecutor = {
+      async execute(sql) {
+        if (/MAX\(o\.id_order\)/u.test(sql)) return [{ sourceWatermarkOrderId: 1 } as RowDataPacket];
+        if (/SELECT o\.id_order AS orderId/u.test(sql)) return [{ orderId: 1 } as RowDataPacket];
+        return [{ customerId: 10, orderId: 1, orderDetailId: 11, orderCreatedAt: '2026-08-01 00:00:00', productId: 22, productQuantity, lineRevenueTaxIncl: '100.10' } as RowDataPacket];
+      },
+    };
+    const reader = createMysqlCustomerAffinityPurchaseReader(executor, 'ps_', { excludedOperationalCustomerIds: [999] });
+
+    await expect(reader.readEvidence(referenceTime, { batchSize: 1 })).rejects.toThrow(/product_quantity/);
+    expect(reader.getLastReadMetrics().quantityQuality.invalidCount).toBe(1);
   });
 });

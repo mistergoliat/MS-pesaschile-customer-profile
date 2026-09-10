@@ -24,7 +24,7 @@ function input(): CustomerCommercialAffinitySnapshotInput {
   };
   const population = buildCustomerCommercialAffinityPopulation({
     referenceTime: '2026-09-01T00:00:00.000Z',
-    purchases: [{ customerId: 10, orderId: 100, orderDetailId: 1, orderCreatedAt: '2026-08-01T00:00:00.000Z', productId: 1, lineRevenueTaxIncl: '100.10' }],
+    purchases: [{ customerId: 10, orderId: 100, orderDetailId: 1, orderCreatedAt: '2026-08-01T00:00:00.000Z', productId: 1, productQuantity: 1, lineRevenueTaxIncl: '100.10' }],
     semanticSnapshot: {
       metadata: semanticMetadata,
       facts: [{
@@ -59,6 +59,7 @@ function persistedRow(row: CustomerCommercialAffinitySnapshotInput['rows'][numbe
     score: row.score.toFixed(9),
     supportingOrderCount: row.supportingOrderCount,
     supportingProductCount: row.supportingProductCount,
+    supportingUnits: row.supportingUnits,
     supportingSpend: row.supportingSpend,
     lastEvidenceAt: row.lastEvidenceAt.replace('T', ' ').replace('Z', ''),
     explicitEvidenceCoverage: row.explicitEvidenceCoverage,
@@ -130,6 +131,7 @@ describe('MySQL Customer Commercial Affinity snapshot store', () => {
     expect(calls.join('\n')).toContain("status = 'validated'");
     expect(calls.join('\n')).toContain("status = 'superseded'");
     expect(calls.join('\n')).toContain("status = 'published'");
+    expect(calls.join('\n')).toContain('supporting_units');
   });
 
   it('rolls back a persisted checksum mismatch and records the failed build', async () => {
@@ -170,6 +172,20 @@ describe('MySQL Customer Commercial Affinity snapshot store', () => {
     await expect(store.getCustomerAffinities([10])).resolves.toHaveLength(1);
     await expect(store.getCustomerAffinities(Array.from({ length: 5001 }, (_, index) => index + 1))).rejects.toThrow(/bounded/);
     expect((pool.execute as ReturnType<typeof vi.fn>).mock.calls.filter(([sql]) => String(sql).includes('customer_commercial_affinity_snapshot_row')).every(([sql]) => String(sql).includes("s.status = 'published'"))).toBe(true);
+  });
+
+  it('reads legacy published rows with nullable supportingUnits', async () => {
+    const snapshotInput = input();
+    const pool = {
+      execute: vi.fn(async (sql: string) => {
+        if (sql.includes('manifest_json')) return [[{ id: 7, status: 'published', manifest_json: JSON.stringify(snapshotInput.header) }], []];
+        if (sql.includes('customer_commercial_affinity_snapshot_row')) return [[persistedRow({ ...snapshotInput.rows[0]!, supportingUnits: null })], []];
+        return [[], []];
+      }),
+    } as unknown as Pool;
+    const store = createMysqlCustomerCommercialAffinitySnapshotStore(pool);
+
+    await expect(store.getCustomerAffinity(10)).resolves.toMatchObject([{ supportingUnits: null }]);
   });
 
   it('reads published population membership with single and bounded batch queries', async () => {

@@ -65,6 +65,8 @@ export type CustomerCommercialAffinityRow = {
   /** Exact distinct orders supporting this customer/axis/code combination. */
   readonly supportingOrderCount: number;
   readonly supportingProductCount: number;
+  /** Total purchased units supporting this customer/axis/code combination. */
+  readonly supportingUnits: number | null;
   readonly supportingSpend: string; // decimal string, never a JS float
   readonly lastEvidenceAt: string; // ISO timestamp
   // null when none of the contributing semantic facts carried confidence metadata at all (A01.2.1

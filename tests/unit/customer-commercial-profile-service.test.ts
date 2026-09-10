@@ -65,7 +65,7 @@ const affinity = {
       productSemanticSnapshotId: 'semantic-1', productSemanticSchemaVersion: '1', ontologyVersion: 'ontology-v3',
       ontologyHash: 'a'.repeat(64), sourceSemanticChecksum: 'b'.repeat(64), consumerSemanticChecksum: 'c'.repeat(64), affinityDatasetChecksum: 'd'.repeat(64),
     },
-    affinities: [{ affinityAxis: 'PRODUCT_FAMILY' as const, affinityCode: 'BARBELL', score: 0.8, supportingOrderCount: 2, supportingProductCount: 1, supportingSpend: '100.000000', lastEvidenceAt: '2026-08-03T00:00:00.000Z', explicitEvidenceCoverage: null }],
+    affinities: [{ affinityAxis: 'PRODUCT_FAMILY' as const, affinityCode: 'BARBELL', score: 0.8, supportingOrderCount: 2, supportingProductCount: 1, supportingUnits: 3, supportingSpend: '100.000000', lastEvidenceAt: '2026-08-03T00:00:00.000Z', explicitEvidenceCoverage: null }],
   },
   contractVersion: 'customer-commercial-affinity-runtime-v1' as const,
 };
@@ -104,7 +104,7 @@ describe('Customer Commercial Profile contract and composition', () => {
       rfm: { recency: 2, frequency: 3, monetary: '123456789012345678.123456' },
       behavioralCluster: { clusterId: 3, label: 'NEW_BURST_THEN_LAPSED_BUYERS', modelVersion: 'behavioral-kmeans-k4-v1' },
       clv: { expectedRevenueTaxIncl: '987654321098765432.654321', expectedOrders: '2.500000' },
-      commercialAffinity: { snapshot: { snapshotId: '3' }, affinities: [{ affinityAxis: 'PRODUCT_FAMILY', affinityCode: 'BARBELL' }] },
+      commercialAffinity: { snapshot: { snapshotId: '3' }, affinities: [{ affinityAxis: 'PRODUCT_FAMILY', affinityCode: 'BARBELL', supportingUnits: 3 }] },
       availability: { rfm: 'AVAILABLE', behavioralCluster: 'AVAILABLE', clv: 'AVAILABLE', commercialAffinity: 'AVAILABLE' },
     });
     expect(result.profile.provenance).toMatchObject({

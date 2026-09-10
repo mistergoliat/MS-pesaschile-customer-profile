@@ -71,6 +71,7 @@ describe('CustomerCommercialAffinityRow — normalized shape', () => {
       score: 0.72,
       supportingOrderCount: 4,
       supportingProductCount: 3,
+      supportingUnits: 7,
       supportingSpend: '145000.00',
       lastEvidenceAt: '2026-08-01T00:00:00.000Z',
       explicitEvidenceCoverage: 0.5,

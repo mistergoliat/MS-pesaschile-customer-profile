@@ -42,9 +42,9 @@ const header: CustomerCommercialAffinitySnapshotHeader = {
 };
 
 const rows = [
-  { customerId: 42, affinityAxis: 'USE_CONTEXT' as const, affinityCode: 'HOME', score: 0.4, supportingOrderCount: 1, supportingProductCount: 1, supportingSpend: '10.000000', lastEvidenceAt: '2026-08-01T00:00:00.000Z', explicitEvidenceCoverage: null },
-  { customerId: 42, affinityAxis: 'PRODUCT_FAMILY' as const, affinityCode: 'BARBELL', score: 0.9, supportingOrderCount: 2, supportingProductCount: 2, supportingSpend: '20.000000', lastEvidenceAt: '2026-08-02T00:00:00.000Z', explicitEvidenceCoverage: 1 },
-  { customerId: 42, affinityAxis: 'DISCIPLINE' as const, affinityCode: 'STRENGTH', score: 0.7, supportingOrderCount: 1, supportingProductCount: 1, supportingSpend: '15.000000', lastEvidenceAt: '2026-08-03T00:00:00.000Z', explicitEvidenceCoverage: 0.5 },
+  { customerId: 42, affinityAxis: 'USE_CONTEXT' as const, affinityCode: 'HOME', score: 0.4, supportingOrderCount: 1, supportingProductCount: 1, supportingUnits: 2, supportingSpend: '10.000000', lastEvidenceAt: '2026-08-01T00:00:00.000Z', explicitEvidenceCoverage: null },
+  { customerId: 42, affinityAxis: 'PRODUCT_FAMILY' as const, affinityCode: 'BARBELL', score: 0.9, supportingOrderCount: 2, supportingProductCount: 2, supportingUnits: 3, supportingSpend: '20.000000', lastEvidenceAt: '2026-08-02T00:00:00.000Z', explicitEvidenceCoverage: 1 },
+  { customerId: 42, affinityAxis: 'DISCIPLINE' as const, affinityCode: 'STRENGTH', score: 0.7, supportingOrderCount: 1, supportingProductCount: 1, supportingUnits: 1, supportingSpend: '15.000000', lastEvidenceAt: '2026-08-03T00:00:00.000Z', explicitEvidenceCoverage: 0.5 },
 ];
 
 function reader(overrides: Record<string, unknown> = {}) {
@@ -70,6 +70,7 @@ describe('Customer Commercial Affinity runtime read model', () => {
       ['USE_CONTEXT', 'HOME'],
     ]);
     expect(result.affinity.affinities[2]?.explicitEvidenceCoverage).toBeNull();
+    expect(result.affinity.affinities[2]?.supportingUnits).toBe(2);
   });
 
   it('distinguishes no rows from no published snapshot and maps infrastructure failure to unavailable', async () => {

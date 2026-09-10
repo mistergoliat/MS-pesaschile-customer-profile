@@ -5,6 +5,7 @@ import type {
   CustomerAffinityPurchaseReaderPolicy,
   CustomerAffinityPurchaseReadMetrics,
   CustomerAffinityPurchaseReadOptions,
+  CustomerAffinityPurchaseQuantityQuality,
 } from '../../application/customer-commercial-affinity-population/ports.js';
 import { excludedOperationalAccountPrestashopCustomerIds } from '../../domain/customer-rfm/operational-account-exclusion-policy.js';
 import type { QueryExecutor } from '../shared/query-executor.js';
@@ -22,6 +23,7 @@ type EvidenceRow = RowDataPacket & {
   orderDetailId: number | string;
   orderCreatedAt: string;
   productId: number | string;
+  productQuantity: unknown;
   lineRevenueTaxIncl: string | number;
 };
 
@@ -59,6 +61,8 @@ export function createMysqlCustomerAffinityPurchaseReader(
     let ordersProcessed = 0;
     let linesProcessed = 0;
     let lastSeenOrderId = 0;
+    const quantityQuality = createQuantityQualityAccumulator();
+    let invalidQuantityFound = false;
     const evidence: CustomerAffinityPurchaseEvidence[] = [];
 
     const watermarkRows = await executeWithRetry<WatermarkRow[]>(
@@ -118,6 +122,7 @@ export function createMysqlCustomerAffinityPurchaseReader(
               od.id_order_detail AS orderDetailId,
               o.date_add AS orderCreatedAt,
               od.product_id AS productId,
+              od.product_quantity AS productQuantity,
               od.total_price_tax_incl AS lineRevenueTaxIncl
             FROM ${orders} o
             INNER JOIN ${customers} c ON c.id_customer = o.id_customer
@@ -139,12 +144,18 @@ export function createMysqlCustomerAffinityPurchaseReader(
         (count) => { retries += count; },
       );
       for (const row of lineRows) {
+        const productQuantity = observeProductQuantity(quantityQuality, row.productQuantity);
+        if (productQuantity === null) {
+          invalidQuantityFound = true;
+          continue;
+        }
         evidence.push({
           customerId: coercePositiveInteger(row.customerId, 'customerId'),
           orderId: coercePositiveInteger(row.orderId, 'orderId'),
           orderDetailId: coercePositiveInteger(row.orderDetailId, 'orderDetailId'),
           orderCreatedAt: toUtcIsoTimestamp(row.orderCreatedAt),
           productId: coercePositiveInteger(row.productId, 'productId'),
+          productQuantity,
           lineRevenueTaxIncl: String(row.lineRevenueTaxIncl),
         });
       }
@@ -169,7 +180,9 @@ export function createMysqlCustomerAffinityPurchaseReader(
       sourceLinesRead: linesProcessed,
       retries,
       durationMs: performance.now() - startedAt,
+      quantityQuality: finalizeQuantityQuality(quantityQuality),
     };
+    if (invalidQuantityFound) throw new Error('Invalid product_quantity in affinity purchase evidence');
     return evidence;
   }
 
@@ -231,7 +244,62 @@ function coerceNullablePositiveInteger(value: unknown, field: string): number | 
 }
 
 function emptyMetrics(): CustomerAffinityPurchaseReadMetrics {
-  return { sourceWatermarkOrderId: null, sourceQueries: 0, batches: 0, sourceOrdersRead: 0, sourceLinesRead: 0, retries: 0, durationMs: 0 };
+  return { sourceWatermarkOrderId: null, sourceQueries: 0, batches: 0, sourceOrdersRead: 0, sourceLinesRead: 0, retries: 0, durationMs: 0, quantityQuality: emptyQuantityQuality() };
+}
+
+type QuantityQualityAccumulator = {
+  eligibleLines: number;
+  min: number | null;
+  max: number | null;
+  zeroCount: number;
+  negativeCount: number;
+  nullCount: number;
+  fractionalCount: number;
+  unsafeIntegerCount: number;
+  invalidCount: number;
+};
+
+function createQuantityQualityAccumulator(): QuantityQualityAccumulator {
+  return { ...emptyQuantityQuality() };
+}
+
+function emptyQuantityQuality(): CustomerAffinityPurchaseQuantityQuality {
+  return { eligibleLines: 0, min: null, max: null, zeroCount: 0, negativeCount: 0, nullCount: 0, fractionalCount: 0, unsafeIntegerCount: 0, invalidCount: 0 };
+}
+
+function observeProductQuantity(quality: QuantityQualityAccumulator, value: unknown): number | null {
+  quality.eligibleLines += 1;
+  if (value === null || value === undefined) {
+    quality.nullCount += 1;
+    quality.invalidCount += 1;
+    return null;
+  }
+  const parsed = Number(value);
+  if (Number.isFinite(parsed)) {
+    quality.min = quality.min === null ? parsed : Math.min(quality.min, parsed);
+    quality.max = quality.max === null ? parsed : Math.max(quality.max, parsed);
+  }
+  if (!Number.isFinite(parsed) || !Number.isSafeInteger(parsed)) {
+    if (Number.isFinite(parsed) && !Number.isInteger(parsed)) quality.fractionalCount += 1;
+    else quality.unsafeIntegerCount += 1;
+    quality.invalidCount += 1;
+    return null;
+  }
+  if (parsed === 0) {
+    quality.zeroCount += 1;
+    quality.invalidCount += 1;
+    return null;
+  }
+  if (parsed < 0) {
+    quality.negativeCount += 1;
+    quality.invalidCount += 1;
+    return null;
+  }
+  return parsed;
+}
+
+function finalizeQuantityQuality(quality: QuantityQualityAccumulator): CustomerAffinityPurchaseQuantityQuality {
+  return { ...quality };
 }
 
 function toMysqlReferenceTime(value: string): string {

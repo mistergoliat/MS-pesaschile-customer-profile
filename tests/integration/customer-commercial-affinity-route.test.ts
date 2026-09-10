@@ -26,7 +26,7 @@ const available = {
   affinity: {
     customerId: 42,
     snapshot,
-    affinities: [{ affinityAxis: 'PRODUCT_FAMILY' as const, affinityCode: 'BARBELL', score: 0.8, supportingOrderCount: 2, supportingProductCount: 1, supportingSpend: '100.000000', lastEvidenceAt: '2026-08-01T00:00:00.000Z', explicitEvidenceCoverage: null }],
+    affinities: [{ affinityAxis: 'PRODUCT_FAMILY' as const, affinityCode: 'BARBELL', score: 0.8, supportingOrderCount: 2, supportingProductCount: 1, supportingUnits: 3, supportingSpend: '100.000000', lastEvidenceAt: '2026-08-01T00:00:00.000Z', explicitEvidenceCoverage: null }],
   },
   contractVersion: 'customer-commercial-affinity-runtime-v1' as const,
 };
@@ -61,6 +61,7 @@ describe('Customer Commercial Affinity HTTP endpoints', () => {
     const found = await fetch(`${baseUrl}/v1/customers/42/affinity`);
     expect(found.status).toBe(200);
     expect(await found.json()).toMatchObject({ customerId: 42, availability: 'AVAILABLE', affinity: { snapshot: { snapshotId: '3' }, affinities: [{ affinityAxis: 'PRODUCT_FAMILY' }] } });
+    expect((await (await fetch(`${baseUrl}/v1/customers/42/affinity`)).json()).affinity.affinities[0].supportingUnits).toBe(3);
 
     const absent = await fetch(`${baseUrl}/v1/customers/7/affinity`);
     expect(absent.status).toBe(200);

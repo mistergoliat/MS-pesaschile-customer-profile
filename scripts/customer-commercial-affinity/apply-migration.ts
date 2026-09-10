@@ -25,6 +25,14 @@ try {
   } else {
     throw new Error('Affinity migration 014 is partially applied; inspect the analytics schema before continuing');
   }
+
+  const [unitColumns] = await connection.query<RowDataPacket[]>("SHOW COLUMNS FROM customer_commercial_affinity_snapshot_row LIKE 'supporting_units'");
+  if (unitColumns.length === 0) {
+    await connection.query(await readFile('migrations/015_add_customer_commercial_affinity_supporting_units.sql', 'utf8'));
+    console.log('Affinity migration 015 applied');
+  } else {
+    console.log('Affinity migration 015 already applied');
+  }
 } finally {
   await connection.end();
 }

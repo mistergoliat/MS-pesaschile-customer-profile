@@ -20,6 +20,7 @@ export type CustomerCommercialAffinityRuntimeRow = {
   readonly score: number;
   readonly supportingOrderCount: number;
   readonly supportingProductCount: number;
+  readonly supportingUnits: number | null;
   readonly supportingSpend: string;
   readonly lastEvidenceAt: string;
   readonly explicitEvidenceCoverage: number | null;

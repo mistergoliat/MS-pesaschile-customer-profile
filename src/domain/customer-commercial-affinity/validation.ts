@@ -47,6 +47,10 @@ export function assertPositiveInt(value: number, name: string): void {
   }
 }
 
+export function assertNullablePositiveInt(value: number | null, name: string): void {
+  if (value !== null) assertPositiveInt(value, name);
+}
+
 // ── Non-empty version/hash identifiers (task Section 19) ──────────────────────────────────
 export function assertNonEmptyIdentifier(value: string, name: string): void {
   if (value.trim() === '') {
@@ -84,6 +88,7 @@ export function assertValidAffinityRow(row: CustomerCommercialAffinityRow): void
   assertValidAffinityScore(row.score);
   assertNonNegativeCount(row.supportingOrderCount, 'supportingOrderCount');
   assertNonNegativeCount(row.supportingProductCount, 'supportingProductCount');
+  assertNullablePositiveInt(row.supportingUnits, 'supportingUnits');
   assertValidDecimalString(row.supportingSpend, 'supportingSpend');
   assertValidIsoTimestamp(row.lastEvidenceAt, 'lastEvidenceAt');
   if (row.explicitEvidenceCoverage !== null && !isValidAffinityScore(row.explicitEvidenceCoverage)) {

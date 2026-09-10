@@ -1,0 +1,5 @@
+-- Rollback for 015_add_customer_commercial_affinity_supporting_units.sql.
+
+ALTER TABLE customer_commercial_affinity_snapshot_row
+  DROP CONSTRAINT chk_customer_commercial_affinity_snapshot_row_supporting_units,
+  DROP COLUMN supporting_units;

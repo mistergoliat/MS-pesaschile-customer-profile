@@ -7,6 +7,7 @@ import type {
 import {
   assertValidAffinityRow,
   assertValidProductSemanticFact,
+  assertPositiveInt,
   isDisciplineEligible,
   isProductFamilyEligible,
   isUseContextEligible,
@@ -144,6 +145,7 @@ type ProductAggregate = {
   readonly productId: number;
   readonly orderIds: Set<number>;
   readonly lineDates: string[];
+  readonly quantityValues: number[];
   readonly spendValues: string[];
 };
 
@@ -160,6 +162,7 @@ export function buildCustomerCommercialAffinityPopulation(
   const productAggregates = aggregateProducts(lines);
   const customerSpend = aggregateCustomerSpend(productAggregates);
   const customerOrderCounts = aggregateCustomerOrderCounts(lines);
+  const customerUnits = aggregateCustomerUnits(productAggregates);
   const scoredPurchases: Array<CustomerCommercialAffinityProductPurchase & { readonly customerId: number }> = [];
   const exactOrderIdsByRow = new Map<string, Set<number>>();
   const unknownProductStats = new Map<number, { lineCount: number; customerIds: Set<number>; spend: string[] }>();
@@ -177,7 +180,7 @@ export function buildCustomerCommercialAffinityPopulation(
       }
       continue;
     }
-    const purchase = toPurchaseBehaviorProduct(aggregate, customerSpend.get(aggregate.customerId)!, customerOrderCounts.get(aggregate.customerId)!, referenceTime);
+    const purchase = toPurchaseBehaviorProduct(aggregate, customerSpend.get(aggregate.customerId)!, customerOrderCounts.get(aggregate.customerId)!, customerUnits.get(aggregate.customerId)!, referenceTime);
     scoredPurchases.push({ customerId: aggregate.customerId, purchase, semanticFact: fact });
     const contributingEvidence = expandSemanticEvidence(purchase, fact);
     for (const evidence of contributingEvidence) {
@@ -329,6 +332,7 @@ function aggregateProducts(lines: readonly LineWithKey[]): Map<string, ProductAg
     if (existing) {
       existing.orderIds.add(line.orderId);
       existing.lineDates.push(line.canonicalDate);
+      existing.quantityValues.push(line.productQuantity);
       existing.spendValues.push(line.lineRevenueTaxIncl);
     } else {
       aggregates.set(key, {
@@ -336,6 +340,7 @@ function aggregateProducts(lines: readonly LineWithKey[]): Map<string, ProductAg
         productId: line.productId,
         orderIds: new Set([line.orderId]),
         lineDates: [line.canonicalDate],
+        quantityValues: [line.productQuantity],
         spendValues: [line.lineRevenueTaxIncl],
       });
     }
@@ -363,10 +368,33 @@ function aggregateCustomerOrderCounts(lines: readonly LineWithKey[]): Map<number
   return new Map([...ordersByCustomer.entries()].map(([customerId, orderIds]) => [customerId, orderIds.size]));
 }
 
-function toPurchaseBehaviorProduct(aggregate: ProductAggregate, customerSpend: string, customerOrderCount: number, referenceTime: string): CustomerCommercialAffinityProductPurchase['purchase'] {
+function aggregateCustomerUnits(aggregates: ReadonlyMap<string, ProductAggregate>): Map<number, number> {
+  const byCustomer = new Map<number, number>();
+  for (const aggregate of aggregates.values()) {
+    const productUnits = sumSafePositiveIntegers(aggregate.quantityValues, 'productQuantity');
+    const current = byCustomer.get(aggregate.customerId) ?? 0;
+    if (current > Number.MAX_SAFE_INTEGER - productUnits) throw new Error('Customer purchased unit total exceeds safe integer range');
+    byCustomer.set(aggregate.customerId, current + productUnits);
+  }
+  return byCustomer;
+}
+
+function sumSafePositiveIntegers(values: readonly number[], name: string): number {
+  let total = 0;
+  for (const value of values) {
+    if (!Number.isSafeInteger(value) || value <= 0 || total > Number.MAX_SAFE_INTEGER - value) {
+      throw new Error(`Invalid ${name}: quantity sum exceeds safe integer range`);
+    }
+    total += value;
+  }
+  return total;
+}
+
+function toPurchaseBehaviorProduct(aggregate: ProductAggregate, customerSpend: string, customerOrderCount: number, customerUnits: number, referenceTime: string): CustomerCommercialAffinityProductPurchase['purchase'] {
   const firstPurchasedAt = aggregate.lineDates.reduce((first, date) => Date.parse(date) < Date.parse(first) ? date : first);
   const lastPurchasedAt = aggregate.lineDates.reduce((last, date) => Date.parse(date) > Date.parse(last) ? date : last);
   const orderCount = aggregate.orderIds.size;
+  const totalQuantityPurchased = sumSafePositiveIntegers(aggregate.quantityValues, 'productQuantity');
   const totalSpentTaxIncl = addDecimals(aggregate.spendValues);
   const daysSinceLastPurchase = Math.floor((Date.parse(referenceTime) - Date.parse(lastPurchasedAt)) / 86_400_000);
   const safeDaysSinceLastPurchase = Number.isFinite(daysSinceLastPurchase) && daysSinceLastPurchase >= 0 ? daysSinceLastPurchase : 0;
@@ -377,11 +405,11 @@ function toPurchaseBehaviorProduct(aggregate: ProductAggregate, customerSpend: s
     variantCountPurchased: 1,
     repeatedVariantCount: orderCount >= 2 ? 1 : 0,
     orderCount,
-    totalQuantityPurchased: 0,
+    totalQuantityPurchased,
     totalSpentTaxIncl,
     spendShare: divideDecimalToBehaviorDecimal(totalSpentTaxIncl, customerSpend),
     orderShare: divideIntegerToBehaviorDecimal(orderCount, customerOrderCount),
-    quantityShare: '0.000000',
+    quantityShare: divideIntegerToBehaviorDecimal(totalQuantityPurchased, customerUnits),
     firstPurchasedAt,
     lastPurchasedAt,
     daysSinceLastPurchase: safeDaysSinceLastPurchase,
@@ -414,6 +442,7 @@ function normalizePurchase(purchase: CustomerAffinityPurchaseEvidence, reference
   if (!Number.isSafeInteger(purchase.customerId) || purchase.customerId <= 0) throw new Error(`Invalid customerId: ${purchase.customerId}`);
   if (!Number.isSafeInteger(purchase.orderId) || purchase.orderId <= 0) throw new Error(`Invalid orderId: ${purchase.orderId}`);
   if (!Number.isSafeInteger(purchase.productId) || purchase.productId <= 0) throw new Error(`Invalid productId: ${purchase.productId}`);
+  assertPositiveInt(purchase.productQuantity, 'productQuantity');
   const canonicalDate = canonicalTimestamp(purchase.orderCreatedAt, 'orderCreatedAt');
   // The bulk reader applies the same cutoff in SQL. Keeping this defensive filter in the pure
   // builder makes historical/replayed inputs safe as well: the boundary is excluded, never
@@ -426,7 +455,7 @@ function normalizePurchase(purchase: CustomerAffinityPurchaseEvidence, reference
 }
 
 function comparePurchases(left: LineWithKey, right: LineWithKey): number {
-  return left.customerId - right.customerId || left.orderId - right.orderId || left.productId - right.productId || (left.orderDetailId ?? 0) - (right.orderDetailId ?? 0) || left.lineRevenueTaxIncl.localeCompare(right.lineRevenueTaxIncl);
+  return left.customerId - right.customerId || left.orderId - right.orderId || left.productId - right.productId || (left.orderDetailId ?? 0) - (right.orderDetailId ?? 0) || left.productQuantity - right.productQuantity || left.lineRevenueTaxIncl.localeCompare(right.lineRevenueTaxIncl);
 }
 
 function createStatusDiagnostics(lines: readonly LineWithKey[], facts: ReadonlyMap<number, ProductSemanticFact>): Readonly<Record<string, AffinityStatusDiagnostic>> {
@@ -534,5 +563,5 @@ function round(value: number): number {
 }
 
 function toChecksumPurchase(line: LineWithKey): Record<string, unknown> {
-  return { customerId: line.customerId, orderId: line.orderId, orderDetailId: line.orderDetailId ?? null, orderCreatedAt: line.canonicalDate, productId: line.productId, lineRevenueTaxIncl: line.lineRevenueTaxIncl };
+  return { customerId: line.customerId, orderId: line.orderId, orderDetailId: line.orderDetailId ?? null, orderCreatedAt: line.canonicalDate, productId: line.productId, productQuantity: line.productQuantity, lineRevenueTaxIncl: line.lineRevenueTaxIncl };
 }

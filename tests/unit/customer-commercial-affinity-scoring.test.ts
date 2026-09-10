@@ -140,6 +140,19 @@ describe('frequency is deferred, not fabricated (task Section 5/22 CASE 1 & 2)',
   });
 });
 
+describe('quantity evidence is observable but not a scoring signal', () => {
+  it('changes supportingUnits without changing score or membership', () => {
+    const oneUnit = score({ customerId: 1, purchases: [pair({ totalQuantityPurchased: 1 })] });
+    const manyUnits = score({ customerId: 1, purchases: [pair({ totalQuantityPurchased: 99 })] });
+    const oneUnitRow = findRow(oneUnit, 'PRODUCT_FAMILY', 'BENCH');
+    const manyUnitsRow = findRow(manyUnits, 'PRODUCT_FAMILY', 'BENCH');
+
+    expect(manyUnitsRow.score).toBe(oneUnitRow.score);
+    expect(manyUnitsRow.supportingUnits).toBe(99);
+    expect(manyUnitsRow.affinityCode).toBe(oneUnitRow.affinityCode);
+  });
+});
+
 describe('monetary fragmentation (task Section 8/9/22 CASE 3)', () => {
   it('aggregate spend share is equal whether the same total is concentrated in 1 product or split across 4', () => {
     const oneProductItems = expandSemanticEvidence(

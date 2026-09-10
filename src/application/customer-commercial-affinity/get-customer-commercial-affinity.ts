@@ -154,6 +154,7 @@ function toRuntimeRow(row: CustomerCommercialAffinityRow): CustomerCommercialAff
     score: row.score,
     supportingOrderCount: row.supportingOrderCount,
     supportingProductCount: row.supportingProductCount,
+    supportingUnits: row.supportingUnits,
     supportingSpend: row.supportingSpend,
     lastEvidenceAt: row.lastEvidenceAt,
     explicitEvidenceCoverage: row.explicitEvidenceCoverage,
