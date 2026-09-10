@@ -5,4 +5,5 @@ export * from './evaluate-audience.js';
 export * from './membership.js';
 export * from './schema.js';
 export * from './preview.js';
+export * from './export-preview.js';
 export * from './capability.js';

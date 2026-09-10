@@ -1,7 +1,7 @@
 import type { StoredCustomerFeatureSnapshot } from '../customer-analytics/ports.js';
 import type {
   AudienceAffinitySnapshotLineageV1, AudienceAvailabilityV1, AudienceEvaluationContextV1,
-  AudienceEvaluationResultV1, AudienceFilterV1, AudienceRfmSnapshotLineageV1,
+  AudienceEvaluationResultV1, AudienceExportContactV1, AudienceFilterV1, AudienceRfmSnapshotLineageV1,
   AudienceClusterSnapshotLineageV1, AudienceClvSnapshotLineageV1, AudienceTruthV1,
 } from '../../domain/customer-intelligence-audience/index.js';
 
@@ -76,6 +76,11 @@ export type AudiencePreviewReadRow = {
 export type AudiencePreviewReader = {
   /** One bounded, set-based read for all requested members, using the supplied lineage. */
   read(context: AudienceEvaluationContextV1, customerIds: readonly number[]): Promise<readonly AudiencePreviewReadRow[]>;
+};
+
+/** Bulk, read-only contact hydration for the export projection boundary. */
+export type AudienceExportContactReader = {
+  readByCustomerIds(customerIds: readonly number[]): Promise<readonly AudienceExportContactV1[]>;
 };
 
 export type EvaluateAudienceRequest = {

@@ -1,4 +1,9 @@
 export { createMysqlPrestashopCustomerReader } from './mysql-prestashop-customer-reader.js';
+export {
+  createMysqlPrestashopCustomerExportReader,
+  createMysqlPrestashopBulkContactReader,
+  DEFAULT_AUDIENCE_EXPORT_CONTACT_CHUNK_SIZE,
+} from './mysql-prestashop-customer-export-reader.js';
 export { createMysqlPrestaShopCustomerIdentityRepository } from './mysql-prestashop-customer-identity-repository.js';
 export { createMysqlCustomerOrdersReader } from './mysql-customer-orders-reader.js';
 export { createMysqlOrderStatesReader } from './mysql-order-states-reader.js';
