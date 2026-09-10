@@ -61,7 +61,7 @@ run_case() {
       --data-binary "@$request" \
       -D "$headers" \
       -o "$output" \
-      -w '%{http_code} %{size_download} %{time_starttransfer} %{time_total}' \
+      -w '%{http_code} %{size_download} %{time_starttransfer} %{time_total}\n' \
       "$BASE_URL/v1/customer-intelligence/audiences/export" > "$TMP_DIR/$name.curl"
     echo "$?" > "$TMP_DIR/$name.curl_exit"
   ) &
