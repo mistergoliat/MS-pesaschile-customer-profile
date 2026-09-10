@@ -6,4 +6,8 @@ export * from './membership.js';
 export * from './schema.js';
 export * from './preview.js';
 export * from './export-preview.js';
+export * from './export-projection.js';
+export * from './csv-writer.js';
+export * from './xlsx-writer.js';
+export * from './export-artifact.js';
 export * from './capability.js';

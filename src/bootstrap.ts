@@ -134,10 +134,11 @@ import {
 } from './application/customer-commercial-profile/customer-commercial-profile-service.js';
 import type { ReadinessCheck } from './http/routes/index.js';
 import { CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION } from './domain/customer-intelligence-copilot/index.js';
-import { createAudienceContextResolver, createCustomerIntelligenceAudienceCapability, createEvaluateAudience, createAudiencePreviewEnricher, type CustomerIntelligenceAudienceCapability } from './application/customer-intelligence-audience/index.js';
+import { createAudienceContextResolver, createCustomerIntelligenceAudienceCapability, createEvaluateAudience, createAudiencePreviewEnricher, createAudienceExport, type AudienceExport, type CustomerIntelligenceAudienceCapability } from './application/customer-intelligence-audience/index.js';
 import { createMysqlAudiencePreviewReader } from './infrastructure/customer-intelligence-audience/mysql-audience-preview-reader.js';
 import { createMysqlAudienceSnapshotHeaderReader } from './infrastructure/customer-intelligence-audience/mysql-audience-snapshot-header-reader.js';
 import { createMysqlAudienceSqlExecutor } from './infrastructure/customer-intelligence-audience/mysql-audience-sql-executor.js';
+import { createMysqlPrestashopCustomerExportReader } from './infrastructure/prestashop/mysql-prestashop-customer-export-reader.js';
 
 const systemClock = new SystemClock();
 
@@ -166,6 +167,7 @@ export type Bootstrap = {
   readonly getCustomerIntelligenceRow: GetCustomerIntelligenceRow;
   readonly customerCommercialProfileService: CustomerCommercialProfileService;
   readonly customerIntelligenceAudienceCapability?: CustomerIntelligenceAudienceCapability;
+  readonly customerIntelligenceAudienceExport: AudienceExport;
   readonly answerCustomerIntelligenceQuestion: AnswerCustomerIntelligenceQuestion;
   readonly customerIntelligenceCopilotSessionService?: CustomerIntelligenceCopilotSessionService;
   readonly checkReadiness: ReadinessCheck;
@@ -185,6 +187,14 @@ export function bootstrap(): Bootstrap {
     getPrestashopQueryExecutor(),
     config.prestashopDb.prefix,
   );
+  const customerIntelligenceAudienceExport = createAudienceExport({
+    contactReader: createMysqlPrestashopCustomerExportReader(
+      getPrestashopQueryExecutor(),
+      config.prestashopDb.prefix,
+    ),
+    clock: () => systemClock.now().toISOString(),
+    limits: config.audienceExport,
+  });
   const customerOrdersReader = createMysqlCustomerOrdersReader(
     getPrestashopQueryExecutor(),
     config.prestashopDb.prefix,
@@ -506,6 +516,7 @@ export function bootstrap(): Bootstrap {
     getCustomerIntelligenceRow,
     customerCommercialProfileService,
     customerIntelligenceAudienceCapability,
+    customerIntelligenceAudienceExport,
     answerCustomerIntelligenceQuestion,
     customerIntelligenceCopilotSessionService,
     checkReadiness,

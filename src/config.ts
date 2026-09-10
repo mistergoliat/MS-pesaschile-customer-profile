@@ -62,6 +62,11 @@ const envSchema = z.object({
   ANALYTICS_DB_CONNECTION_LIMIT: z.coerce.number().int().positive().default(5),
   ANALYTICS_DB_QUERY_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
 
+  // A04.3 generic audience downloads are internal capabilities only. The limits are explicit
+  // and bounded so synchronous in-memory writers cannot grow without an operational ceiling.
+  CUSTOMER_INTELLIGENCE_AUDIENCE_EXPORT_MAX_OUTPUT_BYTES: z.coerce.number().int().positive().default(50 * 1024 * 1024),
+  CUSTOMER_INTELLIGENCE_AUDIENCE_EXPORT_MAX_MATCHED_ROWS: z.coerce.number().int().positive().default(50000),
+
   MARKETING_COPILOT_ENABLED: z
     .enum(['true', 'false', '1', '0'])
     .default('false')
@@ -326,6 +331,10 @@ export const config = {
   rfmSnapshotDb,
   clusterDb,
   analyticsDb,
+  audienceExport: {
+    maxOutputBytes: raw.CUSTOMER_INTELLIGENCE_AUDIENCE_EXPORT_MAX_OUTPUT_BYTES,
+    maxMatchedRows: raw.CUSTOMER_INTELLIGENCE_AUDIENCE_EXPORT_MAX_MATCHED_ROWS,
+  },
   prestashopDb: {
     host: raw.PRESTASHOP_DB_HOST,
     port: raw.PRESTASHOP_DB_PORT,
