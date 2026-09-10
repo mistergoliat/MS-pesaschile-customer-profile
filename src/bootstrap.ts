@@ -134,7 +134,7 @@ import {
 } from './application/customer-commercial-profile/customer-commercial-profile-service.js';
 import type { ReadinessCheck } from './http/routes/index.js';
 import { CUSTOMER_INTELLIGENCE_COPILOT_CONTRACT_VERSION } from './domain/customer-intelligence-copilot/index.js';
-import { createAudienceContextResolver, createCustomerIntelligenceAudienceCapability, createEvaluateAudience, createAudiencePreviewEnricher, createAudienceExport, type AudienceExport, type CustomerIntelligenceAudienceCapability } from './application/customer-intelligence-audience/index.js';
+import { createAudienceContextResolver, createCustomerIntelligenceAudienceCapability, createEvaluateAudience, createAudiencePreviewEnricher, createAudienceExport, createResolveAudienceMembership, type AudienceExport, type CustomerIntelligenceAudienceCapability, type ResolveAudienceMembership } from './application/customer-intelligence-audience/index.js';
 import { createMysqlAudiencePreviewReader } from './infrastructure/customer-intelligence-audience/mysql-audience-preview-reader.js';
 import { createMysqlAudienceSnapshotHeaderReader } from './infrastructure/customer-intelligence-audience/mysql-audience-snapshot-header-reader.js';
 import { createMysqlAudienceSqlExecutor } from './infrastructure/customer-intelligence-audience/mysql-audience-sql-executor.js';
@@ -167,6 +167,7 @@ export type Bootstrap = {
   readonly getCustomerIntelligenceRow: GetCustomerIntelligenceRow;
   readonly customerCommercialProfileService: CustomerCommercialProfileService;
   readonly customerIntelligenceAudienceCapability?: CustomerIntelligenceAudienceCapability;
+  readonly customerIntelligenceAudienceMembership?: ResolveAudienceMembership;
   readonly customerIntelligenceAudienceExport: AudienceExport;
   readonly answerCustomerIntelligenceQuestion: AnswerCustomerIntelligenceQuestion;
   readonly customerIntelligenceCopilotSessionService?: CustomerIntelligenceCopilotSessionService;
@@ -341,6 +342,7 @@ export function bootstrap(): Bootstrap {
   });
   let customerIntelligenceCopilotSessionService: CustomerIntelligenceCopilotSessionService | undefined;
   let customerIntelligenceAudienceCapability: CustomerIntelligenceAudienceCapability | undefined;
+  let customerIntelligenceAudienceMembership: ResolveAudienceMembership | undefined;
   const copilotModel = createConfiguredCustomerIntelligenceCopilotModel();
   if (config.analyticsDb) {
     const analyticsPool = getAnalyticsPool();
@@ -357,15 +359,21 @@ export function bootstrap(): Bootstrap {
       featureSnapshotReader: createMysqlCustomerFeatureSnapshotReader(analyticsPool),
       snapshotHeaderReader: createMysqlAudienceSnapshotHeaderReader(analyticsPool),
     });
+    const audienceSqlExecutor = createMysqlAudienceSqlExecutor(analyticsQueryExecutor);
     customerIntelligenceAudienceCapability = createCustomerIntelligenceAudienceCapability({
       evaluateAudience: createEvaluateAudience({
         contextResolver: audienceContextResolver,
-        sqlExecutor: createMysqlAudienceSqlExecutor(analyticsQueryExecutor),
+        sqlExecutor: audienceSqlExecutor,
         clock: () => systemClock.now().toISOString(),
       }),
       previewEnricher: createAudiencePreviewEnricher({
         reader: createMysqlAudiencePreviewReader(analyticsQueryExecutor),
       }),
+    });
+    customerIntelligenceAudienceMembership = createResolveAudienceMembership({
+      contextResolver: audienceContextResolver,
+      sqlExecutor: audienceSqlExecutor,
+      clock: () => systemClock.now().toISOString(),
     });
     getCustomerIntelligenceRow = createGetCustomerIntelligenceRow({
       resolveCurrent: resolvers.resolveCurrent,
@@ -516,6 +524,7 @@ export function bootstrap(): Bootstrap {
     getCustomerIntelligenceRow,
     customerCommercialProfileService,
     customerIntelligenceAudienceCapability,
+    customerIntelligenceAudienceMembership,
     customerIntelligenceAudienceExport,
     answerCustomerIntelligenceQuestion,
     customerIntelligenceCopilotSessionService,

@@ -76,8 +76,23 @@ import type { CopilotUiContextRequest, CustomerIntelligenceCopilotResponse } fro
 import type { PrestashopReadinessResult } from '../../infrastructure/prestashop/prestashop-pool.js';
 import { classifyErrorForLog } from '../../observability/classify-error-for-log.js';
 import type { CustomerIntelligenceAudienceCapability } from '../../application/customer-intelligence-audience/capability.js';
-import { getAudienceCapabilitySchema, CUSTOMER_INTELLIGENCE_AUDIENCE_CAPABILITY_VERSION, CUSTOMER_INTELLIGENCE_AUDIENCE_MAX_PREVIEW_LIMIT } from '../../application/customer-intelligence-audience/index.js';
-import type { AudienceEvaluationResultV1 } from '../../domain/customer-intelligence-audience/index.js';
+import {
+  AudienceExportError,
+  AudienceExportSizeLimitError,
+  getAudienceCapabilitySchema,
+  CUSTOMER_INTELLIGENCE_AUDIENCE_CAPABILITY_VERSION,
+  CUSTOMER_INTELLIGENCE_AUDIENCE_MAX_PREVIEW_LIMIT,
+} from '../../application/customer-intelligence-audience/index.js';
+import { createAudienceExportLimiter, type AudienceExportLimiter } from '../../application/customer-intelligence-audience/export-limiter.js';
+import type { ResolveAudienceMembership } from '../../application/customer-intelligence-audience/membership.js';
+import type { AudienceExport } from '../../application/customer-intelligence-audience/export-artifact.js';
+import type {
+  AudienceEvaluationResultV1,
+  AudienceExportArtifactV1,
+  AudienceExportFieldIdV1,
+  AudienceExportFormatV1,
+} from '../../domain/customer-intelligence-audience/index.js';
+import type { AudienceMembershipResolutionResultV1 } from '../../application/customer-intelligence-audience/membership.js';
 
 const numericId = z
   .string()
@@ -164,6 +179,13 @@ const audienceEvaluateBody = z
     previewLimit: z.number().int().min(0).max(CUSTOMER_INTELLIGENCE_AUDIENCE_MAX_PREVIEW_LIMIT).optional(),
   })
   .strict();
+const audienceExportBody = z
+  .object({
+    definition: z.unknown(),
+    format: z.enum(['CSV', 'XLSX']),
+    fields: z.array(z.enum(['customerId', 'email', 'firstname', 'lastname'])).max(4).optional(),
+  })
+  .strict();
 
 export type ReadinessResult = {
   readonly crm: boolean;
@@ -218,7 +240,16 @@ export type RouteDependencies = {
     readonly enabled: boolean;
     readonly internalToken: string | null;
   };
+  readonly customerIntelligenceAudienceExportAuth?: {
+    readonly enabled: boolean;
+    readonly internalToken: string | null;
+    readonly piiToken: string | null;
+    readonly timeoutMs?: number;
+  };
   readonly customerIntelligenceAudienceCapability?: CustomerIntelligenceAudienceCapability;
+  readonly customerIntelligenceAudienceMembership?: ResolveAudienceMembership;
+  readonly customerIntelligenceAudienceExport?: AudienceExport;
+  readonly customerIntelligenceAudienceExportLimiter?: AudienceExportLimiter;
   readonly checkReadiness: ReadinessCheck;
 };
 
@@ -229,6 +260,7 @@ const LOG_IDENTITY: Pick<CustomerIdentity, 'identitySource' | 'identityStatus'> 
 
 export function buildRoutes(deps: RouteDependencies): Router {
   const router = Router();
+  const audienceExportLimiter = deps.customerIntelligenceAudienceExportLimiter ?? createAudienceExportLimiter();
 
   router.get('/health', (_request, response) => {
     response.json({ status: 'ok' });
@@ -291,6 +323,158 @@ export function buildRoutes(deps: RouteDependencies): Router {
     } catch (error) {
       console.error({ event: 'customer_intelligence_audience_request_failed', endpoint: 'customer-intelligence-audience-evaluate', capabilityVersion: CUSTOMER_INTELLIGENCE_AUDIENCE_CAPABILITY_VERSION, durationMs: Date.now() - startedAt, errorType: classifyErrorForLog(error) });
       response.status(500).json({ error: 'internal_error' });
+    }
+  });
+
+  router.post('/v1/customer-intelligence/audiences/export', async (request: Request, response: Response) => {
+    if (!ensureAudienceExportRouteAvailable(request, response, deps)) return;
+    if (Object.keys(request.query).length > 0) {
+      response.status(400).json({ error: 'unsupported_query_params' });
+      return;
+    }
+
+    const parsedBody = audienceExportBody.safeParse(request.body);
+    if (!parsedBody.success || !Object.prototype.hasOwnProperty.call(request.body ?? {}, 'definition')) {
+      response.status(400).json({ error: 'invalid_audience_export_request' });
+      return;
+    }
+
+    const fields = (parsedBody.data.fields ?? ['customerId']) as readonly AudienceExportFieldIdV1[];
+    const requiresPiiPermission = fields.some((field) => field === 'email' || field === 'firstname' || field === 'lastname');
+    const exportAuth = deps.customerIntelligenceAudienceExportAuth!;
+    if (requiresPiiPermission) {
+      if (!exportAuth.piiToken) {
+        response.status(503).json({ error: 'audience_pii_export_auth_not_configured' });
+        return;
+      }
+      if (!isAuthorizedAudiencePiiExportRequest(request, exportAuth.piiToken)) {
+        response.status(403).json({ error: 'audience_pii_export_forbidden' });
+        return;
+      }
+    }
+
+    const acquired = audienceExportLimiter.tryAcquire(parsedBody.data.format);
+    if (!acquired.accepted) {
+      response.status(429).json({
+        error: acquired.reason === 'RATE_LIMIT' ? 'audience_export_rate_limited' : 'audience_export_concurrency_limited',
+      });
+      return;
+    }
+
+    const lease = acquired.lease;
+    const startedAt = Date.now();
+    const requestId = randomUUID();
+    let clientAborted = request.aborted;
+    const markRequestAborted = (): void => { clientAborted = true; };
+    const markResponseClosed = (): void => {
+      if (!response.writableEnded) clientAborted = true;
+    };
+    request.once('aborted', markRequestAborted);
+    response.once('close', markResponseClosed);
+    let timedOut = false;
+    let operationSettled = false;
+    let resolvedMembership: AudienceMembershipResolutionResultV1 | null = null;
+    const operation = executeAudienceDownload({
+      definition: parsedBody.data.definition,
+      format: parsedBody.data.format,
+      fields,
+      membership: deps.customerIntelligenceAudienceMembership!,
+      exportArtifact: deps.customerIntelligenceAudienceExport!,
+      onMembershipResolved: (membership) => { resolvedMembership = membership; },
+    });
+    void operation.then(
+      () => {
+        operationSettled = true;
+        if (timedOut) lease.release();
+      },
+      () => {
+        operationSettled = true;
+        if (timedOut) lease.release();
+      },
+    );
+
+    try {
+      const result = await withAudienceExportTimeout(operation, exportAuth.timeoutMs ?? 120000, () => {
+        timedOut = true;
+      });
+
+      if (result.membership.status !== 'completed') {
+        const status = statusForAudienceMembershipResult(result.membership);
+        logAudienceExportAudit({
+          requestId,
+          request,
+          membership: result.membership,
+          format: parsedBody.data.format,
+          selectedFields: fields,
+          artifact: null,
+          durationMs: Date.now() - startedAt,
+          outcome: 'membership_blocked',
+        });
+        response.status(status).json({ error: audienceExportMembershipError(result.membership) });
+        return;
+      }
+
+      const artifact = result.artifact;
+      if (artifact === null) throw new Error('Audience export artifact was not produced');
+      if (clientAborted || response.destroyed) {
+        logAudienceExportAudit({
+          requestId,
+          request,
+          membership: result.membership,
+          format: artifact.format,
+          selectedFields: artifact.selectedFields,
+          artifact: null,
+          durationMs: Date.now() - startedAt,
+          outcome: 'client_aborted',
+        });
+        return;
+      }
+      if (!Buffer.isBuffer(artifact.artifact)) throw new Error('Audience export writer returned a non-buffer artifact');
+      if (artifact.rowCount !== result.membership.counts.matched) {
+        throw new Error('Audience export row count does not match authoritative membership');
+      }
+
+      const filename = createSafeAudienceDownloadFilename(artifact);
+      const contentType = artifact.format === 'CSV'
+        ? 'text/csv; charset=utf-8'
+        : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      const byteLength = artifact.artifact.byteLength;
+      response.statusCode = 200;
+      response.setHeader('Content-Type', contentType);
+      response.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      response.setHeader('Content-Length', String(byteLength));
+      response.setHeader('X-Audience-Export-Matched-Count', String(result.membership.counts.matched));
+      response.setHeader('X-Audience-Export-Unknown-Count', String(result.membership.counts.unknown));
+      response.setHeader('X-Audience-Export-Generation-Ms', String(result.generationDurationMs));
+      response.setHeader('X-Audience-Export-Total-Ms', String(Date.now() - startedAt));
+      response.end(artifact.artifact);
+      logAudienceExportAudit({
+        requestId,
+        request,
+        membership: result.membership,
+        format: artifact.format,
+        selectedFields: artifact.selectedFields,
+        artifact,
+        durationMs: Date.now() - startedAt,
+        outcome: 'success',
+      });
+    } catch (error) {
+      const status = statusForAudienceExportError(error);
+      logAudienceExportAudit({
+        requestId,
+        request,
+        membership: resolvedMembership,
+        format: parsedBody.data.format,
+        selectedFields: fields,
+        artifact: null,
+        durationMs: Date.now() - startedAt,
+        outcome: status === 504 ? 'timeout' : 'failed',
+      });
+      if (!response.headersSent) response.status(status).json({ error: errorCodeForAudienceExport(error) });
+    } finally {
+      request.removeListener('aborted', markRequestAborted);
+      response.removeListener('close', markResponseClosed);
+      if (!timedOut || operationSettled) lease.release();
     }
   });
 
@@ -1266,6 +1450,95 @@ export function buildRoutes(deps: RouteDependencies): Router {
   return router;
 }
 
+type AudienceDownloadResult =
+  | {
+      readonly membership: Extract<AudienceMembershipResolutionResultV1, { readonly status: 'completed' }>;
+      readonly artifact: AudienceExportArtifactV1;
+      readonly membershipDurationMs: number;
+      readonly generationDurationMs: number;
+    }
+  | {
+      readonly membership: Extract<AudienceMembershipResolutionResultV1, { readonly status: 'blocked' }>;
+      readonly artifact: null;
+      readonly membershipDurationMs: number;
+      readonly generationDurationMs: 0;
+    };
+
+async function executeAudienceDownload(input: {
+  readonly definition: unknown;
+  readonly format: AudienceExportFormatV1;
+  readonly fields: readonly AudienceExportFieldIdV1[];
+  readonly membership: ResolveAudienceMembership;
+  readonly exportArtifact: AudienceExport;
+  readonly onMembershipResolved?: (membership: AudienceMembershipResolutionResultV1) => void;
+}): Promise<AudienceDownloadResult> {
+  const membershipStartedAt = Date.now();
+  const membership = await input.membership({ definition: input.definition });
+  input.onMembershipResolved?.(membership);
+  const membershipDurationMs = Date.now() - membershipStartedAt;
+  if (membership.status !== 'completed') return { membership, artifact: null, membershipDurationMs, generationDurationMs: 0 };
+  const generationStartedAt = Date.now();
+  const artifact = await input.exportArtifact({ membership, fields: input.fields, format: input.format });
+  return { membership, artifact, membershipDurationMs, generationDurationMs: Date.now() - generationStartedAt };
+}
+
+class AudienceExportTimeoutError extends Error {
+  readonly code = 'EXPORT_TIMEOUT' as const;
+
+  constructor() {
+    super('Audience export execution timed out');
+    this.name = 'AudienceExportTimeoutError';
+  }
+}
+
+function withAudienceExportTimeout<T>(promise: Promise<T>, timeoutMs: number, onTimeout: () => void): Promise<T> {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error('Invalid audience export timeout');
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      onTimeout();
+      reject(new AudienceExportTimeoutError());
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+function ensureAudienceExportRouteAvailable(request: Request, response: Response, deps: RouteDependencies): boolean {
+  const auth = deps.customerIntelligenceAudienceExportAuth;
+  if (!auth?.enabled) {
+    response.status(404).json({ error: 'customer_intelligence_audience_export_disabled' });
+    return false;
+  }
+  if (!auth.internalToken) {
+    response.status(503).json({ error: 'customer_intelligence_audience_export_auth_not_configured' });
+    return false;
+  }
+  if (!isAuthorizedAudienceExportRequest(request, auth.internalToken)) {
+    response.status(401).json({ error: 'unauthorized' });
+    return false;
+  }
+  if (!deps.customerIntelligenceAudienceMembership || !deps.customerIntelligenceAudienceExport) {
+    response.status(503).json({ error: 'customer_intelligence_audience_export_not_configured' });
+    return false;
+  }
+  return true;
+}
+
 function parseCustomerIdFromParams(params: Record<string, unknown>): number | null {
   const parsedParams = customerIdParams.safeParse(params);
   if (!parsedParams.success) {
@@ -1296,6 +1569,27 @@ function isAuthorizedAudienceRequest(request: Request, expectedToken: string): b
   const expectedBuffer = Buffer.from(expectedToken);
   const actualBuffer = Buffer.from(actual);
   return expectedBuffer.length === actualBuffer.length && timingSafeEqual(expectedBuffer, actualBuffer);
+}
+
+function isAuthorizedAudienceExportRequest(request: Request, expectedToken: string): boolean {
+  const actual = request.header('x-internal-customer-intelligence-export-token') ?? bearerToken(request.header('authorization'));
+  return isAuthorizedHeader(actual, expectedToken);
+}
+
+function isAuthorizedAudiencePiiExportRequest(request: Request, expectedToken: string): boolean {
+  return isAuthorizedHeader(request.header('x-internal-customer-intelligence-pii-export-token'), expectedToken);
+}
+
+function isAuthorizedHeader(actual: string | undefined, expectedToken: string): boolean {
+  if (!actual) return false;
+  const expectedBuffer = Buffer.from(expectedToken);
+  const actualBuffer = Buffer.from(actual);
+  return expectedBuffer.length === actualBuffer.length && timingSafeEqual(expectedBuffer, actualBuffer);
+}
+
+function bearerToken(authorization: string | undefined): string | undefined {
+  const match = authorization?.match(/^Bearer\s+(.+)$/iu);
+  return match?.[1];
 }
 
 function ensureAudienceRouteAvailable(request: Request, response: Response, deps: RouteDependencies): boolean {
@@ -1508,6 +1802,140 @@ function statusForAudienceCapabilityResult(result: AudienceEvaluationResultV1): 
   if (result.reason === 'INVALID_DEFINITION' || result.reason === 'BUDGET_EXCEEDED' || result.reason === 'INCOMPATIBLE_SNAPSHOT') return 400;
   if (result.reason === 'QUERY_TIMEOUT') return 504;
   return 503;
+}
+
+function statusForAudienceMembershipResult(result: AudienceMembershipResolutionResultV1): number {
+  if (result.status === 'completed') return 200;
+  switch (result.reason) {
+    case 'INVALID_DEFINITION':
+      return 400;
+    case 'INCOMPATIBLE_SNAPSHOT':
+      return 409;
+    case 'QUERY_TIMEOUT':
+      return 504;
+    case 'UNAVAILABLE_COMPONENT':
+    case 'EXECUTION_FAILED':
+    case 'INCOMPLETE_LINEAGE':
+    case 'POPULATION_COUNT_MISMATCH':
+    case 'DUPLICATE_CUSTOMER_ID':
+    case 'INVALID_CUSTOMER_ID':
+    case 'INVALID_TRUTH':
+    case 'COUNT_INVARIANT_FAILED':
+    case 'MEMBERSHIP_INVARIANT_FAILED':
+      return 503;
+    case 'BUDGET_EXCEEDED':
+      return 413;
+  }
+}
+
+function audienceExportMembershipError(
+  result: Extract<AudienceMembershipResolutionResultV1, { readonly status: 'blocked' }>,
+): string {
+  switch (result.reason) {
+    case 'INVALID_DEFINITION':
+      return 'INVALID_DEFINITION';
+    case 'INCOMPATIBLE_SNAPSHOT':
+      return 'AUDIENCE_SNAPSHOT_CONFLICT';
+    case 'QUERY_TIMEOUT':
+      return 'AUDIENCE_MEMBERSHIP_TIMEOUT';
+    case 'BUDGET_EXCEEDED':
+      return 'EXPORT_ROW_LIMIT_EXCEEDED';
+    default:
+      return 'AUDIENCE_MEMBERSHIP_UNAVAILABLE';
+  }
+}
+
+function statusForAudienceExportError(error: unknown): number {
+  if (error instanceof AudienceExportTimeoutError) return 504;
+  if (error instanceof AudienceExportSizeLimitError) return 413;
+  if (error instanceof AudienceExportError) {
+    switch (error.code) {
+      case 'EXPORT_ROW_LIMIT_EXCEEDED':
+      case 'EXPORT_SIZE_LIMIT_EXCEEDED':
+        return 413;
+      case 'MEMBERSHIP_INCOMPLETE':
+        return 409;
+      case 'CONTACT_HYDRATION_FAILED':
+        return 503;
+      case 'CONTACT_DATA_INVALID':
+        return 503;
+      case 'UNSUPPORTED_FORMAT':
+      case 'UNSUPPORTED_FIELD':
+      case 'DUPLICATE_FIELD':
+      case 'REQUIRED_FIELD_MISSING':
+      case 'CONFLICTING_REQUEST':
+        return 400;
+    }
+  }
+  return 500;
+}
+
+function errorCodeForAudienceExport(error: unknown): string {
+  if (error instanceof AudienceExportTimeoutError) return error.code;
+  if (error instanceof AudienceExportSizeLimitError) return error.code;
+  if (error instanceof AudienceExportError) return error.code;
+  return 'internal_error';
+}
+
+function createSafeAudienceDownloadFilename(artifact: AudienceExportArtifactV1): string {
+  const checksum = sanitizeFilenameToken(artifact.metadata.definitionChecksum).slice(0, 12) || 'unknown';
+  const timestamp = sanitizeFilenameToken(artifact.generatedAt.replace(/[:.]/gu, '-')) || 'generated';
+  return `audience-export-${checksum}-${timestamp}.${artifact.format === 'CSV' ? 'csv' : 'xlsx'}`;
+}
+
+function sanitizeFilenameToken(value: string): string {
+  return value
+    .replace(/[\r\n"\\/\u0000-\u001F\u007F]/gu, '-')
+    .replace(/[^a-zA-Z0-9_-]/gu, '-')
+    .replace(/-+/gu, '-')
+    .replace(/^-|-$/gu, '');
+}
+
+type AudienceExportAuditInput = {
+  readonly requestId: string;
+  readonly request: Request;
+  readonly membership: AudienceMembershipResolutionResultV1 | null;
+  readonly format: AudienceExportFormatV1;
+  readonly selectedFields: readonly AudienceExportFieldIdV1[];
+  readonly artifact: AudienceExportArtifactV1 | null;
+  readonly durationMs: number;
+  readonly outcome: 'success' | 'membership_blocked' | 'failed' | 'timeout' | 'client_aborted';
+};
+
+function logAudienceExportAudit(input: AudienceExportAuditInput): void {
+  const completedMembership = input.membership?.status === 'completed' ? input.membership : null;
+  const lineage = completedMembership?.lineage ?? null;
+  const artifact = input.artifact;
+  console.info({
+    event: 'customer_intelligence_audience_export_audit',
+    requestId: input.requestId,
+    actor: 'authenticated_internal_client',
+    serviceIdentity: sanitizeAuditIdentity(input.request.header('x-internal-service-identity')),
+    definitionChecksum: input.membership?.definitionChecksum ?? artifact?.metadata.definitionChecksum ?? null,
+    evaluationChecksum: completedMembership?.evaluationChecksum ?? artifact?.evaluationChecksum ?? null,
+    membershipChecksum: completedMembership?.membershipChecksum ?? artifact?.membershipChecksum ?? null,
+    format: input.format,
+    selectedFields: input.selectedFields,
+    matchedCount: completedMembership?.counts.matched ?? artifact?.rowCount ?? null,
+    unknownCount: completedMembership?.counts.unknown ?? artifact?.metadata.unknown ?? null,
+    artifactRowCount: artifact?.rowCount ?? null,
+    artifactBytes: artifact?.artifact.byteLength ?? null,
+    relevantLineageIds: lineage === null ? null : {
+      featureSnapshotId: lineage.relevantSnapshotLineage.feature.snapshotId,
+      rfmSnapshotId: lineage.relevantSnapshotLineage.rfm?.snapshotId ?? null,
+      clusterSnapshotId: lineage.relevantSnapshotLineage.cluster?.snapshotId ?? null,
+      clvSnapshotId: lineage.relevantSnapshotLineage.clv?.snapshotId ?? null,
+      affinitySnapshotId: lineage.relevantSnapshotLineage.commercialAffinity?.snapshotId ?? null,
+    },
+    durationMs: input.durationMs,
+    outcome: input.outcome,
+  }, 'customer intelligence audience export');
+}
+
+function sanitizeAuditIdentity(value: string | undefined): string {
+  if (!value) return 'unspecified';
+  const sanitized = value.replace(/[^a-zA-Z0-9_.:@-]/gu, '-').slice(0, 64);
+  return sanitized || 'unspecified';
 }
 
 function statusForClusterSnapshotSummaryResult(result: GetClusterSnapshotSummaryResult): number {

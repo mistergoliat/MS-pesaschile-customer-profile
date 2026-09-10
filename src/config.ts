@@ -66,6 +66,12 @@ const envSchema = z.object({
   // and bounded so synchronous in-memory writers cannot grow without an operational ceiling.
   CUSTOMER_INTELLIGENCE_AUDIENCE_EXPORT_MAX_OUTPUT_BYTES: z.coerce.number().int().positive().default(50 * 1024 * 1024),
   CUSTOMER_INTELLIGENCE_AUDIENCE_EXPORT_MAX_MATCHED_ROWS: z.coerce.number().int().positive().default(50000),
+  CUSTOMER_INTELLIGENCE_AUDIENCE_EXPORT_TIMEOUT_MS: z.coerce.number().int().positive().max(10 * 60 * 1000).default(120000),
+  CUSTOMER_INTELLIGENCE_AUDIENCE_EXPORT_CSV_CONCURRENCY: z.coerce.number().int().positive().default(4),
+  CUSTOMER_INTELLIGENCE_AUDIENCE_EXPORT_XLSX_CONCURRENCY: z.coerce.number().int().positive().default(1),
+  CUSTOMER_INTELLIGENCE_AUDIENCE_EXPORT_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().positive().default(12),
+  CUSTOMER_INTELLIGENCE_AUDIENCE_EXPORT_TOKEN: z.string().min(16).optional(),
+  CUSTOMER_INTELLIGENCE_AUDIENCE_PII_EXPORT_TOKEN: z.string().min(16).optional(),
 
   MARKETING_COPILOT_ENABLED: z
     .enum(['true', 'false', '1', '0'])
@@ -334,6 +340,12 @@ export const config = {
   audienceExport: {
     maxOutputBytes: raw.CUSTOMER_INTELLIGENCE_AUDIENCE_EXPORT_MAX_OUTPUT_BYTES,
     maxMatchedRows: raw.CUSTOMER_INTELLIGENCE_AUDIENCE_EXPORT_MAX_MATCHED_ROWS,
+    timeoutMs: raw.CUSTOMER_INTELLIGENCE_AUDIENCE_EXPORT_TIMEOUT_MS,
+    csvConcurrency: raw.CUSTOMER_INTELLIGENCE_AUDIENCE_EXPORT_CSV_CONCURRENCY,
+    xlsxConcurrency: raw.CUSTOMER_INTELLIGENCE_AUDIENCE_EXPORT_XLSX_CONCURRENCY,
+    rateLimitPerMinute: raw.CUSTOMER_INTELLIGENCE_AUDIENCE_EXPORT_RATE_LIMIT_PER_MINUTE,
+    exportToken: raw.CUSTOMER_INTELLIGENCE_AUDIENCE_EXPORT_TOKEN ?? null,
+    piiToken: raw.CUSTOMER_INTELLIGENCE_AUDIENCE_PII_EXPORT_TOKEN ?? null,
   },
   prestashopDb: {
     host: raw.PRESTASHOP_DB_HOST,
