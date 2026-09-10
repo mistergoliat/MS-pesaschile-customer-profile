@@ -18,6 +18,7 @@ function batch(productIds: readonly number[], overrides: Partial<ProductSemantic
     semanticChecksum,
     products: productIds.map((productId) => ({
       productId,
+      catalogPresence: 'current_catalog' as const,
       classificationStatus: productId === 2 ? 'OTHER' : 'CLASSIFIED',
       primaryProductFamily: productId === 2 ? null : { code: 'HOME_GYM', confidence: 'EXPLICIT' },
       secondaryProductFamilies: [],
@@ -56,6 +57,7 @@ describe('batched Product Semantic consumer', () => {
     const excluded = batch([4], {
       products: [{
         productId: 4,
+        catalogPresence: 'current_catalog',
         classificationStatus: 'EXCLUDED_NON_PRODUCT',
         primaryProductFamily: null,
         secondaryProductFamilies: [],

@@ -10,6 +10,7 @@ export type ProductSemanticBatchTag = {
 
 export type ProductSemanticBatchProduct = {
   readonly productId: number;
+  readonly catalogPresence: 'current_catalog' | 'historical_order_detail_only';
   readonly classificationStatus: 'CLASSIFIED' | 'PARTIALLY_CLASSIFIED' | 'OTHER' | 'EXCLUDED_NON_PRODUCT' | 'NEEDS_REVIEW';
   readonly primaryProductFamily: ProductSemanticBatchTag | null;
   readonly secondaryProductFamilies: readonly ProductSemanticBatchTag[];
@@ -47,6 +48,7 @@ export const productSemanticBatchTagSchema = z.object({
 
 export const productSemanticBatchProductSchema = z.object({
   productId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  catalogPresence: z.enum(['current_catalog', 'historical_order_detail_only']),
   classificationStatus: z.enum(['CLASSIFIED', 'PARTIALLY_CLASSIFIED', 'OTHER', 'EXCLUDED_NON_PRODUCT', 'NEEDS_REVIEW']),
   primaryProductFamily: productSemanticBatchTagSchema.nullable(),
   secondaryProductFamilies: z.array(productSemanticBatchTagSchema),

@@ -5,7 +5,7 @@ const snapshotId = `sha256:${'a'.repeat(64)}`;
 const valid = {
   schemaVersion: '1', snapshotId, ontologyVersion: 'commercial-product-ontology-v3', ontologyHash: 'b'.repeat(64),
   classifierVersion: 'product-semantic-classifier-v1', semanticChecksum: 'c'.repeat(64),
-  products: [{ productId: 31, classificationStatus: 'OTHER', primaryProductFamily: null, secondaryProductFamilies: [], disciplines: [], useContexts: [] }],
+  products: [{ productId: 31, catalogPresence: 'current_catalog', classificationStatus: 'OTHER', primaryProductFamily: null, secondaryProductFamilies: [], disciplines: [], useContexts: [] }],
   missingProductIds: [999],
 };
 
