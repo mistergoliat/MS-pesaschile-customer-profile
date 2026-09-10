@@ -65,9 +65,12 @@ export type {
   AudienceFieldIdV1,
   AudienceScalarOperatorV1,
   AudienceEvaluationContextV1,
+  AudienceEvaluationLineageV1,
   AudienceSnapshotLineageV1,
+  AudienceRelevantSnapshotLineageV1,
   AudienceAvailabilityV1,
   AudienceEvaluationResultV1,
+  AudienceMembershipResultV1,
   AudienceMemberV1,
   AudienceValidationErrorV1,
 } from '../domain/customer-intelligence-audience/index.js';

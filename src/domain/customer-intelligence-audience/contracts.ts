@@ -2,6 +2,11 @@ export const AUDIENCE_DEFINITION_VERSION = 'customer-intelligence-audience-defin
 export const AUDIENCE_CONTEXT_VERSION = 'customer-intelligence-audience-context-v1' as const;
 export const AUDIENCE_EVALUATION_VERSION = 'customer-intelligence-audience-evaluation-v1' as const;
 export const AUDIENCE_LINEAGE_RESOLUTION_VERSION = 'customer-intelligence-audience-lineage-v1' as const;
+export const AUDIENCE_EVALUATION_LINEAGE_VERSION = 'customer-intelligence-audience-evaluation-lineage-v1' as const;
+export const AUDIENCE_MEMBERSHIP_VERSION = 'customer-intelligence-audience-membership-v1' as const;
+export const AUDIENCE_EVALUATION_CHECKSUM_VERSION = 'audience-evaluation-checksum-v1' as const;
+export const AUDIENCE_MEMBERSHIP_CHECKSUM_VERSION = 'audience-membership-checksum-v1' as const;
+export const AUDIENCE_REPRODUCIBILITY_LEVEL = 'ACTIVE_SNAPSHOT_CONSISTENT' as const;
 
 export type AudienceDecimalV1 = string;
 export type AudienceFieldIdV1 =
@@ -108,6 +113,14 @@ export type AudienceAvailabilityV1 = {
   readonly clv: AudienceAvailabilityStateV1;
   readonly commercialAffinity: AudienceAvailabilityStateV1;
 };
+
+export type AudienceRelevantSnapshotLineageV1 = {
+  readonly feature: AudienceFeatureSnapshotLineageV1;
+  readonly rfm?: AudienceRfmSnapshotLineageV1;
+  readonly cluster?: AudienceClusterSnapshotLineageV1;
+  readonly clv?: AudienceClvSnapshotLineageV1;
+  readonly commercialAffinity?: AudienceAffinitySnapshotLineageV1;
+};
 export type AudienceEvaluationContextV1 = {
   readonly contextVersion: typeof AUDIENCE_CONTEXT_VERSION;
   readonly referenceTime: string;
@@ -120,6 +133,19 @@ export type AudienceEvaluationContextV1 = {
   };
   readonly lineage: AudienceSnapshotLineageV1;
   readonly resolutionPolicyVersion: typeof AUDIENCE_LINEAGE_RESOLUTION_VERSION;
+};
+
+export type AudienceEvaluationLineageV1 = {
+  readonly lineageVersion: typeof AUDIENCE_EVALUATION_LINEAGE_VERSION;
+  readonly evaluatorVersion: typeof AUDIENCE_EVALUATION_VERSION;
+  readonly reproducibilityLevel: typeof AUDIENCE_REPRODUCIBILITY_LEVEL;
+  readonly definitionChecksum: string;
+  readonly contextVersion: typeof AUDIENCE_CONTEXT_VERSION;
+  readonly referenceTime: string;
+  readonly population: AudienceEvaluationContextV1['population'];
+  readonly resolutionPolicyVersion: typeof AUDIENCE_LINEAGE_RESOLUTION_VERSION;
+  readonly relevantSnapshotLineage: AudienceRelevantSnapshotLineageV1;
+  readonly evaluatedAt: string;
 };
 
 export type AudienceValidationErrorCodeV1 =
@@ -135,6 +161,27 @@ export type AudienceValidationErrorV1 = {
 
 export type AudienceMemberV1 = { readonly customerId: number };
 export type AudienceTruthV1 = 'TRUE' | 'FALSE' | 'UNKNOWN';
+
+export type AudienceMembershipResultV1 = {
+  readonly status: 'completed';
+  readonly membershipVersion: typeof AUDIENCE_MEMBERSHIP_VERSION;
+  readonly definition: AudienceDefinitionV1;
+  readonly definitionChecksum: string;
+  readonly evaluationContext: AudienceEvaluationContextV1;
+  readonly lineage: AudienceEvaluationLineageV1;
+  readonly evaluatedAt: string;
+  readonly counts: {
+    readonly population: number;
+    readonly matched: number;
+    readonly notMatched: number;
+    readonly unknown: number;
+  };
+  readonly members: readonly AudienceMemberV1[];
+  readonly evaluationChecksum: string;
+  readonly membershipChecksum: string;
+  readonly completeness: 'COMPLETE';
+  readonly warnings: readonly string[];
+};
 export type AudienceEvaluationResultV1 =
   | {
       readonly status: 'completed';
