@@ -1564,7 +1564,7 @@ function isAuthorizedCopilotRequest(request: Request, expectedToken: string): bo
 }
 
 function isAuthorizedAudienceRequest(request: Request, expectedToken: string): boolean {
-  const actual = request.header('x-internal-customer-intelligence-token') ?? request.header('x-internal-copilot-token');
+  const actual = request.header('x-internal-customer-intelligence-token');
   if (!actual) return false;
   const expectedBuffer = Buffer.from(expectedToken);
   const actualBuffer = Buffer.from(actual);

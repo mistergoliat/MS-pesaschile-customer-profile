@@ -45,6 +45,42 @@ describe('config - Customer Intelligence Copilot runtime flags', () => {
   });
 });
 
+describe('config - Customer Intelligence Audience auth', () => {
+  it('keeps Audience disabled and unconfigured by default', async () => {
+    const { config } = await import('../../src/config.js');
+
+    expect(config.customerIntelligenceAudience).toEqual({ enabled: false, internalToken: null });
+  });
+
+  it('parses Audience auth independently from Marketing Copilot auth', async () => {
+    process.env.CUSTOMER_INTELLIGENCE_AUDIENCE_ENABLED = '1';
+    process.env.CUSTOMER_INTELLIGENCE_AUDIENCE_TOKEN = 'audience-secret-123456';
+    process.env.MARKETING_COPILOT_ENABLED = 'true';
+    process.env.MARKETING_COPILOT_INTERNAL_TOKEN = 'copilot-secret-123456';
+
+    const { config } = await import('../../src/config.js');
+
+    expect(config.customerIntelligenceAudience).toEqual({ enabled: true, internalToken: 'audience-secret-123456' });
+    expect(config.marketingCopilot.internalToken).toBe('copilot-secret-123456');
+    expect(config.customerIntelligenceAudience.internalToken).not.toBe(config.marketingCopilot.internalToken);
+  });
+
+  it('treats a blank Audience token as missing while preserving fail-closed runtime configuration', async () => {
+    process.env.CUSTOMER_INTELLIGENCE_AUDIENCE_ENABLED = 'true';
+    process.env.CUSTOMER_INTELLIGENCE_AUDIENCE_TOKEN = '';
+
+    const { config } = await import('../../src/config.js');
+
+    expect(config.customerIntelligenceAudience).toEqual({ enabled: true, internalToken: null });
+  });
+
+  it('rejects an Audience token shorter than the internal-secret minimum', async () => {
+    process.env.CUSTOMER_INTELLIGENCE_AUDIENCE_TOKEN = 'too-short';
+
+    await expect(import('../../src/config.js')).rejects.toThrow(/Invalid environment variables/);
+  });
+});
+
 afterEach(() => {
   process.env = originalEnv;
 });

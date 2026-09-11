@@ -62,6 +62,15 @@ const envSchema = z.object({
   ANALYTICS_DB_CONNECTION_LIMIT: z.coerce.number().int().positive().default(5),
   ANALYTICS_DB_QUERY_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
 
+  CUSTOMER_INTELLIGENCE_AUDIENCE_ENABLED: z
+    .enum(['true', 'false', '1', '0'])
+    .default('false')
+    .transform((value) => value === 'true' || value === '1'),
+  CUSTOMER_INTELLIGENCE_AUDIENCE_TOKEN: z.preprocess(
+    (value) => value === '' ? undefined : value,
+    z.string().min(16).optional(),
+  ),
+
   // A04.3 generic audience downloads are internal capabilities only. The limits are explicit
   // and bounded so synchronous in-memory writers cannot grow without an operational ceiling.
   CUSTOMER_INTELLIGENCE_AUDIENCE_EXPORT_MAX_OUTPUT_BYTES: z.coerce.number().int().positive().default(50 * 1024 * 1024),
@@ -337,6 +346,10 @@ export const config = {
   rfmSnapshotDb,
   clusterDb,
   analyticsDb,
+  customerIntelligenceAudience: {
+    enabled: raw.CUSTOMER_INTELLIGENCE_AUDIENCE_ENABLED,
+    internalToken: raw.CUSTOMER_INTELLIGENCE_AUDIENCE_TOKEN ?? null,
+  },
   audienceExport: {
     maxOutputBytes: raw.CUSTOMER_INTELLIGENCE_AUDIENCE_EXPORT_MAX_OUTPUT_BYTES,
     maxMatchedRows: raw.CUSTOMER_INTELLIGENCE_AUDIENCE_EXPORT_MAX_MATCHED_ROWS,

@@ -65,8 +65,8 @@ const app = buildApp({
     timeoutMs: config.audienceExport.timeoutMs,
   },
   customerIntelligenceAudience: {
-    enabled: config.analyticsDb !== null,
-    internalToken: config.marketingCopilot.internalToken,
+    enabled: config.customerIntelligenceAudience.enabled,
+    internalToken: config.customerIntelligenceAudience.internalToken,
   },
   customerIntelligenceAudienceExportLimiter: createAudienceExportLimiter({
     csvConcurrency: config.audienceExport.csvConcurrency,
